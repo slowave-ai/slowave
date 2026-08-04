@@ -7,6 +7,7 @@ All tests are deterministic (no encoder, no DB).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from slowave.core.context import (
     GatePolicy,
@@ -513,15 +514,23 @@ def test_scope_mismatch_penalty_stage0() -> None:
 
     state = gate.select([same, cross], cue=cue, cue_embedding=cue_emb, policy=policy)
 
-    same_act = next((i.activation for i in state.items if i.schema.id == 1), 0)
-    cross_act = next((i.activation for i in state.items if i.schema.id == 2), 0)
+    # Cross-scope pays the full -0.35 penalty and, with near-zero cosine here,
+    # lands below min_activation and is suppressed entirely -- so its true
+    # (negative) activation must be read from activation_trace, which records
+    # every candidate's computed score regardless of admission. Falling back
+    # to `next(..., 0)` over state.items would silently substitute 0 for a
+    # suppressed schema's real (more negative) score and mask the exact size
+    # of the scope-mismatch penalty being tested here.
+    same_act = next((i.activation for i in state.items if i.schema.id == 1), None)
+    cross_act = next((t.activation for t in state.activation_trace if t.schema_id == 2), None)
+    assert same_act is not None and cross_act is not None
 
     assert (
         same_act > cross_act
     ), f"Same-scope ({same_act:.3f}) should > cross-scope ({cross_act:.3f})"
-    # Delta ≈ 0.20 (scope bonus on same) + 0.35 (mismatch penalty on cross) = 0.55
+    # Delta == 0.20 (scope bonus on same) + 0.35 (mismatch penalty on cross) = 0.55
     delta = same_act - cross_act
-    assert delta > 0.35, f"Expected delta > 0.35, got {delta:.3f}"
+    assert delta == pytest.approx(0.55, abs=1e-6), f"Expected delta == 0.55, got {delta:.3f}"
 
 
 def test_scope_mismatch_penalty_stage2_reduced() -> None:
@@ -779,6 +788,80 @@ def test_noise_penalty_reduces_activation() -> None:
     noisy_act = next((i.activation for i in state.items if i.schema.id == 2), 0)
 
     assert noisy_act < clean_act, f"Noisy ({noisy_act:.3f}) should < clean ({clean_act:.3f})"
+
+
+def test_noise_by_scope_penalizes_when_scope_matches() -> None:
+    """context_noise_by_scope, when present, is read for the cue's own scope
+    (same magnitude as the flat context_noise_score fallback path above)."""
+    dim = 8
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(query="task", scope="project:alpha")
+    cue_emb = _make_unit(dim, seed=1)
+
+    clean = _stub_schema(1, text="Clean fact", embedding=_make_unit(dim, seed=10))
+    noisy = _stub_schema(
+        2,
+        text="Noisy fact",
+        embedding=_make_unit(dim, seed=10),
+        facets_extra={
+            "context_noise_score": 0.8,
+            "context_noise_by_scope": {"project:alpha": 0.8, "project:other": 0.0},
+        },
+    )
+
+    state = gate.select([clean, noisy], cue=cue, cue_embedding=cue_emb)
+    clean_act = next((i.activation for i in state.items if i.schema.id == 1), 0)
+    noisy_act = next((i.activation for i in state.items if i.schema.id == 2), 0)
+
+    assert noisy_act < clean_act, f"Noisy ({noisy_act:.3f}) should < clean ({clean_act:.3f})"
+
+
+def test_noise_by_scope_does_not_penalize_a_different_scope() -> None:
+    """WP-7 (option 1, additive scoping fix): rejections recorded under one
+    scope must not penalize ranking of the same memory when retrieved from a
+    scope that never rejected it -- even though the schema-global
+    context_noise_score aggregate looks noisy.
+
+    Compares the *same* schema's computed activation across two different
+    cue scopes via activation_trace. `scope_id=None` (a "global" schema)
+    keeps the scope-match bonus and cross-scope-mismatch penalty identical
+    (both are no-ops for a scope-less schema) across the two queries, so the
+    only term that can differ between them is the noise-by-scope lookup
+    itself."""
+    dim = 8
+    gate = WorkingMemoryGate()
+    cue_emb = _make_unit(dim, seed=1)
+    embedding = _make_unit(dim, seed=10)
+
+    rejected_in_beta_only = _stub_schema(
+        2,
+        text="Rejected in a different scope",
+        embedding=embedding,
+        scope_id=None,
+        facets_extra={
+            "context_noise_score": 0.9,  # global aggregate suggests heavy noise...
+            "context_noise_by_scope": {
+                "project:beta": 0.9
+            },  # ...but all of it is from project:beta
+        },
+    )
+
+    def _activation_for(cue: MemoryCue) -> float:
+        state = gate.select([rejected_in_beta_only], cue=cue, cue_embedding=cue_emb)
+        trace = next(t for t in state.activation_trace if t.schema_id == 2)
+        return trace.activation
+
+    act_in_alpha = _activation_for(MemoryCue(query="task", scope="project:alpha"))
+    act_in_beta = _activation_for(MemoryCue(query="task", scope="project:beta"))
+
+    # No noise recorded for project:alpha -> full activation. All of the
+    # noise history is under project:beta -> exactly the -0.30*0.9 penalty
+    # applied there, nothing more (scope bonus/mismatch are both no-ops for
+    # a scope_id=None schema, so this delta isolates the noise term alone).
+    assert act_in_alpha - act_in_beta == pytest.approx(0.30 * 0.9, abs=1e-6), (
+        f"noise recorded under project:beta must not reduce project:alpha ranking "
+        f"(alpha={act_in_alpha:.4f}, beta={act_in_beta:.4f})"
+    )
 
 
 # ── 14. Exploration slots ─────────────────────────────────────────────────

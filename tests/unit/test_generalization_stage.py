@@ -19,6 +19,7 @@ import time
 import pytest
 
 from slowave.core.context import GatePolicy, MemoryCue, WorkingMemoryGate
+from slowave.core.services.consolidation import ConsolidationService
 from slowave.storage.sqlite_db import SQLiteConfig, SQLiteDB
 from slowave.symbolic.schema_store import (
     GeneralizationConfig,
@@ -253,6 +254,68 @@ class TestGeneralizationConfig:
 
 
 # ---------------------------------------------------------------------------
+# 2b. GeneralizationConfig.compute_stage — adaptive scope-count floor (2026-07-23)
+#
+# stageN_min_distinct_scopes (2/4/8) is a fixed constant, unreachable for a
+# user with fewer total scopes than that constant -- a fact confirmed in 100%
+# of a 3-scope universe could never clear stage 2's floor of 4. Passing
+# total_active_scopes caps each floor at min(total_active_scopes, fixed_floor).
+# Omitting it (None) preserves the old fixed-floor behavior exactly -- see
+# private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md
+# for the full derivation and worked examples.
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveScopeFloor:
+    def setup_method(self):
+        self.cfg = GeneralizationConfig()
+
+    def test_omitting_total_active_scopes_keeps_old_fixed_floor(self):
+        # 2 distinct scopes, 100% breadth, 5 sessions -- breadth/sessions
+        # alone would qualify for stage 3, but the fixed floor of 8 blocks
+        # it when total_active_scopes isn't passed, same as before this fix.
+        assert self.cfg.compute_stage(2, 1, 1.0, distinct_sessions=5) == 1
+
+    def test_three_total_scopes_two_confirmed_reaches_stage1_not_stage2(self):
+        # N=3: stage1 floor caps to min(3,2)=2 (reachable); stage2 floor
+        # caps to min(3,4)=3 (NOT reachable with only 2 confirmed scopes).
+        assert self.cfg.compute_stage(2, 1, 2 / 3, distinct_sessions=2, total_active_scopes=3) == 1
+
+    def test_three_total_scopes_all_confirmed_reaches_stage3(self):
+        # N=3, all 3 scopes confirmed, 5 sessions: every floor caps to 3,
+        # all satisfied at distinct_scopes=3 -> jumps straight to stage 3.
+        assert self.cfg.compute_stage(3, 1, 1.0, distinct_sessions=5, total_active_scopes=3) == 3
+
+    def test_cold_start_single_scope_session_floor_still_gates(self):
+        # N=1: every scope floor caps to 1 (trivially satisfied), but the
+        # session floor (2/3/5) does NOT scale with N -- only 1 session
+        # means stage 0 despite scope math clearing everything.
+        assert self.cfg.compute_stage(1, 1, 1.0, distinct_sessions=1, total_active_scopes=1) == 0
+
+    def test_cold_start_single_scope_five_sessions_reaches_stage3(self):
+        # N=1, same schema, but now 5 distinct sessions of repeated
+        # confirmation within that one scope -- clears every floor.
+        assert self.cfg.compute_stage(1, 1, 1.0, distinct_sessions=5, total_active_scopes=1) == 3
+
+    def test_two_total_scopes_two_sessions_reaches_stage1_only(self):
+        # N=2: scope floors all cap to 2 (trivially satisfied by confirming
+        # both), but stage 2 needs 3 sessions and stage 3 needs 5 -- with
+        # only 2 sessions of evidence, the session floor caps this at stage 1.
+        assert self.cfg.compute_stage(2, 1, 1.0, distinct_sessions=2, total_active_scopes=2) == 1
+
+    def test_two_total_scopes_five_sessions_reaches_stage3(self):
+        assert self.cfg.compute_stage(2, 1, 1.0, distinct_sessions=5, total_active_scopes=2) == 3
+
+    def test_large_total_scopes_behaves_identically_to_fixed_floor(self):
+        # N=20 >= the largest fixed floor (8), so capping is a no-op --
+        # same result with or without total_active_scopes.
+        args = (8, 4, 0.80)
+        assert self.cfg.compute_stage(*args, distinct_sessions=5) == self.cfg.compute_stage(
+            *args, distinct_sessions=5, total_active_scopes=20
+        )
+
+
+# ---------------------------------------------------------------------------
 # 3. SchemaStore: generalization_stage written to DB on reinforce
 # ---------------------------------------------------------------------------
 
@@ -449,10 +512,10 @@ class TestWorkingMemoryGateGeneralization:
         schema_s0 = Schema(**{**schema_s0.__dict__, "id": 1})
         schema_s2 = Schema(**{**schema_s2.__dict__, "id": 2})
 
-        _act0, _r0 = self.gate._activation(
+        _act0, _r0, _rel0 = self.gate._activation(
             schema_s0, cue=cue_with_embedding, cue_terms=set(), cue_embedding=None
         )
-        _act2, _r2 = self.gate._activation(
+        _act2, _r2, _rel2 = self.gate._activation(
             schema_s2, cue=cue_with_embedding, cue_terms=set(), cue_embedding=None
         )
         # stage 2 should score higher (less penalty) than stage 0
@@ -463,7 +526,7 @@ class TestWorkingMemoryGateGeneralization:
         """Stage 3 schema gets no scope_mismatch at all."""
         cue = MemoryCue(scope="project:bar", mode="strict_scope")
         schema_s3 = _schema_obj(scope_id="project:foo", gen_stage=3)
-        _act, reason = self.gate._activation(
+        _act, reason, _rel = self.gate._activation(
             schema_s3, cue=cue, cue_terms=set(), cue_embedding=None
         )
         assert "scope_mismatch" not in reason
@@ -851,3 +914,120 @@ class TestFTSVsPromotedEmbeddingScore:
         assert (
             "schema_scores[_sid] = max(schema_scores.get(_sid" in src
         ), "Expected 'schema_scores[_sid] = max(schema_scores.get(_sid, ...), _score)' not found"
+
+
+# ---------------------------------------------------------------------------
+# 6. ConsolidationService._refresh_generalization (2026-07-23): recompute
+# generalization_stage during consolidation instead of only reactively from
+# feedback.py. Incremental tier (schemas with new evidence since last worker
+# run) fixes "stale-low"; the rarer full sweep fixes "stale-high" (a schema's
+# cached stage drifting from a since-grown/shrunk total_active_scopes
+# denominator, with nothing schema-local to trigger a recompute).
+# ---------------------------------------------------------------------------
+
+
+def _make_consolidation_service(
+    db: SQLiteDB, schemas: SchemaStore, **kwargs
+) -> ConsolidationService:
+    """Minimal ConsolidationService for testing _refresh_generalization in
+    isolation -- replay_engine/consolidator/ingest are unused by that method."""
+    return ConsolidationService(
+        db=db,
+        replay_engine=None,
+        consolidator=None,
+        schemas=schemas,
+        ingest=None,
+        **kwargs,
+    )
+
+
+class TestRefreshGeneralizationIncremental:
+    def test_incremental_pass_refreshes_schema_with_new_evidence(self):
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        sid = _make_schema(db, scope_id="project:home")
+
+        _insert_session(db, "sess-1", scope_id="project:other")
+        raw_id = _insert_raw_event(db, "sess-1")
+        _insert_schema_evidence(db, sid, episode_id=None, raw_event_id=raw_id)
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=999999.0)
+        conn = db.connect()
+        result = svc._refresh_generalization(conn, int(time.time()))
+
+        assert result["incremental_refreshed"] >= 1
+        schema = store.get(sid)
+        assert schema.facets.get("distinct_scope_count", 0) >= 1
+
+    def test_incremental_pass_ignores_untouched_schema(self):
+        """A schema with no new recall/evidence activity shouldn't be counted
+        as refreshed by the incremental tier."""
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        _make_schema(db, scope_id="project:home")  # no evidence seeded at all
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=999999.0)
+        conn = db.connect()
+        result = svc._refresh_generalization(conn, int(time.time()))
+
+        assert result["incremental_refreshed"] == 0
+
+
+class TestRefreshGeneralizationFullSweep:
+    def test_full_sweep_runs_on_first_call(self):
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        _make_schema(db)
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=86400.0)
+        conn = db.connect()
+        result = svc._refresh_generalization(conn, int(time.time()))
+        assert result["full_swept"] >= 1
+
+    def test_full_sweep_does_not_rerun_within_interval(self):
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        _make_schema(db)
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=86400.0)
+        conn = db.connect()
+        now = int(time.time())
+        first = svc._refresh_generalization(conn, now)
+        second = svc._refresh_generalization(conn, now + 10)  # 10s later, well under 1 day
+        assert first["full_swept"] >= 1
+        assert second["full_swept"] == 0
+
+    def test_full_sweep_reruns_after_interval_elapses(self):
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        _make_schema(db)
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=100.0)
+        conn = db.connect()
+        now = int(time.time())
+        first = svc._refresh_generalization(conn, now)
+        second = svc._refresh_generalization(conn, now + 200)  # past the 100s interval
+        assert first["full_swept"] >= 1
+        assert second["full_swept"] >= 1
+
+    def test_full_sweep_corrects_stale_high_stage(self):
+        """The motivating scenario: a schema cached at stage 2 (as if promoted
+        when total_active_scopes was small) with zero real cross-scope
+        evidence must be demoted back down once the full sweep recomputes it
+        against the current (real) evidence -- nothing schema-local would
+        otherwise trigger that recompute."""
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        sid = _make_schema(db, scope_id="project:home", gen_stage=2)
+        reg = ScopeRegistry(db)
+        reg.record("project:home", "project")
+
+        assert store.get(sid).generalization_stage == 2  # stale, artificially set
+
+        svc = _make_consolidation_service(db, store, full_sweep_interval_s=0.0)
+        conn = db.connect()
+        svc._refresh_generalization(conn, int(time.time()))
+
+        # Zero cross-scope evidence exists -> a real recompute must not leave
+        # this at stage 2.
+        assert store.get(sid).generalization_stage == 0

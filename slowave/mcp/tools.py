@@ -7,6 +7,11 @@ duplication of tool logic.
 
 Tools registered (5 cognitive-cycle verbs + 1 ops tool):
   activate, remember, recall, reinforce, commit, stats
+
+remember and reinforce each also accept an optional `items` list for
+batching several calls into one round trip (see their docstrings) — this
+does not add new tool names, just an alternate parameter shape on the
+existing two.
 """
 
 from __future__ import annotations
@@ -97,6 +102,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         entities: list[str] | None = None,
         mode: str = "strict_scope",
         limit: int = 8,
+        include_peripheral: bool = True,
+        include_schemas: bool = True,
     ) -> dict[str, Any]:
         """Prime working memory with relevant context. Opens an implicit session.
 
@@ -122,12 +129,17 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                   When scope is set, strict_scope hard-isolates to that scope (+ global/profile).
                   When scope is None, strict_scope is equivalent to default — no behaviour change.
             limit: max schemas returned (default 8).
+            include_peripheral: set False to drop the trailing salience-filled
+                   "exploration slots" (tagged "(peripheral)") from the brief.
+            include_schemas: set False to omit the structured `schemas` array
+                   and return only `rendered` — cheaper if you only read the prose.
 
         Returns:
             retrieval_id: pass to slowave_reinforce.
             session_id: informational; used automatically by remember/commit.
             rendered: human-readable memory brief.
-            schemas: [{id, text, activation, reason, source_kind}, ...].
+            schemas: [{id, text, activation, reason, source_kind}, ...] (omitted
+                     when include_schemas=False).
         """
         try:
             eng = build_engine(disable_encoder=not bool(query or topics or entities))
@@ -147,6 +159,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 limit=limit,
                 session_id=sid,
                 agent="mcp",
+                include_peripheral=include_peripheral,
+                include_schemas=include_schemas,
             )
             session_resolver.bind(scope, result["session_id"])
             # MCP-specific: add cold-start hint text and fire a synthetic event.
@@ -200,6 +214,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         evidence: bool = False,
         scope: str | None = None,
         mode: str = "default",
+        min_relevance: float | None = None,
     ) -> dict[str, Any]:
         """Semantic retrieval: bring relevant memories into working memory.
         Use for deliberate mid-task lookups when you need specific historical
@@ -213,18 +228,27 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             scope: optional scope filter (e.g. \"project:myrepo\"). Recommended.
             mode: \"default\" (active only), \"strict_scope\" (scope-hard-filtered),
                   \"broad\" (active + needs_review), \"debug\" (all statuses).
+            min_relevance: optional relevance floor override. Omit to use the
+                built-in default (rejects near-noise matches instead of always
+                returning top_k); pass 0.0 to disable the floor for this call.
         Returns:
             retrieval_id: pass to slowave_reinforce after using memories.
             memories: list of {id, content_text, activation, scope_id, ...}.
-            related_memories: schema_relations-linked memories (e.g. part_of a
-                broader memory in `memories`) surfaced via spreading activation,
-                NOT counted toward top_k -- worth a glance but not guaranteed
-                to directly match the query the way `memories` does.
+            related_memories: schema_relations-linked memories (relates_to a
+                memory in `memories`) surfaced via spreading activation, NOT
+                counted toward top_k -- worth a glance but not guaranteed to
+                directly match the query the way `memories` does.
         """
         try:
             eng = build_engine()
             return ops.recall(
-                eng, query=query, top_k=top_k, evidence=evidence, scope=scope, mode=mode
+                eng,
+                query=query,
+                top_k=top_k,
+                evidence=evidence,
+                scope=scope,
+                mode=mode,
+                min_relevance=min_relevance,
             )
         except Exception as e:
             log.error("slowave_recall failed: %s", e, exc_info=True)
@@ -232,29 +256,60 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_remember")
     async def slowave_remember(
-        content: str,
+        content: str | None = None,
         type: str = "decision",
         scope: str | None = None,
         session_id: str | None = None,
+        items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Explicitly encode a durable typed claim into long-term memory.
         Use for decisions, preferences, constraints, lessons, or any fact that
         should persist across sessions. If called after slowave_activate without
         a session_id, the implicit session is used automatically.
         Args:
-            content: the claim, as a complete sentence.
+            content: the claim, as a complete sentence. Omit when passing `items`.
             type: fact|preference|decision|constraint|procedure|task|
                   open_question|warning|lesson|artifact.
             scope: optional scope, e.g. \"project:my-repo\".
             session_id: optional; inferred from activate's implicit session if omitted.
+            items: optional list of {content, type, scope, session_id} for encoding
+                   several already-decided facts in one round trip (session-end/
+                   retroactive cleanup only — each item is still embedded
+                   independently, the "one fact per call" rule still applies per
+                   item, this is a transport optimization not a way to bundle
+                   facts into one embedding). When given, `content`/`type`/`scope`/
+                   `session_id` above are ignored and the return shape is
+                   {"results": [...]} instead of the single-item shape below.
         IMPORTANT: Use ONLY for durable knowledge that should persist across sessions.
         Do NOT store ephemeral task state — that belongs in session events.
         """
+        eng = build_engine()
+        if items is not None:
+            results: list[dict[str, Any]] = []
+            for item in items:
+                item_type = item.get("type", "decision")
+                item_scope = item.get("scope")
+                try:
+                    resolved_sid = item.get("session_id") or session_resolver.resolve(item_scope)
+                    results.append(
+                        ops.remember(
+                            eng,
+                            content=item.get("content", ""),
+                            memory_type=item_type,
+                            scope=item_scope,
+                            session_id=resolved_sid,
+                        )
+                    )
+                except Exception as e:
+                    log.error("slowave_remember (batch item) failed: %s", e, exc_info=True)
+                    results.append(
+                        {"stored": False, "error": str(e), "type": item_type, "scope": item_scope}
+                    )
+            return {"results": results}
         try:
-            eng = build_engine()
             resolved_sid = session_id or session_resolver.resolve(scope)
             return ops.remember(
-                eng, content=content, memory_type=type, scope=scope, session_id=resolved_sid
+                eng, content=content or "", memory_type=type, scope=scope, session_id=resolved_sid
             )
         except Exception as e:
             log.error("slowave_remember failed: %s", e, exc_info=True)
@@ -262,13 +317,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_reinforce")
     async def slowave_reinforce(
-        retrieval_id: str,
-        feedback: str,
+        retrieval_id: str | None = None,
+        feedback: str = "useful",
         outcome: str = "unknown",
         used_memory_ids: list[str] | None = None,
         irrelevant_memory_ids: list[str] | None = None,
         stale_memory_ids: list[str] | None = None,
         wrong_memory_ids: list[str] | None = None,
+        items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Strengthen or suppress memories based on how useful they were.
         Call after using memories from slowave_activate or slowave_recall.
@@ -278,16 +334,46 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         Outcome:  success|partial|failure|unknown
         Args:
             retrieval_id: from slowave_activate or slowave_recall response.
+                          Omit when passing `items`.
             feedback: quality label for the retrieved memories.
             outcome: result of the downstream task.
             used_memory_ids: schema IDs that were actually relied on.
             irrelevant/stale/wrong_memory_ids: IDs needing penalty or review.
+            items: optional list of {retrieval_id, feedback, outcome,
+                   used_memory_ids, irrelevant_memory_ids, stale_memory_ids,
+                   wrong_memory_ids} for reinforcing several retrievals in one
+                   round trip (session-end/retroactive cleanup — e.g. patching
+                   several retrievals you deferred reinforcing during a long
+                   session). When given, the flat args above are ignored and
+                   the return shape is {"results": [...]} instead of the
+                   single-item shape below.
         """
+        eng = build_engine(disable_encoder=True)
+        if items is not None:
+            results: list[dict[str, Any]] = []
+            for item in items:
+                item_rid = item.get("retrieval_id", "")
+                try:
+                    results.append(
+                        ops.reinforce(
+                            eng,
+                            retrieval_id=item_rid,
+                            feedback=item.get("feedback", "useful"),
+                            outcome=item.get("outcome", "unknown"),
+                            used_memory_ids=item.get("used_memory_ids"),
+                            irrelevant_memory_ids=item.get("irrelevant_memory_ids"),
+                            stale_memory_ids=item.get("stale_memory_ids"),
+                            wrong_memory_ids=item.get("wrong_memory_ids"),
+                        )
+                    )
+                except Exception as e:
+                    log.error("slowave_reinforce (batch item) failed: %s", e, exc_info=True)
+                    results.append({"error": str(e), "retrieval_id": item_rid})
+            return {"results": results}
         try:
-            eng = build_engine(disable_encoder=True)
             return ops.reinforce(
                 eng,
-                retrieval_id=retrieval_id,
+                retrieval_id=retrieval_id or "",
                 feedback=feedback,
                 outcome=outcome,
                 used_memory_ids=used_memory_ids,
@@ -304,17 +390,28 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         outcome: str | None = None,
         scope: str | None = None,
         session_id: str | None = None,
+        steps: list[str] | None = None,
     ) -> dict[str, Any]:
         """Close the current task and trigger offline memory consolidation.
+
         Call at the end of every task. If skipped, the idle-session reaper closes
         the session after SLOWAVE_SESSION_IDLE_TIMEOUT seconds (default 3600).
         Args:
             outcome: task result — success|partial|failure|unknown.
             scope: scope used in activate (clears the implicit session binding).
             session_id: from activate response; inferred from scope if omitted.
+            steps: ordered list of what you did this session. Each step is one
+                   sentence describing a meaningful phase of work, e.g.
+                   ["Ran full test suite (142 passed)",
+                    "Built and pushed Docker image",
+                    "Deployed to staging and health-checked"].
+                   This is how Slowave learns procedural patterns — be honest
+                   and complete, but keep each step to one sentence.
         Returns:
             session_id: the session that was closed.
             episodes_formed: number of episodic memories created.
+            session_note: present when the session had several tool-use events
+                but never called slowave_recall — informational, not a gate.
         """
         try:
             eng = build_engine(disable_encoder=True)
@@ -330,7 +427,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 _bg_log_event(eng, resolved_sid, "task_complete", f"outcome={outcome_str}")
             )
             await asyncio.sleep(0.05)
-            result = ops.commit(eng, session_id=resolved_sid, outcome=outcome_str)
+            result = ops.commit(eng, session_id=resolved_sid, outcome=outcome_str, steps=steps)
             session_resolver.clear(scope)
             return result
         except Exception as e:

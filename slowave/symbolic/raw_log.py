@@ -157,6 +157,22 @@ class RawLog:
         ).fetchone()
         return row is not None
 
+    def is_session_ended(self, session_id: str) -> bool:
+        """Return True if this session already has an ended_ts recorded.
+
+        Used by SlowaveEngine.session_end() to guard against re-forming
+        episodes for a session that was already closed (e.g. the idle-session
+        reaper ends it, and the client later calls commit() on the same
+        session_id) -- without this check, form_episodes() would reprocess
+        every raw event from scratch and insert duplicate episode rows.
+        """
+        conn = self.db.connect()
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND ended_ts IS NOT NULL LIMIT 1",
+            (str(session_id),),
+        ).fetchone()
+        return row is not None
+
     def start_session(
         self,
         *,
@@ -166,10 +182,12 @@ class RawLog:
         scope_kind: str | None = None,
         ts: int | None = None,
         goal: str | None = None,
+        lifecycle_version: str | None = None,
     ) -> None:
         conn = self.db.connect()
         conn.execute(
-            "INSERT INTO sessions (id, agent, scope_id, scope_kind, started_ts, goal) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, agent, scope_id, scope_kind, started_ts, goal, lifecycle_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 str(session_id),
                 str(agent),
@@ -177,6 +195,7 @@ class RawLog:
                 scope_kind,
                 int(ts) if ts is not None else int(time.time()),
                 goal,
+                lifecycle_version,
             ),
         )
         conn.commit()

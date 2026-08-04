@@ -53,19 +53,16 @@ class ConsolidationStats:
     schemas_reinforced: int
     schemas_contradicted: int
     schemas_skipped: int
-    # Diagnostics (plans/05-consolidation.md Phase 4). verdict_counts keys:
-    # "no_candidate" (Phase 3b found nothing to compare against), "missing_embedding"
+    # Diagnostics. verdict_counts keys:
+    # "no_candidate" (nothing to compare against), "missing_embedding"
     # (related schema found but its stored embedding is unreadable), and the
-    # GeometricContradictionJudge verdicts ("unrelated", "part_of", "supersedes",
-    # "refines", "reinforces", "relates_to" -- "supersedes" counts every judge
-    # call that said supersedes, even if a gate below downgraded the outcome to
-    # reinforcement).
+    # GeometricContradictionJudge verdicts ("unrelated", "relates_to" --
+    # "relates_to" counts every judge call that cleared the same-topic floor).
     verdict_counts: dict[str, int] = field(default_factory=dict)
-    # Prototypes absorbed by the >=0.92 near-duplicate guard before the
-    # geometric judge was ever reached (Phase 3a).
+    # Prototypes absorbed by the >=0.92 near-duplicate guard.
     near_dup_intercepts: int = 0
-    # Of judge verdicts "supersedes", how many were downgraded to reinforcement
-    # by each supersession gate (Phase 4 Step 4).
+    # Of judge verdicts "relates_to", how many triggered metadata-gated
+    # supersession vs stayed as plain reinforcement.
     gate_downgrades: dict[str, int] = field(default_factory=dict)
     # Per-prototype LatentSchemaBuilder confidence values, for calibration checks
     # against variance_floor (Q5).
@@ -146,9 +143,6 @@ class Consolidator:
                 "no_candidate": 0,
                 "missing_embedding": 0,
                 "unrelated": 0,
-                "part_of": 0,
-                "refines": 0,
-                "supersedes": 0,
                 "relates_to": 0,
             },
             "near_dup_intercepts": 0,
@@ -433,8 +427,10 @@ class Consolidator:
         verdict = self.geometric_judge.judge(old=old_view, new=schema)
 
         if verdict.verdict == "relates_to":
-            # Cleared the same-topic floor but nothing more specific applies
-            # (no facet signal, or facets agree with no directional signal).
+            # Cleared the same-topic floor. Cosine alone cannot distinguish
+            # value-substitution from elaboration from restatement (per
+            # 2026-07-22 semantic-relations findings), so the honest
+            # verdict is the same for all same-topic pairs.
             if diag is not None:
                 diag.setdefault("verdict_counts", {}).setdefault("relates_to", 0)
                 diag["verdict_counts"]["relates_to"] += 1
@@ -461,95 +457,21 @@ class Consolidator:
                     self.schemas.increment_cross_scope_reinforcement(related.id)
                 except Exception:
                     pass
+            # Status transition: when cosine is very high and metadata
+            # confirms this is a genuine update (enough support, meaningful
+            # time gap), mark the older schema superseded/contradicted.
+            # Previously this was gated on a `supersedes` verdict from
+            # direction_score; now it's gated on the same non-geometric
+            # signals (support + recency) that the old code already checked
+            # AFTER the verdict, just triggered from relates_to instead.
+            if verdict.similarity >= 0.90:
+                min_support = getattr(self.geometric_judge.cfg, "min_support_to_supersede", 2)
+                min_dt = getattr(self.geometric_judge.cfg, "min_time_delta_to_supersede_s", 3600.0)
+                if schema.support_count >= min_support and not (0 < verdict.time_delta_s < min_dt):
+                    old_status = "contradicted" if verdict.time_delta_s <= 0 else "superseded"
+                    self.schemas.update_status(related.id, status=old_status, salience=0.05)
+                    return "contradicted", new_schema_id
             return "reinforced", new_schema_id
-        if verdict.verdict == "refines":
-            if diag is not None:
-                diag["verdict_counts"]["refines"] += 1
-            try:
-                self.schemas.add_relation(
-                    src_schema_id=new_schema_id,
-                    dst_schema_id=related.id,
-                    relation="refines",
-                    confidence=schema.confidence,
-                    reason=f"geometric judge: cos={verdict.similarity:.3f} facet_dist={verdict.facet_distance:.3f}",
-                )
-            except ValueError as e:
-                # Reverse "refines" edge already exists for this pair (see
-                # add_relation's directional-relation guard) -- a rare
-                # modeling inconsistency, not worth losing this whole
-                # consolidation pass over.
-                log.warning("consolidation: refusing inconsistent refines edge: %s", e)
-            return "reinforced", new_schema_id
-        if verdict.verdict == "part_of":
-            if diag is not None:
-                diag["verdict_counts"]["part_of"] += 1
-            # Direction follows containment, not the new/old convention
-            # reinforces/refines use: contains_direction tells us which side
-            # is the contained sub-component (src) vs the container (dst),
-            # per dashboard/_js.py's documented part_of convention -- that
-            # need not be the newly-formed schema.
-            if verdict.contains_direction == "old_within_new":
-                src_id, dst_id = related.id, new_schema_id
-            else:
-                src_id, dst_id = new_schema_id, related.id
-            try:
-                self.schemas.add_relation(
-                    src_schema_id=src_id,
-                    dst_schema_id=dst_id,
-                    relation="part_of",
-                    confidence=schema.confidence,
-                    reason=f"geometric judge: cos={verdict.similarity:.3f}",
-                )
-            except ValueError as e:
-                log.warning("consolidation: refusing inconsistent part_of edge: %s", e)
-            return "reinforced", new_schema_id
-        if verdict.verdict == "supersedes":
-            if diag is not None:
-                diag["verdict_counts"]["supersedes"] += 1
-            # Gate: only supersede when the new schema has enough support
-            # AND sufficient temporal distance from the old one.
-            # A single episode or a near-simultaneous direction_score hit
-            # should not bury a well-established schema -- the same
-            # caution this gate already applied when "supersedes" could
-            # only be reached via facet_distance (now via direction_score
-            # instead, per GeometricContradictionJudge.judge()).
-            min_support = getattr(self.geometric_judge.cfg, "min_support_to_supersede", 2)
-            if schema.support_count < min_support:
-                if diag is not None:
-                    diag["gate_downgrades"]["support_gate"] += 1
-                return "reinforced", new_schema_id
-
-            min_dt = getattr(self.geometric_judge.cfg, "min_time_delta_to_supersede_s", 3600.0)
-            if 0 < verdict.time_delta_s < min_dt:
-                if diag is not None:
-                    diag["gate_downgrades"]["recency_gate"] += 1
-                return "reinforced", new_schema_id
-
-            # A same-instant tie (both schemas formed at ~the same time) is a
-            # genuine simultaneous clash rather than an ordinary update, and
-            # is distinguished at the *status* level -- real, independently
-            # meaningful information consumed by belief-revision damping,
-            # even though the relation edge itself is "supersedes" either way.
-            old_status = "contradicted" if verdict.time_delta_s <= 0 else "superseded"
-            # Transition the old schema out of active so belief-revision
-            # silencing in _schema_priors() actually fires at recall time.
-            # Without this call the relation edge exists but status stays
-            # "active" and the damping factor is never applied.
-            self.schemas.update_status(related.id, status=old_status, salience=0.05)
-            try:
-                self.schemas.add_relation(
-                    src_schema_id=new_schema_id,
-                    dst_schema_id=related.id,
-                    relation="supersedes",
-                    confidence=max(schema.confidence, 0.5),
-                    reason=(
-                        f"geometric judge: cos={verdict.similarity:.3f} "
-                        f"facet_dist={verdict.facet_distance:.3f} dt={verdict.time_delta_s}s"
-                    ),
-                )
-            except ValueError as e:
-                log.warning("consolidation: refusing inconsistent supersedes edge: %s", e)
-            return "contradicted", new_schema_id
         # unrelated
         if diag is not None:
             diag["verdict_counts"]["unrelated"] += 1
@@ -668,16 +590,15 @@ class Consolidator:
         on a later pass since the flag persists until resolved.
 
         Direction note: GeometricContradictionJudge.judge()'s `old`/`new`
-        argument slots are NOT symmetric — on a "supersedes" verdict, the
-        caller (by convention, see _write_latent_schema) always demotes
-        whichever schema was passed as `old`, regardless of the verdict's
-        time_delta_s sign (that sign only picks the resulting status,
-        "superseded" vs "contradicted", not the relation label -- both are
-        "supersedes"). So which schema goes in which slot must be decided
-        by actual chronology (last_updated_ts) before calling the judge —
-        always passing the labile schema as `new` would silently bias every
-        supersession in its favor purely because of which slot it occupies,
-        regardless of which side the evidence actually favors.
+        argument slots are NOT symmetric — which schema goes in which slot
+        must be decided by actual chronology (last_updated_ts) before calling
+        the judge. Always passing the labile schema as `new` would silently
+        bias supersession in its favor purely because of which slot it
+        occupies, regardless of which side the evidence actually favors.
+        With the 2026-07-22 taxonomy collapse, the judge no longer returns
+        "supersedes" — supersession is metadata-gated at the relates_to
+        block below. The slot assignment still matters: it determines which
+        schema's support/time_delta are checked against the gate thresholds.
         """
         related_cosine = getattr(self.geometric_judge.cfg, "related_schema_cosine", 0.72)
         min_support = getattr(self.geometric_judge.cfg, "min_support_to_supersede", 2)
@@ -731,53 +652,50 @@ class Consolidator:
             old_view = self._schema_to_latent_view(old_side)
             verdict = self.geometric_judge.judge(old=old_view, new=new_view)
 
-            if verdict.verdict in ("refines", "unrelated", "part_of", "relates_to"):
-                # Replay found no conflict with the neighbor closest to it —
-                # restabilize. part_of/relates_to are associative/hierarchical
-                # signals, not contradictions, so they resolve the same way
-                # reinforces/refines do; only "supersedes" (a genuine value
-                # substitution, see GeometricContradictionJudge.judge()) is
-                # worth the caution gates below.
+            if verdict.verdict == "unrelated":
+                # The nearest neighbor doesn't clear the same-topic floor --
+                # no genuine conflict to resolve. Restabilize (the labile
+                # flag was a false alarm).
                 self.schemas.adjust_feedback_state(schema.id, is_labile=False)
                 stats["restabilized"] += 1
                 continue
 
-            # verdict.verdict == "supersedes" — apply the same caution gates
-            # the fresh-schema path uses before acting on it.
-            new_support = len(new_side.supporting_episode_ids or [])
-            if new_support < min_support or (0 < verdict.time_delta_s < min_dt):
-                stats["inconclusive"] += 1
-                continue
+            # Non-unrelated: the pair is about the same topic. Check if
+            # this should trigger a status transition (supersession).
+            # Previously gated on a `supersedes` verdict from direction_score;
+            # now gated on cosine similarity + metadata (support + recency),
+            # the same non-geometric signals the old code already checked
+            # AFTER the verdict.
+            if verdict.similarity >= 0.90:
+                new_support = len(new_side.supporting_episode_ids or [])
+                if new_support >= min_support and not (0 < verdict.time_delta_s < min_dt):
+                    is_tie = verdict.time_delta_s <= 0
+                    loser_status = "contradicted" if is_tie else "superseded"
+                    self.schemas.update_status(old_side.id, status=loser_status, salience=0.05)
+                    try:
+                        self.schemas.add_relation(
+                            src_schema_id=new_side.id,
+                            dst_schema_id=old_side.id,
+                            relation="relates_to",
+                            confidence=max(new_side.confidence, 0.5),
+                            reason=(
+                                f"reconsolidation: cos={verdict.similarity:.3f} "
+                                f"facet_dist={verdict.facet_distance:.3f} dt={verdict.time_delta_s}s"
+                            ),
+                        )
+                    except ValueError as e:
+                        log.warning("reconsolidation: refusing inconsistent relates_to edge: %s", e)
+                    self.schemas.adjust_feedback_state(schema.id, is_labile=False)
+                    if is_tie:
+                        stats["contradicted"] += 1
+                    else:
+                        stats["superseded"] += 1
+                    continue
 
-            # See _write_latent_schema's identical comment: the tie
-            # (time_delta_s<=0) still gets its own status so belief-revision
-            # damping can tell a same-instant clash apart from an ordinary
-            # update, even though the relation edge is "supersedes" either way.
-            is_tie = verdict.time_delta_s <= 0
-            loser_status = "contradicted" if is_tie else "superseded"
-            self.schemas.update_status(old_side.id, status=loser_status, salience=0.05)
-            try:
-                self.schemas.add_relation(
-                    src_schema_id=new_side.id,
-                    dst_schema_id=old_side.id,
-                    relation="supersedes",
-                    confidence=max(new_side.confidence, 0.5),
-                    reason=(
-                        f"reconsolidation: cos={verdict.similarity:.3f} "
-                        f"facet_dist={verdict.facet_distance:.3f} dt={verdict.time_delta_s}s"
-                    ),
-                )
-            except ValueError as e:
-                log.warning("reconsolidation: refusing inconsistent supersedes edge: %s", e)
-            # The labile schema under examination is now resolved either way
-            # (confirmed as the winner, or just demoted to a non-"active"
-            # status where is_labile no longer affects eligibility) — clear
-            # its flag for a clean state.
+            # Same topic but below the supersession cosine bar,
+            # or gates didn't clear -- no status change needed.
             self.schemas.adjust_feedback_state(schema.id, is_labile=False)
-            if is_tie:
-                stats["contradicted"] += 1
-            else:
-                stats["superseded"] += 1
+            stats["restabilized"] += 1
 
         return stats
 
@@ -873,12 +791,8 @@ class Consolidator:
 
         if verdict.verdict == "unrelated":
             return
-        # All directional verdicts (refines, supersedes, part_of) are
-        # downgraded to relates_to: this call site has no consolidation-time
-        # "which one is new" context to responsibly assert a directional
-        # claim. relates_to is the only non-unrelated verdict the judge
-        # returns for pre-existing pairs, and it's symmetric — canonicalize
-        # on schema id so the same pair never produces both A->B and B->A.
+        # relates_to is symmetric -- canonicalize on schema id so the same
+        # pair never produces both A->B and B->A.
         self.schemas.add_relation(
             src_schema_id=old_id,
             dst_schema_id=new_id,

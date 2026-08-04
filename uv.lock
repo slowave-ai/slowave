@@ -1966,7 +1966,7 @@ wheels = [
 
 [[package]]
 name = "slowave"
-version = "0.16.0"
+version = "0.14.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -2022,7 +2022,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'http'", specifier = ">=0.25" },
     { name = "huggingface-hub", specifier = ">=0.16" },
     { name = "isort", marker = "extra == 'dev'" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.0,<2.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime", specifier = ">=1.19" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },

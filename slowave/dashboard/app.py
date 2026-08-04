@@ -33,15 +33,14 @@ VALID_SCHEMA_STATUSES = (
 # site now writes "supersedes" for that case too), related_to was only add_relation()'s
 # own silent fallback for invalid input, never a real caller. "relates_to" (2026-07-15,
 # distinct spelling from the dead "related_to") was reintroduced as the taxonomy's
-# honest catch-all for "same topic, no stronger geometric signal applies" -- see
-# schema_store.py's VALID_RELATIONS comment. Kept in sync here since the dashboard is
-# a standalone stdlib server with its own copy of this list.
-VALID_SCHEMA_RELATIONS = (
-    "refines",
-    "supersedes",
-    "part_of",
-    "relates_to",
-)
+# honest catch-all for "same topic, no stronger geometric signal applies". "part_of"
+# (subspace containment) was removed 2026-07-23 after a hand-labeled audit of
+# production edges found ~11% precision -- see
+# private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md.
+# relates_to is now the only content-relation type -- see schema_store.py's
+# VALID_RELATIONS comment. Kept in sync here since the dashboard is a standalone
+# stdlib server with its own copy of this list.
+VALID_SCHEMA_RELATIONS = ("relates_to",)
 
 
 def run_dashboard(
@@ -137,6 +136,8 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_json(_generalization_payload(db_path))
                 elif path == "/api/episodes":
                     self._send_json(_episodes_payload(db_path, qs))
+                elif path == "/api/procedures":
+                    self._send_json(_procedures_payload(db_path, qs))
                 elif path == "/api/prototypes":
                     self._send_json(_prototypes_payload(db_path, qs))
                 elif path.startswith("/api/prototypes/") and path.endswith("/members"):
@@ -148,14 +149,19 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                 elif path.startswith("/api/events/"):
                     event_id = int(path.split("/")[-1])
                     self._send_json(_event_detail(db_path, event_id))
-                elif path == "/api/relations":
-                    self._send_json(_relations_payload(db_path, qs))
                 elif path == "/api/debug/graph":
                     self._send_json(_graph_health_payload(db_path))
                 else:
                     self._send_json(
                         {"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND
                     )
+            except ValueError as e:
+                # Malformed input (a non-numeric id/limit/offset in the path or
+                # query string) is a client error, not a server bug -- and
+                # str(ValueError) is already a clean message ("invalid literal
+                # for int() with base 10: 'abc'"), safe to return as-is (no
+                # traceback, unlike the bare `except Exception` below).
+                self._send_json({"error": f"invalid request: {e}"}, status=HTTPStatus.BAD_REQUEST)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -187,6 +193,8 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_json(
                         {"error": "not found", "path": path}, status=HTTPStatus.NOT_FOUND
                     )
+            except ValueError as e:
+                self._send_json({"error": f"invalid request: {e}"}, status=HTTPStatus.BAD_REQUEST)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -821,13 +829,15 @@ def _db_health(db_path: str) -> dict[str, Any]:
 
 
 def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
-    limit = max(1, min(500, int((qs.get("limit") or [100])[0])))
+    limit = max(1, min(500, _qs_int(qs, "limit", 100)))
     status = (qs.get("status") or [""])[0]
     scope = (qs.get("scope") or [""])[0]
     q = (qs.get("q") or [""])[0].strip().lower()
+    if status and status not in VALID_SCHEMA_STATUSES:
+        raise ValueError(f"unknown status filter: {status!r}")
     args: list[Any] = []
     sql = "SELECT * FROM schemas WHERE 1=1"
-    if status in VALID_SCHEMA_STATUSES:
+    if status:
         sql += " AND status = ?"
         args.append(status)
     if scope:
@@ -874,9 +884,13 @@ def _schema_graph_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, A
         limit = 120
     scope = (qs.get("scope") or [""])[0]
     statuses_raw = (qs.get("statuses") or ["active,needs_review,contradicted,superseded"])[0]
-    relations_raw = (qs.get("relations") or ["reinforces,refines,supersedes,part_of,relates_to"])[0]
+    relations_raw = (qs.get("relations") or ["relates_to"])[0]
     statuses = [s for s in statuses_raw.split(",") if s in VALID_SCHEMA_STATUSES]
-    relations = [r for r in relations_raw.split(",") if r in VALID_SCHEMA_RELATIONS]
+    relations = [
+        r
+        for r in relations_raw.split(",")
+        if r in VALID_SCHEMA_RELATIONS or r == "coactivated_with"
+    ]
     if not statuses:
         statuses = ["active", "needs_review"]
     min_salience = _optional_float((qs.get("min_salience") or [""])[0])
@@ -905,9 +919,9 @@ def _schema_graph_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, A
         proto_map = _prototype_map(conn, schema_ids)
         nodes = [_schema_row_to_node(r, proto_map.get(int(r["id"]), [])) for r in rows]
         edges: list[dict[str, Any]] = []
+        schema_id_set = set(schema_ids)
+        ph_ids = ",".join(["?"] * len(schema_ids))
         if schema_ids and relations:
-            schema_id_set = set(schema_ids)
-            ph_ids = ",".join(["?"] * len(schema_ids))
             ph_rel = ",".join(["?"] * len(relations))
             edge_rows = [
                 r
@@ -939,12 +953,55 @@ def _schema_graph_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, A
                         "created_ts": int(r["created_ts"]),
                     }
                 )
+        # Co-activation edges (Phase 2) — usage-based, queried separately from
+        # schema_relations because they live in their own table with a different
+        # lifecycle (Hebbian strengthen-and-decay, no confidence/reason fields).
+        if schema_ids:
+            try:
+                coact_rows = conn.execute(
+                    f"""
+                    SELECT src_schema_id, dst_schema_id, weight
+                    FROM schema_coactivation
+                    WHERE src_schema_id IN ({ph_ids})
+                       OR dst_schema_id IN ({ph_ids})
+                    """,
+                    tuple(schema_ids + schema_ids),
+                ).fetchall()
+                for r in coact_rows:
+                    src = int(r["src_schema_id"])
+                    dst = int(r["dst_schema_id"])
+                    # Both ends must be visible -- an edge to a node that
+                    # didn't make the cut (excluded by scope/status/salience
+                    # filters) has no node to attach to. cytoscape() throws
+                    # on a dangling source/target reference with no
+                    # try/catch around it (_js.py drawGraph()), which kills
+                    # the ENTIRE graph render, not just that one edge.
+                    # schema_relations' query above already requires this
+                    # (dst_schema_id IN schema_id_set); coactivation needs
+                    # the same requirement on both ends, not just one.
+                    if src not in schema_id_set or dst not in schema_id_set:
+                        continue
+                    edges.append(
+                        {
+                            "id": f"coact_{src}_{dst}",
+                            "source": f"sch_{src}",
+                            "target": f"sch_{dst}",
+                            "src_schema_id": src,
+                            "dst_schema_id": dst,
+                            "relation": "coactivated_with",
+                            "confidence": float(r["weight"]),
+                            "reason": None,
+                            "created_ts": None,
+                        }
+                    )
+            except Exception:
+                pass
         return {
             "nodes": nodes,
             "edges": edges,
             "limit": limit,
             "statuses": statuses,
-            "relations": relations,
+            "relations": list(set(relations) | {"coactivated_with"}),
             "salience_filter": {"min": min_salience, "max": max_salience},
         }
     finally:
@@ -1030,7 +1087,44 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
                 (schema_id,),
             ).fetchall()
         ]
-        return {"schema": schema, "evidence": evidence, "outgoing": outgoing, "incoming": incoming}
+        # Co-activation edges (Phase 2)
+        coact_outgoing: list[dict[str, Any]] = []
+        coact_incoming: list[dict[str, Any]] = []
+        try:
+            coact_outgoing = [
+                {
+                    "src_schema_id": int(r["src_schema_id"]),
+                    "dst_schema_id": int(r["dst_schema_id"]),
+                    "relation": "coactivated_with",
+                    "weight": float(r["weight"]),
+                }
+                for r in conn.execute(
+                    "SELECT src_schema_id, dst_schema_id, weight FROM schema_coactivation WHERE src_schema_id = ?",
+                    (schema_id,),
+                ).fetchall()
+            ]
+            coact_incoming = [
+                {
+                    "src_schema_id": int(r["src_schema_id"]),
+                    "dst_schema_id": int(r["dst_schema_id"]),
+                    "relation": "coactivated_with",
+                    "weight": float(r["weight"]),
+                }
+                for r in conn.execute(
+                    "SELECT src_schema_id, dst_schema_id, weight FROM schema_coactivation WHERE dst_schema_id = ?",
+                    (schema_id,),
+                ).fetchall()
+            ]
+        except Exception:
+            pass
+        return {
+            "schema": schema,
+            "evidence": evidence,
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "coact_outgoing": coact_outgoing,
+            "coact_incoming": coact_incoming,
+        }
     finally:
         conn.close()
 
@@ -1226,7 +1320,7 @@ def _worker_runs_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, An
     """Return worker consolidation run history and summary statistics."""
     if not os.path.exists(db_path):
         return {"runs": [], "summary": {}}
-    limit = max(1, min(200, int((qs.get("limit") or [50])[0])))
+    limit = max(1, min(200, _qs_int(qs, "limit", 50)))
     conn = _connect(db_path)
     try:
         rows = conn.execute(
@@ -1266,8 +1360,8 @@ def _episodes_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     """Return paginated episode list."""
     if not os.path.exists(db_path):
         return {"episodes": [], "total": 0}
-    limit = max(1, min(200, int((qs.get("limit") or [50])[0])))
-    offset = max(0, int((qs.get("offset") or [0])[0]))
+    limit = max(1, min(200, _qs_int(qs, "limit", 50)))
+    offset = max(0, _qs_int(qs, "offset", 0))
     search = (qs.get("q") or [""])[0].strip()
     conn = _connect(db_path)
     try:
@@ -1310,7 +1404,7 @@ def _prototypes_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
     """Return prototype list with member counts."""
     if not os.path.exists(db_path):
         return {"prototypes": [], "total": 0}
-    limit = max(1, min(100, int((qs.get("limit") or [50])[0])))
+    limit = max(1, min(100, _qs_int(qs, "limit", 50)))
     conn = _connect(db_path)
     try:
         total_row = conn.execute("SELECT COUNT(*) AS n FROM semantic_prototypes").fetchone()
@@ -1408,148 +1502,164 @@ def _session_timeline(db_path: str, session_id: str) -> dict[str, Any]:
         conn.close()
 
 
-def _relation_pairs_payload(db_path: str, relation: str, limit: int) -> dict[str, Any]:
-    """Return pair-shaped relation edges (supersedes/refines): one row per edge,
-    with both sides' full identifying info so the UI can render a two-column
-    detail on click instead of just truncated content.
+def _pick_diverse_goals(goals: list[str], max_count: int = 3) -> list[str]:
+    """Pick diverse example goals, avoiding near-duplicate phrases."""
+    if not goals:
+        return []
+    deduped: list[str] = []
+    seen_words: set[str] = set()
+    for g in sorted(goals, key=len):
+        if len(deduped) >= max_count:
+            break
+        words = set(g.lower().split())
+        overlap = len(words & seen_words) / max(len(words), 1)
+        if overlap < 0.6 or not seen_words:
+            deduped.append(g)
+            seen_words |= words
+    return deduped
 
-    `src` is always the schema `add_relation` recorded as the "acting" side
-    (the newer/winning schema for supersedes, the newly-formed schema for
-    refines); `dst` is the "acted upon" side (the older/superseded schema for
-    supersedes, the existing schema being refined for refines). Both sides'
-    own `confidence` (schema-level) are aliased away from the relation's own
-    `confidence` to avoid a name collision.
+
+_PROC_ENCODER: Any = None  # module-level lazy singleton -- avoid reloading the
+# ONNX embedding model on every dashboard request; the tab is fetched
+# on-demand (tab click), not on the 2s auto-refresh loop, so a per-process
+# singleton is enough (no cross-request cache/TTL needed).
+
+
+def _get_proc_encoder() -> Any:
+    global _PROC_ENCODER
+    if _PROC_ENCODER is None:
+        from slowave.symbolic.encoder import TextEncoder
+
+        _PROC_ENCODER = TextEncoder()
+    return _PROC_ENCODER
+
+
+def _procedures_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
+    """Return procedural memory clusters via the validated embedding +
+    alignment + average-linkage method -- the same method
+    scripts/analyze_procedural_signal.py uses to check the Phase 2 gate.
+    See slowave/symbolic/procedural.py and
+    private/docs/iterations/20260727_procedural_memory_phase2_plan.md.
+
+    Previously this endpoint clustered by raw event-TYPE signature, which
+    Phase 1 proved carries zero procedural signal -- replaced entirely
+    rather than kept alongside, so there's exactly one definition of
+    "procedure cluster" in the codebase.
     """
+    from slowave.symbolic.procedural import build_embedding_caches, cluster_sessions, rank_clusters
+
+    if not os.path.exists(db_path):
+        return {"clusters": [], "gate": "db_not_found", "step_sessions": 0, "qualified_sessions": 0}
+
+    min_sessions = max(2, min(20, _qs_int(qs, "min_sessions", 2)))
+    max_clusters = max(5, min(50, _qs_int(qs, "limit", 20)))
+    threshold = 0.4
+    scope_filter = (qs.get("scope") or [""])[0].strip()
+
     conn = _connect(db_path)
     try:
-        total_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schema_relations WHERE relation = ?", (relation,)
+        qualified_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE goal IS NOT NULL AND outcome IS NOT NULL"
         ).fetchone()
-        rows = conn.execute(
-            "SELECT sr.src_schema_id, sr.dst_schema_id, sr.confidence AS rel_confidence, "
-            "sr.reason, sr.created_ts, "
-            "src.content_text AS src_content, src.status AS src_status, "
-            "src.salience AS src_salience, src.confidence AS src_confidence, "
-            "src.scope_id AS src_scope_id, src.generalization_stage AS src_stage, "
-            "src.first_formed_ts AS src_formed_ts, "
-            "dst.content_text AS dst_content, dst.status AS dst_status, "
-            "dst.salience AS dst_salience, dst.confidence AS dst_confidence, "
-            "dst.scope_id AS dst_scope_id, dst.generalization_stage AS dst_stage, "
-            "dst.first_formed_ts AS dst_formed_ts "
-            "FROM schema_relations sr "
-            "JOIN schemas src ON src.id = sr.src_schema_id "
-            "JOIN schemas dst ON dst.id = sr.dst_schema_id "
-            "WHERE sr.relation = ? "
-            "ORDER BY sr.created_ts DESC LIMIT ?",
-            (relation, limit),
-        ).fetchall()
-        return {"pairs": [dict(r) for r in rows], "total": int(total_row["n"]) if total_row else 0}
-    finally:
-        conn.close()
+        qualified_sessions = int(qualified_row["n"]) if qualified_row else 0
 
+        scope_clause = ""
+        scope_params: list[Any] = []
+        if scope_filter:
+            scope_clause = "AND scope_id = ?"
+            scope_params.append(scope_filter)
 
-def _relation_part_of_payload(db_path: str, limit: int) -> dict[str, Any]:
-    """Return part_of edges grouped by parent (dst), each with its children
-    (src) nested underneath -- a tree, not a flat pair list, since part_of is
-    a hierarchy: backfill_part_of_edges writes (src=part/child, dst=whole/parent).
-    """
-    conn = _connect(db_path)
-    try:
-        total_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schema_relations WHERE relation = 'part_of'"
-        ).fetchone()
-        rows = conn.execute(
-            "SELECT sr.src_schema_id, sr.dst_schema_id, sr.confidence AS rel_confidence, "
-            "sr.reason, sr.created_ts, "
-            "child.content_text AS child_content, child.status AS child_status, "
-            "child.scope_id AS child_scope_id, "
-            "parent.content_text AS parent_content, parent.status AS parent_status, "
-            "parent.scope_id AS parent_scope_id "
-            "FROM schema_relations sr "
-            "JOIN schemas child ON child.id = sr.src_schema_id "
-            "JOIN schemas parent ON parent.id = sr.dst_schema_id "
-            "WHERE sr.relation = 'part_of' "
-            "ORDER BY sr.dst_schema_id, sr.confidence DESC "
-            "LIMIT ?",
-            (limit,),
+        session_rows = conn.execute(
+            f"SELECT id, goal, outcome, scope_id FROM sessions "
+            f"WHERE goal IS NOT NULL AND outcome IS NOT NULL {scope_clause} "
+            f"ORDER BY started_ts",
+            scope_params,
         ).fetchall()
-        parents: dict[int, dict[str, Any]] = {}
-        for r in rows:
-            pid = int(r["dst_schema_id"])
-            if pid not in parents:
-                parents[pid] = {
-                    "id": pid,
-                    "content": r["parent_content"],
-                    "status": r["parent_status"],
-                    "scope_id": r["parent_scope_id"],
-                    "children": [],
-                }
-            parents[pid]["children"].append(
+
+        sessions: list[dict[str, Any]] = []
+        for row in session_rows:
+            step_rows = conn.execute(
+                "SELECT content FROM raw_events WHERE session_id = ? AND type = 'step' ORDER BY ts",
+                (row["id"],),
+            ).fetchall()
+            step_contents = [r["content"] for r in step_rows if r["content"]]
+            sessions.append(
                 {
-                    "id": int(r["src_schema_id"]),
-                    "content": r["child_content"],
-                    "status": r["child_status"],
-                    "scope_id": r["child_scope_id"],
-                    "confidence": r["rel_confidence"],
-                    "reason": r["reason"],
-                    "created_ts": r["created_ts"],
+                    "id": row["id"],
+                    "goal": row["goal"] or "",
+                    "outcome": row["outcome"] or "unknown",
+                    "scope_id": row["scope_id"],
+                    "step_contents": step_contents,
+                    "has_steps": len(step_contents) > 0,
                 }
             )
+
+        step_sessions = [s for s in sessions if s["has_steps"]]
+
+        if len(step_sessions) < min_sessions:
+            return {
+                "clusters": [],
+                "total_clusters_found": 0,
+                "total_sessions_in_clusters": 0,
+                "step_sessions": len(step_sessions),
+                "qualified_sessions": qualified_sessions,
+                "min_sessions": min_sessions,
+                "min_for_detection": min_sessions,
+                "gate": "insufficient_data",
+            }
+
+        encoder = _get_proc_encoder()
+        step_cache, goal_cache = build_embedding_caches(sessions, encoder)
+        clusters = cluster_sessions(sessions, step_cache, goal_cache, threshold=threshold)
+        ranked = rank_clusters(clusters, min_sessions, max_clusters, goal_cache=goal_cache)
+
+        n_good = sum(1 for c in ranked if c["goal_coherence"] >= 0.3)
+        gate_pass = n_good >= 5
+        total_sessions_in_clusters = sum(c["session_count"] for c in ranked)
+
+        clusters_out: list[dict[str, Any]] = []
+        for c in ranked:
+            full_members = clusters.get(c["cluster_id"], [])
+            session_ids_full = [m["id"] for m in full_members]
+            scope_id = scope_filter or (full_members[0]["scope_id"] if full_members else "") or ""
+            clusters_out.append(
+                {
+                    "cluster_id": c["cluster_id"],
+                    "session_count": c["session_count"],
+                    "successes": c["successes"],
+                    "failures": c["failures"],
+                    "success_rate": c["success_rate"],
+                    "goal_coherence": c["goal_coherence"],
+                    "anti_pattern": c["anti_pattern"],
+                    "competes_with": c.get("competes_with", []),
+                    "example_goals": _pick_diverse_goals(c["example_goals"], max_count=3),
+                    "example_steps": c["example_steps"],
+                    "scope_id": str(scope_id),
+                    "session_ids": session_ids_full[:20],
+                    "total_session_ids": len(session_ids_full),
+                }
+            )
+
         return {
-            "parents": sorted(parents.values(), key=lambda p: len(p["children"]), reverse=True),
-            "total": int(total_row["n"]) if total_row else 0,
+            "clusters": clusters_out,
+            "total_clusters_found": len(clusters_out),
+            "total_sessions_in_clusters": total_sessions_in_clusters,
+            "step_sessions": len(step_sessions),
+            "qualified_sessions": qualified_sessions,
+            "min_sessions": min_sessions,
+            "n_good_clusters": n_good,
+            "gate_target": 5,
+            "gate_pass": gate_pass,
+            "gate": (
+                "target_met"
+                if gate_pass
+                else ("clusters_found" if clusters_out else "no_clusters_found")
+            ),
+            "threshold": threshold,
+            "method": "embedding+alignment+average_linkage",
         }
     finally:
         conn.close()
-
-
-def _relation_reinforces_leaderboard_payload(db_path: str, limit: int) -> dict[str, Any]:
-    """Return the top-N most-reinforced schemas (grouped by target, counted),
-    not raw edges -- reinforces sits at 700+ edges and each one is the same
-    content restated, so a browsable edge list is noise; a leaderboard of
-    "which facts have accumulated the most repeat evidence" is the useful
-    signal.
-    """
-    conn = _connect(db_path)
-    try:
-        total_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schema_relations WHERE relation = 'reinforces'"
-        ).fetchone()
-        rows = conn.execute(
-            "SELECT sr.dst_schema_id AS id, COUNT(*) AS n, "
-            "s.content_text AS content, s.status AS status, s.salience AS salience, "
-            "s.scope_id AS scope_id "
-            "FROM schema_relations sr "
-            "JOIN schemas s ON s.id = sr.dst_schema_id "
-            "WHERE sr.relation = 'reinforces' "
-            "GROUP BY sr.dst_schema_id "
-            "ORDER BY n DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return {
-            "leaderboard": [dict(r) for r in rows],
-            "total": int(total_row["n"]) if total_row else 0,
-        }
-    finally:
-        conn.close()
-
-
-def _relations_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
-    """Dispatch on `type` -- supersedes/refines are pair-shaped, part_of is a
-    parent/children tree, reinforces is a leaderboard (see each payload
-    function's docstring for why each shape fits its relation semantics).
-    """
-    if not os.path.exists(db_path):
-        return {"error": "db not found"}
-    relation = (qs.get("type") or ["supersedes"])[0]
-    limit = max(1, min(200, int((qs.get("limit") or [50])[0])))
-    if relation in ("supersedes", "refines"):
-        return _relation_pairs_payload(db_path, relation, limit)
-    if relation == "part_of":
-        return _relation_part_of_payload(db_path, limit)
-    if relation == "reinforces":
-        return _relation_reinforces_leaderboard_payload(db_path, limit)
-    return {"error": f"unknown relation type {relation!r}"}
 
 
 from slowave.dashboard._html import _INDEX_HTML  # noqa: E402

@@ -82,32 +82,33 @@ _SEED_PAIRS: list[tuple[str, str]] = [
 
 # Minimum direction_score to classify a change as a value substitution (supersede).
 # sep(sup, add) = +0.35 vs +0.09; mean(add) = −0.028 at this threshold.
-DIRECTION_THRESHOLD: float = 0.10
+DIRECTION_SCORE_THRESHOLD_SUPERSEDE: float = 0.10
 
-# Lower bound of the ambiguous zone: direction_score in [DIR_REVIEW_BAND, DIRECTION_THRESHOLD)
+# Lower bound of the ambiguous zone: direction_score in
+# [DIRECTION_SCORE_THRESHOLD_REVIEW, DIRECTION_SCORE_THRESHOLD_SUPERSEDE)
 # triggers needs_review instead of auto-action.
-DIR_REVIEW_BAND: float = 0.05
+DIRECTION_SCORE_THRESHOLD_REVIEW: float = 0.05
 
 # Minimum cosine for same-scope action (supersede or reinforce).
 # Set at the duplicate-zone floor (min=0.822 rounded down) so only near-identical
 # or clearly same-topic schemas trigger immediate action at remember() time.
-SAME_SCOPE_COS_THRESHOLD: float = 0.85
+COS_THRESHOLD_SAME_SCOPE: float = 0.85
 
 # Extended same-scope supersession gate (Gap 3).
-# At cos in [EXTENDED_SAME_SCOPE_COS_THRESHOLD, SAME_SCOPE_COS_THRESHOLD) only
-# direction_score >= DIRECTION_THRESHOLD triggers supersession — no reinforce or
-# needs_review, because the cosine signal alone is too weak to act on.
+# At cos in [COS_THRESHOLD_EXTENDED_SAME_SCOPE, COS_THRESHOLD_SAME_SCOPE) only
+# direction_score >= DIRECTION_SCORE_THRESHOLD_SUPERSEDE triggers supersession —
+# no reinforce or needs_review, because the cosine signal alone is too weak to act on.
 # Covers the 0.70–0.85 range that was previously ignored, catching cases like
 # S-1/S-2 wiki scenarios (cos ~0.80) with clear value substitution direction.
-EXTENDED_SAME_SCOPE_COS_THRESHOLD: float = 0.70
+COS_THRESHOLD_EXTENDED_SAME_SCOPE: float = 0.70
 
 # Minimum cosine for cross-scope linking (generalization reinforcement).
 # Motivated by empirical observation: cos=0.81 for Karpathy guidelines with minor
 # framing variation across projects. 3pp buffer below observed gives 0.78.
 # Cross-scope never supersedes — only reinforces + records evidence.
-CROSS_SCOPE_COS_THRESHOLD: float = 0.78
+COS_THRESHOLD_CROSS_SCOPE: float = 0.78
 
-TOPICAL_THRESHOLD: float = 0.35
+COS_THRESHOLD_TOPICAL: float = 0.35
 
 
 class SupersessionManifold:

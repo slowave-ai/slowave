@@ -914,11 +914,12 @@ class TestE2E:
             f"have evidence from project:alpha"
         )
 
-    def test_relations_supersession(self, cli, db):
-        """Remembering an updated fact in the same scope creates a supersedes edge.
+    def test_metadata_gated_supersession(self, cli, db):
+        """Remembering an updated fact triggers metadata-gated supersession.
 
-        schema_relations stores (new_id → old_id, relation='supersedes') and the
-        old schema is flipped to status='superseded'.
+        When cos >= 0.90 + support >= min_support + dt >= min_time_delta,
+        the old schema is flipped to status='superseded' and a relates_to
+        edge is written (new_id -> old_id).
         """
         time.time()
 
@@ -971,7 +972,11 @@ class TestE2E:
         old_status = _query(db, "SELECT status FROM schemas WHERE id=?", (old_id,))
         _detail(f"original schema status: {old_status[0]['status'] if old_status else 'not found'}")
 
-        # Check schema_relations for a supersedes edge
+        # Check schema_relations for the relates_to edge that accompanies a
+        # metadata-gated supersession (post-2026-07-22 taxonomy collapse,
+        # there is no literal "supersedes" relation type -- see the status
+        # check above and test_relations_no_reverse_directional_duplicates'
+        # docstring for the full history).
         rel_rows = _query(
             db,
             "SELECT src_schema_id, dst_schema_id, relation FROM schema_relations "
@@ -985,25 +990,29 @@ class TestE2E:
                 rel_rows
             ), f"Old schema {old_id_str} is superseded but no schema_relations edge found"
             assert (
-                rel_rows[0]["relation"] == "supersedes"
-            ), f"Expected relation='supersedes', got '{rel_rows[0]['relation']}'"
+                rel_rows[0]["relation"] == "relates_to"
+            ), f"Expected relation='relates_to', got '{rel_rows[0]['relation']}'"
         else:
-            # Supersession requires cos >= 0.85 between embeddings; if it didn't fire,
+            # Supersession requires cos >= 0.90 between embeddings; if it didn't fire,
             # at minimum verify old schema is still active (no spurious status change).
             assert old_status and old_status[0]["status"] == "active", (
                 f"Old schema should be active (supersession did not fire), "
                 f"got status={old_status[0]['status'] if old_status else 'missing'}"
             )
             _detail(
-                "supersession did not fire (cosine below 0.85 threshold) — old schema still active"
+                "supersession did not fire (cosine below 0.90 threshold) — old schema still active"
             )
 
-    def test_relations_coactivation(self, cli, db):
+    def test_relations_prototype_coactivation(self, cli, db):
         """Consolidation replay must populate prototype_edges with co-activation weights.
 
         prototype_edges.w_coactivation is updated during ReplayEngine.replay_once() when
         two prototypes co-appear in the same episode. After at least one consolidation
         pass over real episodic content, the table must be non-empty.
+
+        Distinct from test_relations_schema_coactivation below: this is the older,
+        prototype-level (latent layer) co-occurrence signal, not the Phase 2
+        schema_coactivation table (usage-based, session/recall-driven).
         """
         time.time()
 
@@ -1068,135 +1077,100 @@ class TestE2E:
         else:
             _detail("fewer than 2 prototypes — edges not expected (latent layer may not have run)")
 
-    def test_relations_part_of_hierarchy(self, cli, qdb):
-        """A specific fact can be linked as `part_of` a broader one it's a
-        detail of, and recall() surfaces that link even when the caller only
-        asked about the broader topic.
+    def test_relations_schema_coactivation(self, cli, qdb, db):
+        """schema_coactivation (Phase 2 — usage-based Hebbian schema edges,
+        distinct from the prototype-level table above) must populate for
+        schemas genuinely admitted together in the same session, and must
+        never link schemas from different scopes.
 
-        Story: an agent tells Slowave a general fact about a service's retry
-        behaviour ("the billing service retries webhooks with backoff"),
-        then a more specific detail of the same behaviour ("...using a base
-        delay of 2 seconds, capped at 32"), each repeated a few times (this
-        is how a fact earns enough evidence to be compared geometrically —
-        see backfill_facet_axes). It also tells Slowave a third, unrelated
-        fact in a different project. After the next `consolidate` (Slowave's
-        background housekeeping), recalling the general topic should surface
-        the specific detail too, under `related_memories` -- NOT because it
-        matched the query, but because Slowave noticed it's a more specific
-        instance of the same thing. The unrelated fact from the other
-        project must never show up, proving relation-based surfacing isn't a
-        scope leak in disguise.
+        Regression test for the 2026-07-23 cross-scope co-activation leak:
+        _write_coactivations() used to read context_recall_items with no
+        `admitted` filter, so candidates the working-memory gate correctly
+        REJECTED for being out of scope were still treated as "recalled
+        together" with whatever was genuinely admitted in the same call —
+        live data showed 47% of all co-activation edges were cross-scope
+        before the fix (see
+        private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md).
 
-        Endpoint-driven throughout (remember -> consolidate -> recall); a
-        direct DB read is used only as a secondary confirmation of the
-        specific relation recorded, never as the pass/fail signal.
+        Uses a dedicated probe scope pair (not the shared T*/D*/L1/S1
+        dataset) so this test doesn't depend on L1's promoted
+        generalization_stage from test_phase6_promotion_ladder, which would
+        make legitimate cross-scope admission indistinguishable from a leak.
         """
-        parent_text = (
-            "The billing service retries failed webhook deliveries up to 5 times "
-            "with exponential backoff before giving up."
-        )
-        child_text = (
-            "Specifically, webhook retries for the billing service use a base delay "
-            "of 2 seconds doubling each attempt, capped at 32 seconds."
-        )
-        unrelated_text = (
-            "The internal style guide requires all product screenshots to use the "
-            "dark theme for consistency in Alpha's documentation."
-        )
+        probe_scope = "project:coactivation-probe"
+        other_scope = "project:coactivation-probe-other"
 
-        # Repeat each fact so it earns enough evidence to be compared
-        # geometrically (backfill_facet_axes needs >=3 supporting episodes).
-        for text, scope in (
-            (parent_text, "project:slowave"),
-            (child_text, "project:slowave"),
-            (unrelated_text, "project:alpha"),
-        ):
-            for _ in range(3):
-                cli("remember", text, "--type", "fact", "--scope", scope)
+        fact_a = "The coactivation probe alpha fact: dedicated unique content Alfredo."
+        fact_b = "The coactivation probe beta fact: dedicated unique content Bertrand."
+        fact_other = "The coactivation probe other-scope fact: dedicated unique content Casimir."
 
-        # Slowave's background housekeeping: computes facet axes for newly-
-        # eligible facts and compares them for hierarchy. Both counts are
-        # read straight from the endpoint's own response.
-        r = cli("consolidate")
-        facet_backfill = r.get("facet_backfill", {})
-        part_of_backfill = r.get("part_of_backfill", {})
-        _detail(f"facet_backfill: {facet_backfill}")
-        _detail(f"part_of_backfill: {part_of_backfill}")
-        assert (
-            facet_backfill.get("backfilled", 0) >= 3
-        ), "expected all 3 newly-repeated facts to cross the facet-eligibility threshold"
-        assert set(part_of_backfill) >= {
-            "compared",
-            "created",
-            "skipped_no_facets",
-        }, "part_of comparison did not run with the expected shape"
+        r = cli("activate", "--query", "coactivation probe setup", "--scope", probe_scope)
+        sid = r["session_id"]
+        cli("remember", fact_a, "--type", "fact", "--scope", probe_scope, "--session", sid)
+        cli("remember", fact_b, "--type", "fact", "--scope", probe_scope, "--session", sid)
+        cli("commit", sid, "--outcome", "success")
 
-        # Ask about the general topic only -- the specific detail must not be
-        # required to match the query text itself to surface.
-        r_parent = cli(
-            "recall",
-            "billing service webhook retry backoff delivery",
+        cli("remember", fact_other, "--type", "fact", "--scope", other_scope)
+
+        id_a = _schema_id_for(db, "dedicated unique content Alfredo")
+        id_b = _schema_id_for(db, "dedicated unique content Bertrand")
+        id_other = _schema_id_for(db, "dedicated unique content Casimir")
+        assert id_a and id_b and id_other, "probe schemas not created"
+
+        # A broad enough query that both probe-scope facts get admitted
+        # together in one call -- _write_coactivations needs >=2 schemas
+        # recalled in the same session to write anything.
+        r2 = cli(
+            "activate",
+            "--query",
+            "coactivation probe dedicated unique content",
             "--scope",
-            "project:slowave",
-            "--top-k",
-            "3",
+            probe_scope,
+            "--limit",
+            "8",
         )
-        direct_texts = [m["content_text"] for m in r_parent["memories"]]
-        related = r_parent.get("related_memories", [])
-        _detail(f"direct recall results: {[t[:60] for t in direct_texts]}")
-        _detail(f"related_memories: {[(m['content_text'][:60], m['via']) for m in related]}")
+        admitted = {int(s["id"].lstrip("sch_")) for s in r2.get("schemas", [])}
+        _detail(f"admitted together this call: {sorted(admitted)}")
+        assert {id_a, id_b} <= admitted, "expected both probe-scope facts admitted together"
+        assert id_other not in admitted, "other-scope fact leaked into probe-scope activate"
+        cli("commit", r2["session_id"], "--outcome", "success")
 
-        # Deterministic: the unrelated cross-scope fact must never appear,
-        # neither as a direct hit nor riding in via a relation edge.
-        all_texts = direct_texts + [m["content_text"] for m in related]
-        assert not any(
-            "dark theme" in t for t in all_texts
-        ), "unrelated cross-scope fact leaked into recall results"
+        cli("consolidate")
 
-        # Conditional: whether the child actually rides in as `part_of` this
-        # run depends on real embedding geometry (same caveat as
-        # test_relations_supersession's supersedes check) -- logged either
-        # way, required only when it does fire.
-        part_of_hits = [m for m in related if "part_of" in m.get("via", [])]
-        if part_of_hits:
-            assert any(
-                "base delay of 2 seconds" in m["content_text"] for m in part_of_hits
-            ), "a part_of-linked memory surfaced but wasn't the expected child fact"
-            # Secondary confirmation only -- the endpoint result above is
-            # already the pass/fail signal.
-            rel_rows = qdb(
-                "SELECT confidence FROM schema_relations WHERE relation='part_of' "
-                "AND src_schema_id IN (SELECT id FROM schemas WHERE content_text LIKE ?)",
-                ("%base delay of 2 seconds%",),
-            )
-            if rel_rows:
-                _detail(f"confirmed in DB: part_of confidence={rel_rows[0]['confidence']:.3f}")
-        else:
-            _detail(
-                "no part_of-linked memory surfaced this run "
-                "(subspace containment is real-embedding dependent, not guaranteed every run)"
-            )
+        edge = qdb(
+            "SELECT weight FROM schema_coactivation "
+            "WHERE (src_schema_id=? AND dst_schema_id=?) OR (src_schema_id=? AND dst_schema_id=?)",
+            (id_a, id_b, id_b, id_a),
+        )
+        _detail(f"co-activation edge A<->B: {edge}")
+        assert edge, "expected a co-activation edge between the two schemas admitted together"
+
+        leak = qdb(
+            "SELECT * FROM schema_coactivation WHERE src_schema_id=? OR dst_schema_id=?",
+            (id_other, id_other),
+        )
+        _detail(f"co-activation edges touching other-scope fact: {leak}")
+        assert leak == [], f"other-scope fact must never gain a co-activation edge: {leak}"
 
     def test_relations_graph_expansion_respects_cross_scope_isolation(self, cli):
         """A memory linked to another project's memory via schema_relations
         must not leak across projects just because it rode in on a relation
         edge instead of matching the query directly.
 
-        Story: schema_relations edges (part_of especially) are deliberately
-        allowed to link memories across projects once there's strong enough
-        geometric evidence (see backfill_part_of_edges's stricter cross-scope
-        containment bar) -- a relation edge is not itself a scope wall. So
-        whenever `recall()` surfaces a related_memories entry, it must still
-        respect the same project-isolation rule a directly-matched memory
-        would: same project, no project at all (global), or the memory has
+        Story: schema_relations edges are deliberately allowed to link
+        memories across projects once there's strong enough geometric
+        evidence -- a relation edge is not itself a scope wall. So whenever
+        `recall()` surfaces a related_memories entry, it must still respect
+        the same project-isolation rule a directly-matched memory would:
+        same project, no project at all (global), or the memory has
         independently earned broad cross-project visibility
         (generalization_stage >= 2 -- see the promotion-ladder phase above).
 
         Probes broadly across the whole dataset built up by every prior
-        phase (not just test_relations_part_of_hierarchy's facts), since
-        which relation actually clears the activation threshold to surface
-        is real-embedding dependent. Reads scope_id/generalization_stage
-        straight off each related_memories entry -- no DB access at all.
+        phase, since which relation actually clears the activation threshold
+        to surface is real-embedding dependent. Reads
+        scope_id/generalization_stage straight off each related_memories
+        entry -- no DB access at all.
         """
         probes = [
             ("webhook retries billing service backoff", "project:slowave"),
@@ -1224,44 +1198,20 @@ class TestE2E:
             else "no relation-surfaced memories this run (real-embedding dependent)"
         )
 
-    def test_relations_no_reverse_directional_duplicates(self, qdb):
-        """Directional relations (refines/supersedes/part_of) must never exist
-        in both directions for the same pair -- regression test for
-        add_relation()'s reverse-edge guard (2026-07-15). Unlike the other
-        relation tests in this file, this is a deterministic invariant, not
-        real-embedding dependent: it must hold no matter which relations the
-        rest of the suite happened to produce, so it's asserted unconditionally
-        against whatever schema_relations looks like after every prior phase
-        has run.
+    # ── Forget / unforget lifecycle ──────────────────────────────────────────
+    # Not a continuation of the phase0-7 narrative (it doesn't build on phase7's
+    # state, and never touches the shared T*/D*/L1/S1 dataset) -- a standalone
+    # feature test that happens to run last. Named for what it tests, like the
+    # test_relations_* tests below it, not as a fake "phase 8".
 
-        A directional relation encodes an asymmetric claim (specialization,
-        value-update, subspace containment); both directions existing at once
-        for the same relation type is a logical contradiction, not two
-        independent facts -- e.g. "A refines B" and "B refines A" can't both
-        be true. The symmetric relation relates_to is correctly exempt:
-        "A->B" and "B->A" are the same fact there, not a conflict.
-        """
-        rows = qdb("""
-            SELECT a.relation, a.src_schema_id, a.dst_schema_id
-            FROM schema_relations a
-            JOIN schema_relations b
-              ON a.relation = b.relation
-             AND a.src_schema_id = b.dst_schema_id
-             AND a.dst_schema_id = b.src_schema_id
-            WHERE a.relation IN ('refines', 'supersedes', 'part_of')
-            """)
-        assert rows == [], f"found reverse-direction duplicate directional edges: {rows}"
-
-    # ── Phase 8 ───────────────────────────────────────────────────────────────
-
-    def test_phase8_forget_unforget(self, cli, db, qdb):
+    def test_forget_unforget_lifecycle(self, cli, db, qdb):
         """`slowave forget` hides a schema from recall in every retrieval mode
         and survives a forced consolidation pass without respawning a
         duplicate; `slowave unforget` puts it back exactly where it was.
 
         Uses a dedicated probe memory (not one of the shared T*/D*/L1/S1
-        fixtures) so this phase's status mutations can't interfere with
-        assumptions any other phase makes about the shared dataset.
+        fixtures) so this test's status mutations can't interfere with
+        assumptions any other test makes about the shared dataset.
         """
         scope = "project:forget-restore-probe"
         probe_snippet = "forget-restore acceptance probe"
@@ -1353,3 +1303,225 @@ class TestE2E:
         # unforget on a non-forgotten schema must error, not silently no-op.
         err = cli("unforget", f"sch_{schema_id}")
         assert "error" in err, f"expected error unforgetting a non-forgotten schema, got {err}"
+
+    # ── Commit steps ─────────────────────────────────────────────────────────
+
+    def test_commit_steps_logged_as_raw_events(self, cli, qdb):
+        """slowave commit --step stores ordered step events in raw_events."""
+        time.time()
+
+        scope = "project:slowave"
+
+        # Activate + remember
+        r = cli("activate", "--query", "deploy to staging with steps", "--scope", scope)
+        sid = r["session_id"]
+
+        cli(
+            "remember",
+            "Use helm for k8s deployments",
+            "--type",
+            "decision",
+            "--scope",
+            scope,
+            "--session",
+            sid,
+        )
+        cli(
+            "remember",
+            "Always run integration tests before production",
+            "--type",
+            "constraint",
+            "--scope",
+            scope,
+            "--session",
+            sid,
+        )
+
+        # Commit with steps
+        cli(
+            "commit",
+            sid,
+            "--outcome",
+            "success",
+            "--step",
+            "Ran full test suite (142 passed)",
+            "--step",
+            "Built Docker image (app:v2.3.1)",
+            "--step",
+            "Pushed to registry",
+            "--step",
+            "Applied k8s manifests to staging",
+            "--step",
+            "Smoke-tested /health endpoint",
+        )
+
+        # Verify step events in raw_events
+        steps = qdb(
+            "SELECT type, content FROM raw_events "
+            "WHERE session_id = ? AND type = 'step' ORDER BY id",
+            (sid,),
+        )
+        assert len(steps) == 5, f"expected 5 step events, got {len(steps)}"
+        assert steps[0]["content"] == "Ran full test suite (142 passed)"
+        assert steps[1]["content"] == "Built Docker image (app:v2.3.1)"
+        assert steps[2]["content"] == "Pushed to registry"
+        assert steps[3]["content"] == "Applied k8s manifests to staging"
+        assert steps[4]["content"] == "Smoke-tested /health endpoint"
+        _detail(f"commit steps: {len(steps)} stored, ordered correctly")
+
+        # Session is properly closed with outcome
+        sess = qdb("SELECT ended_ts, outcome FROM sessions WHERE id = ?", (sid,))
+        assert len(sess) == 1
+        assert sess[0]["ended_ts"] is not None, "session should be closed"
+        assert sess[0]["outcome"] == "success"
+
+        # Commit without --step doesn't crash
+        r2 = cli("activate", "--query", "no steps session", "--scope", scope)
+        sid2 = r2["session_id"]
+        cli("commit", sid2, "--outcome", "partial")
+
+        no_steps = qdb(
+            "SELECT COUNT(*) as n FROM raw_events " "WHERE session_id = ? AND type = 'step'",
+            (sid2,),
+        )
+        assert no_steps[0]["n"] == 0, "no step events expected when --step omitted"
+        _detail("commit without --step: no step events stored")
+
+        # Steps are isolated to their session
+        sid2_steps = qdb(
+            "SELECT COUNT(*) as n FROM raw_events " "WHERE session_id = ? AND type = 'step'",
+            (sid2,),
+        )
+        assert sid2_steps[0]["n"] == 0
+
+        # Verify all event types coexist in the session
+        all_events = qdb(
+            "SELECT type FROM raw_events WHERE session_id = ? ORDER BY id",
+            (sid,),
+        )
+        event_types = [e["type"] for e in all_events]
+        assert "remember:decision" in event_types
+        assert "remember:constraint" in event_types
+        assert "step" in event_types
+        # context_query + task_complete are MCP-only (_bg_log_event), not CLI
+        _detail(
+            f"session {sid[:8]}: step events coexist with remember events ({len(all_events)} total)"
+        )
+
+    def test_procedures_emerge_from_repeated_sessions(self, cli, qdb, db):
+        """2 deploy sessions + 3 anti-pattern sessions → distinct clusters with competing detection."""
+        time.time()
+        scope = "project:slowave"
+
+        # 2 deploy sessions
+        deploy_data = [
+            (
+                "deploy auth to staging",
+                [
+                    "Ran full test suite",
+                    "Built Docker image",
+                    "Pushed to registry",
+                    "Health-checked",
+                ],
+            ),
+            (
+                "deploy payment API to staging",
+                [
+                    "Ran unit tests 243 passed",
+                    "Built container image",
+                    "Pushed to ECR",
+                    "Smoke-tested",
+                ],
+            ),
+        ]
+        for goal, steps in deploy_data:
+            r = cli("activate", "--query", goal, "--goal", goal, "--scope", scope)
+            args = ["commit", r["session_id"], "--outcome", "success"]
+            for s in steps:
+                args.extend(["--step", s])
+            cli(*args)
+
+        # 3 sessions: same broken procedure, all fail (anti-pattern)
+        bad_deploy_data = [
+            (
+                "quick deploy to production",
+                "failure",
+                ["SCP'd files to server", "Manual restart of service", "No health check"],
+            ),
+            (
+                "ship directly to prod",
+                "failure",
+                ["SCP files to live box", "Manual restart of process", "Skipped health check"],
+            ),
+            (
+                "deploy fast to production",
+                "failure",
+                ["SCP upload to prod host", "Manual service restart", "No monitoring check"],
+            ),
+        ]
+        for goal, outcome, steps in bad_deploy_data:
+            r = cli("activate", "--query", goal, "--goal", goal, "--scope", scope)
+            args = ["commit", r["session_id"], "--outcome", outcome]
+            for s in steps:
+                args.extend(["--step", s])
+            cli(*args)
+
+        # Run analysis
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/analyze_procedural_signal.py",
+                "--db",
+                db,
+                "--min-sessions",
+                "2",
+                "--threshold",
+                "0.4",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"analysis failed: {result.stderr}"
+        data = json.loads(result.stdout)
+        clusters = data.get("clusters", [])
+
+        assert len(clusters) >= 2, (
+            f"expected ≥2 clusters (deploy + anti-pattern), got {len(clusters)}: "
+            f"{json.dumps(clusters, indent=2)}"
+        )
+
+        # Anti-pattern cluster: repeatedly failing procedure
+        anti = [c for c in clusters if c.get("anti_pattern")]
+        assert len(anti) >= 1, f"expected ≥1 anti-pattern cluster, got {len(anti)}"
+        anti_cluster = anti[0]
+        assert anti_cluster["session_count"] == 3
+        assert anti_cluster["success_rate"] == 0.0
+        assert anti_cluster["failures"] == 3
+        _detail(
+            f"anti-pattern: {anti_cluster['session_count']} sessions, "
+            f"failures={anti_cluster['failures']}, "
+            f"goals={anti_cluster['example_goals'][:2]}"
+        )
+
+        # Successful deploy cluster
+        deploy = [
+            c
+            for c in clusters
+            if "deploy" in " ".join(c.get("example_goals", [])).lower() and c["success_rate"] > 0.5
+        ]
+        assert len(deploy) >= 1, "expected a successful deploy cluster"
+        deploy_cluster = deploy[0]
+
+        # Competing procedures: anti-pattern ↔ successful deploy
+        if anti_cluster.get("competes_with"):
+            assert (
+                deploy_cluster["cluster_id"] in anti_cluster["competes_with"]
+            ), "anti-pattern should compete with successful deploy cluster"
+            _detail(
+                f"competing: cluster {deploy_cluster['cluster_id']} (success) "
+                f"↔ cluster {anti_cluster['cluster_id']} (anti-pattern)"
+            )

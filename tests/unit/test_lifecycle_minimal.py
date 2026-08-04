@@ -81,3 +81,65 @@ class TestLifecycleMinimal:
         finally:
             eng.close()
             _cleanup(path)
+
+    def test_commit_steps_logged_as_raw_events(self) -> None:
+        """slowave_commit steps → raw_events with type='step', ordered, scoped."""
+        eng, path = _tmp_engine()
+        scope = "test:lifecycle"
+        try:
+            sid = eng.session_start(agent="mcp", scope=scope)
+            session_resolver.bind(scope, sid)
+            eng.event_append(session_id=sid, type="context_query", content="test with steps")
+            eng.event_append(session_id=sid, type="remember:decision", content="some decision")
+
+            import slowave.ops as ops
+
+            ops.commit(
+                eng,
+                session_id=sid,
+                outcome="success",
+                steps=[
+                    "Ran full test suite (142 passed)",
+                    "Built Docker image",
+                    "Deployed to staging",
+                ],
+            )
+            session_resolver.clear(scope)
+
+            conn = eng.db.connect()
+
+            # Step events are stored
+            steps = conn.execute(
+                "SELECT type, content FROM raw_events WHERE session_id = ? AND type = 'step' ORDER BY id",
+                (sid,),
+            ).fetchall()
+            assert len(steps) == 3, f"expected 3 step events, got {len(steps)}"
+            assert steps[0]["content"] == "Ran full test suite (142 passed)"
+            assert steps[1]["content"] == "Built Docker image"
+            assert steps[2]["content"] == "Deployed to staging"
+
+            # Session is still closed normally
+            sess = conn.execute(
+                "SELECT ended_ts, outcome FROM sessions WHERE id = ?", (sid,)
+            ).fetchone()
+            assert sess is not None
+            assert sess["ended_ts"] is not None
+            assert sess["outcome"] == "success"
+
+            # Steps without steps=None doesn't crash
+            sid2 = eng.session_start(agent="mcp", scope=scope)
+            session_resolver.bind(scope, sid2)
+            eng.event_append(session_id=sid2, type="context_query", content="no steps")
+            result2 = ops.commit(eng, session_id=sid2, outcome="partial")
+            session_resolver.clear(scope)
+            assert result2.get("episodes_formed", 0) >= 0
+
+            no_steps = conn.execute(
+                "SELECT COUNT(*) as n FROM raw_events WHERE session_id = ? AND type = 'step'",
+                (sid2,),
+            ).fetchone()
+            assert no_steps["n"] == 0, "no step events expected when steps=None"
+
+        finally:
+            eng.close()
+            _cleanup(path)

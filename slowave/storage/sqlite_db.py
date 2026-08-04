@@ -170,6 +170,21 @@ class SQLiteDB:
             # Auto-migration lock fields (2026-07-16): RebuildService.try_claim.
             ("logic_versions", "claimed_ts", "INTEGER"),
             ("logic_versions", "claim_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            # WP-6 (2026-07-28): distinguishes why an admitted row was shown --
+            # 'direct' (query-relevant), 'exploration' (salience-filled slot),
+            # or 'graph' (association, not direct relevance) -- so the
+            # co-activation writer can stop treating serendipitous
+            # co-presentation the same as genuinely query-driven co-retrieval.
+            # Existing rows default to 'direct', preserving their prior
+            # (undifferentiated) treatment.
+            ("context_recall_items", "pathway", "TEXT NOT NULL DEFAULT 'direct'"),
+            # WP-8 (2026-07-28): lifecycle-instructions contract version
+            # stamped at session_start time -- see slowave/lifecycle.py.
+            ("sessions", "lifecycle_version", "TEXT"),
+            # WP-8 (2026-07-28): per-call lifecycle-instructions contract
+            # version -- the reliable attribution point for activate/recall
+            # telemetry, since recall() never sets session_id.
+            ("context_recall_events", "lifecycle_version", "TEXT"),
         ]
 
         for table, column, type_spec in missing_columns:
@@ -266,5 +281,12 @@ class SQLiteDB:
                 conn.execute(f"ALTER TABLE consolidation_debug DROP COLUMN {col}")
             except Exception:
                 pass  # column already gone or table doesn't exist
+
+        # part_of removed from the relation taxonomy (2026-07-23, see
+        # private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md).
+        # Existing DBs may still carry part_of edges written before the
+        # removal; VALID_RELATIONS no longer accepts the value, so drop
+        # them rather than leave orphaned rows no code path can ever read.
+        conn.execute("DELETE FROM schema_relations WHERE relation = 'part_of'")
 
         conn.commit()

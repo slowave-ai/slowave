@@ -336,8 +336,8 @@ You are the reasoning module; Slowave is the memory module. Give it honest signa
 - If a remembered fact changed: remember the corrected version AND flag the old one via `stale_memory_ids`/`wrong_memory_ids` in step 4.
 - Never encode: what is observable right now, transient state, vague impressions, or what you did this session (step 5 captures that).
 
-**3 — `slowave_recall` (only when activate fell short)**
-`slowave_recall(query, scope="project:<basename(cwd)>")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Always pass `scope` (omitting returns ALL projects). Store the returned `retrieval_id`. Not a substitute for activate.
+**3 — `slowave_recall` (mid-task lookups — call whenever you pivot to a new sub-question, not only on failure)**
+`slowave_recall(query, scope="project:<basename(cwd)>")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Always pass `scope` (omitting returns ALL projects). Store the returned `retrieval_id`. Not a substitute for activate — a deliberate lookup you reach for as often as the task's sub-questions change, not a fallback for when activate came up empty.
 
 **4 — `slowave_reinforce` (after ANY retrieval — reward hits, suppress noise)**
 Call whenever activate/recall returned memories — not only when you used some. Penalizing noise is how the store stays clean.

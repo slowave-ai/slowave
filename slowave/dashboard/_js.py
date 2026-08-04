@@ -5,8 +5,8 @@ const REFRESH_MS=__REFRESH_MS__;
 const ALLOW_ACTIONS=__ALLOW_ACTIONS__;
 
 const statusColor={active:"#3ecf6e",needs_review:"#f5b942",contradicted:"#f04e6a",superseded:"#9d71f0",archived:"#5a6e91",forgotten:"#3a3f4d",labile:"#f5b942"};
-const relColor={refines:"#4f9bff",supersedes:"#f5b942",part_of:"#34c4c4",relates_to:"#3ecf6e"};
-const relLabel={refines:"refines",supersedes:"supersedes",part_of:"part of",relates_to:"relates to"};
+const relColor={relates_to:"#6366f1",coactivated_with:"#ec4899"};
+const relLabel={relates_to:"relates to",coactivated_with:"coactivated"};
 
 // Shared channel palette for the pulse graph and the creation histogram —
 // keep in one place so the two views can never drift apart in color.
@@ -59,7 +59,6 @@ document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
   else if(tab==="graph")loadGraph();
   else if(tab==="worker")loadWorker();
   else if(tab==="db")loadDbHealth();
-  else if(tab==="relations")loadRelations();
 });
 
 // ── HELPERS ──
@@ -142,7 +141,7 @@ async function loadStatus(){
   if(!window.salienceSliderInitialized){initSalienceSlider(d);}
 
   // Populate scope dropdowns
-  ["graphScope","schemaScope"].forEach(id=>{
+  ["graphScope","schemaScope","procScope"].forEach(id=>{
     const scopeSel=document.getElementById(id);
     if(scopeSel&&d.scopes){
       const val=scopeSel.value;
@@ -652,6 +651,14 @@ async function expandSchemaRow(tr,schemaId){
   // Clear highlight from any previously expanded row
   tr.parentElement.querySelectorAll("tr.schema-row-expanded").forEach(r=>r.classList.remove("schema-row-expanded"));
   const d=await getJSON(`/api/schemas/${schemaId}`);
+  if(!d.schema){
+    const errTr=document.createElement("tr");
+    errTr.className="expand-row";
+    errTr.innerHTML=`<td colspan="99"><em style='color:var(--muted)'>Could not load sch_${schemaId}: ${d.error||"not found"}</em></td>`;
+    tr.parentElement.insertBefore(errTr,tr.nextElementSibling);
+    tr.classList.add("schema-row-expanded");
+    return;
+  }
   const s=d.schema;
   const evHtml=renderEvidenceList(d.evidence);
 const outHtml=d.outgoing&&d.outgoing.length?table(["To","Relation","Confidence","Reason"],
@@ -934,10 +941,14 @@ function renderWorkerChart(runs){
 function initSalienceSlider(status){
   if(window.salienceSliderInitialized)return;
   const maxSal=Number(status?.schema_health?.active_salience?.max||25);
-  const upper=Math.max(1,Math.ceil(maxSal));
+  // Slider's max must equal the true observed max, not a ceil()-rounded
+  // value above it -- rounding up created a dead zone (e.g. real max 1.5
+  // rounded to a slider ceiling of 2) where any selected threshold in that
+  // gap guarantees zero results, with no visual cue that it's unreachable.
+  const upper=Math.max(0.1,maxSal);
   const minEl=document.getElementById("graphMinSalience");
   if(!minEl)return;
-  minEl.max=String(upper);
+  minEl.max=upper.toFixed(2);
   document.getElementById("graphObservedMaxSalienceLabel").textContent=maxSal.toFixed(2);
   window.salienceSliderInitialized=true;
   syncSalienceSlider(false);
@@ -966,15 +977,25 @@ function renderLegend(){
   const el=document.getElementById("graphLegend");
   if(!el)return;
   const statusEntries=Object.entries(statusColor).filter(([k])=>k!=="labile").map(([k,v])=>`<div class="legend-item"><div class="legend-dot" style="background:${v}"></div>${k}</div>`).join("");
-  const relEntries=Object.entries(relColor).map(([k,v])=>`<div class="legend-item"><div class="legend-line" style="background:${v}"></div>${relLabel[k]||k}</div>`).join("");
+  const relEntries=Object.entries(relColor).map(([k,v])=>{
+    const on=relVisible[k];
+    return `<div class="legend-item legend-toggle${on?"":" off"}" onclick="toggleRel('${k}')" title="Click to ${on?"hide":"show"} ${relLabel[k]||k} edges" style="cursor:pointer"><div class="legend-line" style="background:${on?v:"#3a3f4d"}"></div>${relLabel[k]||k}</div>`;
+  }).join("");
   document.getElementById("graphLegend").innerHTML=`
     <div style="font-size:11px;color:var(--muted);font-weight:600;margin-right:4px">Nodes:</div>${statusEntries}
     <div style="width:1px;background:var(--line);margin:0 6px"></div>
     <div style="font-size:11px;color:var(--muted);font-weight:600;margin-right:4px">Edges:</div>${relEntries}
   `;
 }
+function toggleRel(rel){
+  relVisible[rel]=!relVisible[rel];
+  renderLegend();
+  if(lastGraphData)drawGraph(lastGraphData);
+}
 let schemaCy=null;
 let graphLabelsForced=false;
+let lastGraphData=null;
+const relVisible={relates_to:true,coactivated_with:true};
 function nodeColor(n){return statusColor[n.status||"active"]||"#5a6e91";}
 function graphNodeSize(n){return 12+Math.min(34,Math.sqrt(Math.max(0,Number(n.salience||0)))*3.2);}
 function graphNodeLabel(n){return `sch_${n.schema_id}`;}
@@ -993,13 +1014,43 @@ function randomPointInDisk(radius){
 }
 function rerunGraphLayout(){
   if(!schemaCy)return;
-  schemaCy.layout({name:"cose",animate:true,animationDuration:400,fit:true,padding:50,gravity:0,numIter:150}).run();
+  // cose's per-iteration cost grows with node count; a fixed 150-iteration
+  // animated layout on a large graph (e.g. the "all" node-count option) can
+  // freeze the tab for a long time. Scale iterations down and drop the
+  // animation past a size threshold instead of always paying the same cost.
+  const n=schemaCy.nodes().length;
+  const heavy=n>300;
+  schemaCy.layout({
+    name:"cose",animate:!heavy,animationDuration:400,fit:true,padding:50,gravity:0,
+    numIter:heavy?Math.max(20,Math.round(150*300/n)):150,
+  }).run();
+}
+// Co-activation line thickness is proportional to weight, scaled against
+// the min/max weight across ALL co-activation edges currently loaded (not
+// just the toggle-visible subset, so thickness stays stable when other
+// relation types are shown/hidden via the legend). Returns a scaler
+// function rather than a single value since both drawGraph (cytoscape)
+// and drawGraphSvgFallback (no-cytoscape fallback) need their own
+// min/max-to-pixel-range mapping.
+function coactivationWidthScale(edges){
+  const weights=(edges||[]).filter(e=>e.relation==="coactivated_with").map(e=>Number(e.confidence||0));
+  const lo=weights.length?Math.min(...weights):0;
+  const hi=weights.length?Math.max(...weights):1;
+  return function(w,minPx,maxPx){
+    if(hi<=lo)return (minPx+maxPx)/2;
+    const t=(Number(w||0)-lo)/(hi-lo);
+    return minPx+Math.max(0,Math.min(1,t))*(maxPx-minPx);
+  };
 }
 function drawGraph(g){
+  lastGraphData=g;
   const cyEl=document.getElementById("schemaGraphCy");
   const svg=document.getElementById("schemaGraph");
   const meta=document.getElementById("graphMeta");
-  const nodes=g.nodes||[],edges=g.edges||[];
+  const nodes=g.nodes||[];
+  const allEdges=g.edges||[];
+  const edges=allEdges.filter(e=>relVisible[e.relation]!==false);
+  const coactScale=coactivationWidthScale(allEdges);
   if(meta)meta.textContent=`${nodes.length} schemas · ${edges.length} relations · limit ${g.limit}`;
   if(!window.cytoscape){
     if(cyEl)cyEl.innerHTML=`<div class="graph-empty">Cytoscape failed to load; using SVG fallback.</div>`;
@@ -1027,9 +1078,11 @@ function drawGraph(g){
     },position:randomPointInDisk(1600)});
   });
   edges.forEach(e=>{
+    const conf=Number(e.confidence||0.5);
+    const isCoact=e.relation==="coactivated_with";
     elements.push({data:{
-      id:e.id,source:e.source,target:e.target,relation:e.relation,confidence:Number(e.confidence||0.5),
-      color:relColor[e.relation]||"#5a6e91",width:1+3*Number(e.confidence||0.5),
+      id:e.id,source:e.source,target:e.target,relation:e.relation,confidence:conf,
+      color:relColor[e.relation]||"#5a6e91",width:isCoact?coactScale(conf,0.6,3.2):1+3*conf,
       label:relLabel[e.relation]||e.relation,reason:e.reason||"",src_schema_id:e.src_schema_id,dst_schema_id:e.dst_schema_id
     }});
   });
@@ -1061,6 +1114,13 @@ function drawGraph(g){
         "target-arrow-shape":"triangle",
         "line-style":"dashed"
       }},
+      {selector:"edge[relation = 'coactivated_with']",style:{
+        "source-arrow-shape":"none",
+        "target-arrow-shape":"none",
+        "line-style":"dotted",
+        "opacity":0.35,
+        "width":"data(width)"
+      }},
       {selector:"node:selected",style:{"border-color":"#fff","border-width":5,"z-index":20}},
       {selector:".faded",style:{"opacity":0.12}},
       {selector:".highlight",style:{"opacity":1,"z-index":30}},
@@ -1078,8 +1138,9 @@ function drawGraph(g){
   schemaCy.on("mouseout","node",hideTip);
   schemaCy.on("mouseover","edge",ev=>{
     const e=ev.target.data();
-    const arrow = e.relation === "relates_to" ? "↔" : "→";
-    showTip(ev.originalEvent,`<b>${esc(e.relation)}</b><br>sch_${e.src_schema_id} ${arrow} sch_${e.dst_schema_id}<br>confidence: ${Number(e.confidence||0).toFixed(2)}${e.reason?`<br><em>${esc(e.reason)}</em>`:""}`);
+    const arrow = e.relation === "relates_to" ? "↔" : "—";
+    const metric = e.relation === "coactivated_with" ? `weight: ${Number(e.confidence||0).toFixed(3)}` : `confidence: ${Number(e.confidence||0).toFixed(2)}`;
+    showTip(ev.originalEvent,`<b>${esc(e.relation)}</b><br>sch_${e.src_schema_id} ${arrow} sch_${e.dst_schema_id}<br>${metric}${e.reason?`<br><em>${esc(e.reason)}</em>`:""}`);
   });
   schemaCy.on("mouseout","edge",hideTip);
   schemaCy.on("tap","node",ev=>{
@@ -1110,7 +1171,8 @@ function drawGraphSvgFallback(g){
     </filter>
   </defs>`;
   const w=svg.clientWidth||900,h=svg.clientHeight||660,cx=w/2,cy=h/2;
-  const nodes=g.nodes||[],edges=g.edges||[];
+  const nodes=g.nodes||[],edges=(g.edges||[]).filter(e=>relVisible[e.relation]!==false);
+  const coactScale=coactivationWidthScale(g.edges||[]);
   if(!nodes.length){
     const t=document.createElementNS("http://www.w3.org/2000/svg","text");
     t.setAttribute("x",cx);t.setAttribute("y",cy);
@@ -1126,8 +1188,13 @@ function drawGraphSvgFallback(g){
     n.x=cx+Math.cos(a)*r;n.y=cy+Math.sin(a)*r;
     n.vx=0;n.vy=0;
   });
-  // Force-directed layout
-  for(let iter=0;iter<120;iter++){
+  // Force-directed layout. The pairwise repulsion below is O(n^2) per
+  // iteration -- a fixed 120 iterations on a large graph (e.g. the "all"
+  // node-count option, up to _GRAPH_HARD_CAP=2000) can run for tens of
+  // millions of operations and freeze the tab. Scale iterations down past a
+  // size threshold instead of always paying the same fixed cost.
+  const svgIters=nodes.length>300?Math.max(15,Math.round(120*300/nodes.length)):120;
+  for(let iter=0;iter<svgIters;iter++){
     nodes.forEach(n=>{n.vx*=0.78;n.vy*=0.78;});
     for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
       const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y;
@@ -1154,34 +1221,40 @@ function drawGraphSvgFallback(g){
     const a=byId[e.source],b=byId[e.target];
     if(!a||!b)return;
     const color=relColor[e.relation]||"#5a6e91";
-    const sw=1.5+2*(e.confidence||0.5);
+    const sw=e.relation==="coactivated_with"?coactScale(e.confidence,0.5,2.8):1.5+2*(e.confidence||0.5);
     // offset for arrow
     const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)+0.01;
     const x2=b.x-dx/d*12,y2=b.y-dy/d*12;
     const isRelatesTo = e.relation === "relates_to";
+    const isCoactivated = e.relation === "coactivated_with";
     const line=document.createElementNS("http://www.w3.org/2000/svg","line");
-    line.setAttribute("x1",isRelatesTo ? a.x+dx/d*12 : a.x);
-    line.setAttribute("y1",isRelatesTo ? a.y+dy/d*12 : a.y);
-    line.setAttribute("x2",isRelatesTo ? b.x-dx/d*12 : x2);
-    line.setAttribute("y2",isRelatesTo ? b.y-dy/d*12 : y2);
+    line.setAttribute("x1",(isRelatesTo||isCoactivated) ? a.x+dx/d*12 : a.x);
+    line.setAttribute("y1",(isRelatesTo||isCoactivated) ? a.y+dy/d*12 : a.y);
+    line.setAttribute("x2",(isRelatesTo||isCoactivated) ? b.x-dx/d*12 : x2);
+    line.setAttribute("y2",(isRelatesTo||isCoactivated) ? b.y-dy/d*12 : y2);
     line.setAttribute("class","edge");line.setAttribute("stroke",color);
     line.setAttribute("stroke-width",sw);
-    if (isRelatesTo) {
+    if (isCoactivated) {
+      line.setAttribute("stroke-dasharray","2,4");
+      line.setAttribute("opacity","0.35");
+    } else if (isRelatesTo) {
       line.setAttribute("marker-start","url(#arrow-rev)");
       line.setAttribute("marker-end","url(#arrow)");
       line.setAttribute("stroke-dasharray","6,3");
     } else {
       line.setAttribute("marker-end","url(#arrow)");
     }
-    const arrowLabel = isRelatesTo ? "↔" : "→";
-    line.addEventListener("mouseenter",ev=>showTip(ev,`<b>${e.relation}</b><br>sch_${e.src_schema_id} ${arrowLabel} sch_${e.dst_schema_id}<br>confidence: ${Number(e.confidence||0).toFixed(2)}${e.reason?`<br><em>${esc(e.reason)}</em>`:""}`) );
+    const arrowLabel = isRelatesTo ? "↔" : (isCoactivated ? "—" : "→");
+    const tipMetric = isCoactivated ? `weight: ${Number(e.confidence||0).toFixed(3)}` : `confidence: ${Number(e.confidence||0).toFixed(2)}`;
+    line.addEventListener("mouseenter",ev=>showTip(ev,`<b>${e.relation}</b><br>sch_${e.src_schema_id} ${arrowLabel} sch_${e.dst_schema_id}<br>${tipMetric}${e.reason?`<br><em>${esc(e.reason)}</em>`:""}`) );
     line.addEventListener("mouseleave",hideTip);
     svg.appendChild(line);
     // edge label mid-point
     const t=document.createElementNS("http://www.w3.org/2000/svg","text");
     t.setAttribute("x",(a.x+b.x)/2);t.setAttribute("y",(a.y+b.y)/2-3);
     t.setAttribute("class","edge-label");t.setAttribute("text-anchor","middle");
-    t.setAttribute("fill",color);t.textContent=relLabel[e.relation]||e.relation;
+    t.setAttribute("fill",color);t.setAttribute("font-size",isCoactivated?"8":"9");
+    t.textContent=relLabel[e.relation]||e.relation;
     svg.appendChild(t);
   });
   // Draw nodes
@@ -1320,132 +1393,6 @@ async function loadSessionTimeline(sid){
   }catch(e){detail.innerHTML=emptyState("Error: "+esc(String(e)),"⚠️");}
 }
 
-// ── RELATIONS ──
-// Each relation type gets the view shape that actually fits its semantics:
-// supersedes/refines are pair-shaped (two schemas, one edge) -> a table with a
-// click-to-expand two-column detail; part_of is a hierarchy -> grouped by
-// parent with children nested underneath; reinforces sits at 700+ edges of
-// "same fact restated" -> a leaderboard (most-reinforced targets), not a
-// browsable edge list, since a raw list there would be pure noise.
-const RELATION_TYPES=[
-  {key:"supersedes",label:"Supersedes",icon:"⏭"},
-  {key:"refines",label:"Refines",icon:"🔧"},
-  {key:"part_of",label:"Part of",icon:"🧩"},
-];
-let relationsType="supersedes";
-const statCol=st=>statusColor[st]||"var(--muted)";
-
-function renderRelationsTypeBar(){
-  document.getElementById("relationsTypeBar").innerHTML=RELATION_TYPES.map(t=>{
-    const active=t.key===relationsType;
-    const style=active
-      ?"background:linear-gradient(to bottom,#6aabff,#4f9bff);color:#060c19;border-color:#4f9bff;font-weight:700;box-shadow:0 2px 8px rgba(79,155,255,.35)"
-      :"";
-    return `<button class=\"btn\" style=\"${style}\" onclick=\"setRelationsType('${t.key}')\">${t.icon} ${esc(t.label)}</button>`;
-  }).join("");
-}
-function setRelationsType(key){relationsType=key;renderRelationsTypeBar();loadRelations();}
-async function loadRelations(){
-  renderRelationsTypeBar();
-  const ld=document.getElementById("relationsLoading");
-  const el=document.getElementById("relationsContent");
-  ld.classList.add("show");
-  try{
-    const d=await getJSON(`/api/relations?type=${relationsType}&limit=100`);
-    if(d.error){el.innerHTML=emptyState(d.error,"⚠️");return;}
-    if(relationsType==="part_of")el.innerHTML=renderPartOfTree(d);
-    else el.innerHTML=renderRelationPairs(d);
-    el.querySelectorAll("tr.expandable").forEach(tr=>{
-      if(tr.dataset.srcId!==undefined)
-        tr.addEventListener("click",()=>expandRelationPairRow(tr,parseInt(tr.dataset.srcId),parseInt(tr.dataset.dstId)));
-      else
-        tr.addEventListener("click",()=>expandSchemaRow(tr,parseInt(tr.dataset.id)));
-    });
-  }finally{ld.classList.remove("show");}
-}
-
-function renderRelationPairs(d){
-  if(!d.pairs||!d.pairs.length)return emptyState(`No ${esc(relationsType)} relations found.`,"🔗");
-  // add_relation(src=acting side, dst=acted-upon side): for supersedes src is
-  // the NEW/winning schema and dst is the OLD/superseded one; for refines src
-  // is the newly-formed schema and dst is the existing one it refines.
-  const rows=d.pairs.map(s=>`
-    <tr class=\"expandable\" data-src-id=\"${s.src_schema_id}\" data-dst-id=\"${s.dst_schema_id}\">
-      <td><code style=\"color:${statCol(s.dst_status)}\">sch_${s.dst_schema_id}</code></td>
-      <td><code style=\"color:${statCol(s.src_status)}\">sch_${s.src_schema_id}</code></td>
-      <td>${confBar(s.rel_confidence)}</td>
-      <td><div style=\"max-width:240px\">${esc((s.reason||"n/a").slice(0,60))}${(s.reason||"").length>60?"…":""}</div></td>
-      <td><div style=\"font-size:11px\">${esc((s.dst_content||"").slice(0,80))}…<br><span style=\"color:${statCol(s.dst_status)};font-size:10px\">${esc(s.dst_status)}</span></div></td>
-      <td><div style=\"font-size:11px\">${esc((s.src_content||"").slice(0,80))}…<br><span style=\"color:${statCol(s.src_status)};font-size:10px\">${esc(s.src_status)}</span></div></td>
-      <td>${fmtDate(s.created_ts)} ${fmtTsCompact(s.created_ts)}</td>
-    </tr>`).join("");
-  const labelA=relationsType==="supersedes"?"Old":"Existing", labelB=relationsType==="supersedes"?"New":"Refining";
-  return `<div style=\"font-size:11px;color:var(--muted);margin-bottom:6px\">${num(d.total)} ${esc(relationsType)} relations · click a row for full detail</div>
-    <div class=\"table-wrap\"><table><thead><tr><th>${labelA}</th><th>${labelB}</th><th>Confidence</th><th>Reason</th><th>${labelA} content</th><th>${labelB} content</th><th>When</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-
-async function expandRelationPairRow(tr,srcId,dstId){
-  const nextTr=tr.nextElementSibling;
-  if(nextTr&&nextTr.classList.contains("expand-row")){nextTr.remove();tr.classList.remove("schema-row-expanded");return;}
-  tr.parentElement.querySelectorAll("tr.expand-row").forEach(r=>r.remove());
-  tr.parentElement.querySelectorAll("tr.schema-row-expanded").forEach(r=>r.classList.remove("schema-row-expanded"));
-  tr.classList.add("schema-row-expanded");
-  const [dstD,srcD]=await Promise.all([getJSON(`/api/schemas/${dstId}`),getJSON(`/api/schemas/${srcId}`)]);
-  const miniCard=(label,d)=>{
-    const s=d.schema||{};
-    const out=(d.outgoing||[]).filter(r=>r.relation==="supersedes"||r.relation==="refines");
-    const inc=(d.incoming||[]).filter(r=>r.relation==="supersedes"||r.relation==="refines");
-    const chain=[
-      ...out.map(r=>`↳ this also ${esc(r.relation)} <code>sch_${r.dst_schema_id}</code>`),
-      ...inc.map(r=>`↰ <code>sch_${r.src_schema_id}</code> also ${esc(r.relation)} this`),
-    ];
-    return `<div class=\"detail-section\" style=\"flex:1 1 50%;min-width:0;box-sizing:border-box\">
-      <h4>${esc(label)} — ${esc(s.id)}</h4>
-      <div style=\"display:flex;gap:8px;align-items:center;margin-bottom:8px\">
-        <span class=\"pill pill-${esc(s.status)}\">${esc(s.status)}</span>
-        <span style=\"font-size:11px;color:var(--muted)\">scope: ${esc(s.scope||"(none)")}</span>
-        <span style=\"font-size:11px;color:var(--muted)\">stage: ${s.generalization_stage||0}</span>
-      </div>
-      <div style=\"font-size:13px;line-height:1.5;background:var(--panel2);padding:10px;border-radius:6px;white-space:pre-wrap\">${esc(s.content||"")}</div>
-      <div style=\"font-size:11px;color:var(--muted);margin-top:8px\">salience ${Number(s.salience||0).toFixed(2)} · confidence ${Number(s.confidence||0).toFixed(2)}</div>
-      ${chain.length?`<div style=\"font-size:11px;color:var(--muted);margin-top:8px\">${chain.join("<br>")}</div>`:""}
-    </div>`;
-  };
-  const expTr=document.createElement("tr");
-  expTr.className="expand-row";
-  expTr.innerHTML=`<td colspan=\"7\" style=\"padding:0\"><div class=\"expand-content\" style=\"display:flex;gap:16px;width:100%;box-sizing:border-box\">
-    ${miniCard(relationsType==="supersedes"?"Old":"Existing",dstD)}
-    ${miniCard(relationsType==="supersedes"?"New":"Refining",srcD)}
-  </div></td>`;
-  tr.after(expTr);
-}
-
-function renderPartOfTree(d){
-  if(!d.parents||!d.parents.length)return emptyState("No part_of relations found.","🧩");
-  const rows=d.parents.map(p=>{
-    const childRows=p.children.map(c=>`
-      <tr class=\"expandable\" data-id=\"${c.id}\">
-        <td style=\"padding-left:28px\">↳ <code style=\"color:${statCol(c.status)}\">sch_${c.id}</code></td>
-        <td><div style=\"font-size:11px;max-width:400px\">${esc((c.content||"").slice(0,100))}…</div></td>
-        <td>${confBar(c.confidence)}</td>
-        <td><div style=\"max-width:200px;font-size:11px;color:var(--muted)\">${esc((c.reason||"n/a").slice(0,60))}${(c.reason||"").length>60?"…":""}</div></td>
-        <td><span class=\"pill pill-${esc(c.status)}\">${esc(c.status)}</span></td>
-      </tr>`).join("");
-    return `
-      <tr class=\"expandable\" data-id=\"${p.id}\" style=\"background:var(--panel2)\">
-        <td><code style=\"color:${statCol(p.status)}\">sch_${p.id}</code> <span style=\"font-size:10px;color:var(--muted)\">(${p.children.length} part${p.children.length!==1?"s":""})</span></td>
-        <td><div style=\"font-size:11px;max-width:400px;font-weight:600\">${esc((p.content||"").slice(0,100))}…</div></td>
-        <td></td>
-        <td></td>
-        <td><span class=\"pill pill-${esc(p.status)}\">${esc(p.status)}</span></td>
-      </tr>${childRows}`;
-  }).join("");
-  return `<div style=\"font-size:11px;color:var(--muted);margin-bottom:6px\">${num(d.total)} part_of edges across ${d.parents.length} parent schema${d.parents.length!==1?"s":""} · click any row for full detail</div>
-    <div class=\"table-wrap\"><table><thead><tr><th>Schema</th><th>Content</th><th>Confidence</th><th>Reason</th><th>Status</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-
 // ── GENERALIZATION ──
 const GEN_LABELS=['SCOPED','PORTABLE','CONTEXTUAL','GLOBAL'];
 const GEN_COLORS=['var(--gray)','var(--blue)','var(--amber)','var(--green)'];
@@ -1491,11 +1438,116 @@ async function loadGeneralizationStats(){
   }catch(e){}
 }
 
+// ── PROCEDURES ──
+
+async function loadProcedures(){
+  const ld=document.getElementById("procLoading");
+  const gate=document.getElementById("procGate");
+  const list=document.getElementById("procList");
+  ld.style.display="flex";gate.style.display="none";list.innerHTML="";
+  try{
+    const minS=document.getElementById("procMinSessions").value;
+    const lim=document.getElementById("procLimit").value;
+    const scope=document.getElementById("procScope").value;
+    const params=new URLSearchParams({min_sessions:minS,limit:lim});
+    if(scope)params.set("scope",scope);
+    const d=await getJSON("/api/procedures?"+params.toString());
+    const clusters=d.clusters||[];
+    const gateVal=d.gate||"";
+    const stepSessions=d.step_sessions||0;
+    const nGood=d.n_good_clusters||0;
+    const gateTarget=d.gate_target||5;
+    const avgSuccess=clusters.length?Math.round(clusters.reduce((s,c)=>s+c.success_rate,0)/clusters.length*1000)/10:0;
+    const cards=[
+      {icon:"🔄",label:"Procedure clusters",val:num(d.total_clusters_found),sub:`≥${d.min_sessions||2} sess`,accent:"var(--cyan)"},
+      {icon:"📈",label:"Step-sessions",val:num(stepSessions),sub:`of ${num(d.qualified_sessions||0)} with goal+outcome`,accent:"var(--blue)"},
+      {icon:"✅",label:"Avg success rate",val:avgSuccess+"%",sub:"across clusters",accent:"var(--green)"},
+      {icon:"🎯",label:"Phase 2 gate",val:`${nGood}/${gateTarget}`,sub:d.gate_pass?"PASS":"not yet",accent:d.gate_pass?"var(--green)":"var(--amber)"},
+    ];
+    document.getElementById("procStatGrid").innerHTML=cards.map(c=>
+      `<div class="stat-card" style="--accent:${c.accent}">
+        <div class="sc-icon">${c.icon}</div>
+        <div class="sc-label">${esc(c.label)}</div>
+        <div class="sc-value">${esc(String(c.val))}</div>
+        <div class="sc-sub">${esc(c.sub||"")}</div>
+      </div>`
+    ).join("");
+    if(gateVal==="insufficient_data"){
+      gate.style.display="block";
+      gate.innerHTML=`<div class="alert alert-warn" style="margin-bottom:12px">
+        <span class="alert-icon">⚠️</span>
+        <div><b>Insufficient signal</b><br>
+        Needs ≥${d.min_for_detection||2} sessions with real <code>commit(steps=[...])</code> data
+        to detect patterns. Currently: <b>${stepSessions}</b> step-sessions.
+        <br>This tab populates as you dogfood <code>slowave_commit(steps=[...])</code> more.</div>
+      </div>`;
+      return;
+    }
+    if(!clusters.length){
+      list.innerHTML=emptyState("No procedure clusters found at min "+d.min_sessions+" sessions.","🔄");
+      return;
+    }
+    list.innerHTML=clusters.map((c,i)=>{
+      const sr=Math.round(c.success_rate*100);
+      const sBar=`<div style="flex:1;height:6px;background:var(--panel3);border-radius:999px;overflow:hidden;max-width:120px">
+        <div style="height:100%;width:${sr}%;background:var(--green);border-radius:999px"></div>
+      </div>`;
+      const goalsHTML=c.example_goals.map(g=>
+        `<span style="color:var(--muted);font-style:italic">${esc(g.slice(0,80))}</span>`
+      ).join(", ");
+      const stepsHTML=(c.example_steps||[]).slice(0,3).map(s=>
+        `<div style="color:var(--muted);padding:1px 0">· ${esc(s.slice(0,90))}</div>`
+      ).join("");
+      const scBadge=c.scope_id
+        ?`<span style="font-size:11px;color:var(--muted);background:var(--panel2);padding:2px 6px;border-radius:4px">📦 ${esc(c.scope_id)}</span>`:"";
+      const cohBadge=`<span style="font-size:11px;color:var(--muted);background:var(--panel2);padding:2px 6px;border-radius:4px">🎯 coherence ${c.goal_coherence.toFixed(2)}</span>`;
+      const antiBadge=c.anti_pattern
+        ?`<span style="font-size:11px;color:var(--red);background:color-mix(in srgb,var(--red) 15%,transparent);padding:2px 6px;border-radius:4px">⚠️ anti-pattern</span>`:"";
+      const compBadge=(c.competes_with&&c.competes_with.length)
+        ?`<span style="font-size:11px;color:var(--amber);background:color-mix(in srgb,var(--amber) 15%,transparent);padding:2px 6px;border-radius:4px">⇄ competes with #${c.competes_with.join(", #")}</span>`:"";
+      const scColor=sr>=70?'var(--green)':sr>=40?'var(--amber)':'var(--red)';
+      return `<div class="proc-card" style="margin-bottom:12px">
+        <div class="proc-header">
+          <div class="proc-goal">🔄 Procedure #${i+1}</div>
+          <div style="font-size:13px;color:var(--muted);display:flex;align-items:center;gap:4px;flex-shrink:0">
+            <b style="color:var(--text)">${c.session_count}</b> sessions ·
+            <span style="color:${scColor}">${sr}% success</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px">
+          ${sBar} <span style="color:var(--muted);white-space:nowrap">${c.successes}/${c.session_count}</span>
+        </div>
+        <div style="font-size:12px;margin-bottom:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          🎯 ${goalsHTML}</div>
+        ${stepsHTML?`<div style="font-size:11px;margin-bottom:8px">${stepsHTML}</div>`:""}
+        <div style="font-size:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          ${scBadge}${cohBadge}${antiBadge}${compBadge}
+        </div>
+        <button class="btn" onclick="toggleProcSessions(this,'proc-sessions-${i}')" style="font-size:11px">
+          ▸ ${c.total_session_ids} sessions
+        </button>
+        <div id="proc-sessions-${i}" style="display:none;margin-top:8px;padding:8px 10px;background:var(--panel2);border-radius:6px;font-size:11px;max-height:200px;overflow-y:auto">
+          ${c.session_ids.map(sid=>`<div style="padding:3px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px">
+            <span onclick="loadSessionTimeline('${esc(sid)}')" style="cursor:pointer;color:var(--blue);white-space:nowrap" title="Open session timeline">${esc(sid)}</span>
+          </div>`).join("")}
+          ${c.total_session_ids>c.session_ids.length?`<div style="color:var(--muted);padding-top:4px">… and ${c.total_session_ids-c.session_ids.length} more</div>`:""}
+        </div>
+      </div>`;
+    }).join("");
+  }catch(e){console.error("procedures",e);list.innerHTML=`<div style="color:var(--red);font-size:12px">${esc(String(e))}</div>`;}
+  finally{ld.style.display="none";}
+}
+
+function toggleProcSessions(btn,id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const open=el.style.display==="block";
+  el.style.display=open?"none":"block";
+  btn.textContent=(open?"▸":"▾")+" "+btn.textContent.slice(2);
+}
+
 // ── INIT ──
-// Ensure new functions are globally accessible
 window.loadSessionTimeline = loadSessionTimeline;
-window.loadRelations = loadRelations;
-window.setRelationsType = setRelationsType;
 
 loadStatus();
 renderPulse();

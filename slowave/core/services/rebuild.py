@@ -265,10 +265,8 @@ class RebuildService:
             db=db,
         )
 
-        from slowave.core.supersession_manifold import SupersessionManifold
         from slowave.latent.schema import GeometricContradictionJudge, LatentSchemaBuilder
 
-        manifold = SupersessionManifold(encoder) if encoder is not None else None
         consolidator = Consolidator(
             db=db,
             semantic=semantic,
@@ -276,7 +274,7 @@ class RebuildService:
             schemas=schemas,
             encoder=encoder,
             latent_builder=LatentSchemaBuilder(),
-            geometric_judge=GeometricContradictionJudge(cfg.judge, manifold=manifold),
+            geometric_judge=GeometricContradictionJudge(cfg.judge),
             episodic_store=episodic,
             logic_version=cfg.current_logic_version,
         )

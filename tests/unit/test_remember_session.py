@@ -144,3 +144,24 @@ class TestRememberLiveSession:
         # All episodes for sid came from exactly one session_end call.
         assert _episodes_for_session(eng, sid) == count_two_events
         assert _episodes_for_session(eng, sid2) == count_one_event
+
+    def test_second_session_end_call_does_not_duplicate_episodes(self, eng):
+        """Regression (2026-07-24 Tier-0 audit): the idle-session reaper calls
+        session_end(consolidate=False) to close an idle session; if the client
+        later calls slowave_commit on that same session_id (normal for any
+        real task that runs longer than the idle timeout), session_end used
+        to re-run form_episodes() from scratch and insert duplicate episode
+        rows for every raw event already processed the first time."""
+        sid = eng.session_start(agent="test")
+        eng.remember(content="I prefer tabs over spaces", type="preference", session_id=sid)
+
+        first = eng.session_end(sid)
+        assert first["episodes_formed"] > 0
+        assert "already_ended" not in first
+        count_after_first = _episode_count(eng)
+
+        second = eng.session_end(sid, outcome="success")
+        assert second["episodes_formed"] == 0
+        assert second["already_ended"] is True
+        assert _episode_count(eng) == count_after_first
+        assert _episodes_for_session(eng, sid) == count_after_first

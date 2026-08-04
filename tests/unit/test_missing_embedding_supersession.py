@@ -1,10 +1,12 @@
-"""Tests for missing-embedding guard in supersession paths.
+"""Tests for missing-embedding guard in the consolidation supersession path.
 
-Covers:
-  - Consolidation: _write_latent_schema must not supersede when
-    _fetch_schema_embedding returns None (was zero-vector fallback).
-  - Engine: remember() must not supersede when candidate_emb is None
-    (was defaulting dir_score to DIRECTION_THRESHOLD).
+Covers: _write_latent_schema must not supersede when
+_fetch_schema_embedding returns None (was zero-vector fallback).
+
+(remember() used to have an equivalent engine-path guard, but remember() no
+longer runs any geometric classification itself — see
+test_geometry_supersession.py — so that guard and its test were removed
+along with the code they protected.)
 """
 
 from __future__ import annotations
@@ -14,40 +16,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from slowave.core.config import SlowaveConfig
 from slowave.core.consolidation import Consolidator
-from slowave.core.engine import SlowaveEngine
 from slowave.latent.schema import LatentSchema
-
-# ---- Stub encoder / engine factory (same pattern as test_remember_result.py) ----
-
-
-class _StubEncoder:
-    """Deterministic encoder seeded by hash(text)."""
-
-    def __init__(self, dim: int = 32):
-        self._dim = dim
-
-    def encode(self, text: str) -> np.ndarray:
-        seed = int(abs(hash(text)) % (2**31))
-        v = np.random.default_rng(seed).standard_normal(self._dim).astype(np.float32)
-        return v / (np.linalg.norm(v) + 1e-12)
-
-
-def _make_engine(tmp_path, dim: int = 32) -> SlowaveEngine:
-    eng = SlowaveEngine(
-        SlowaveConfig(db_path=str(tmp_path / "test.db"), dim=dim, disable_encoder=True)
-    )
-    eng.encoder = _StubEncoder(dim)
-    return eng
-
-
-@pytest.fixture()
-def eng(tmp_path):
-    engine = _make_engine(tmp_path)
-    yield engine
-    engine.close()
-
 
 # ---- Consolidation-path test fixtures ----
 
@@ -145,46 +115,3 @@ def test_write_latent_schema_judge_called_when_embedding_present(mock_deps):
 
     # The geometric judge MUST have been called with valid embeddings.
     mock_deps["geometric_judge"].judge.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Engine path: remember() candidate loop
-# ---------------------------------------------------------------------------
-
-
-def test_remember_dir_score_is_zero_when_candidate_emb_none(eng):
-    """When candidate_emb is None in remember()'s supersession loop,
-    dir_score must be 0.0 (not DIRECTION_THRESHOLD), preventing false
-    supersession."""
-    # Create schema A with valid embedding.
-    r1 = eng.remember(content="Project uses SQLite for storage.", type="fact")
-    schema_a_id = r1.schema_id
-
-    # Manually nullify schema A's embedding in the DB.
-    conn = eng.db.connect()
-    conn.execute(
-        "UPDATE schemas SET embedding = NULL, dim = NULL WHERE id = ?",
-        (schema_a_id,),
-    )
-    conn.commit()
-
-    # Patch _fetch_schema_embedding to return None for our schema.
-    # (The DB now has NULL, but FAISS still holds the old embedding
-    # so the candidate loop will find it. The guard must prevent
-    # supersession when the DB-side fetch returns None.)
-    original_fetch = eng._fetch_schema_embedding
-
-    def patched_fetch(sid):
-        if sid == schema_a_id:
-            return None
-        return original_fetch(sid)
-
-    with patch.object(eng, "_fetch_schema_embedding", side_effect=patched_fetch):
-        r2 = eng.remember(
-            content="Project uses DuckDB for storage.",
-            type="fact",
-        )
-
-    assert schema_a_id not in r2.superseded_schema_ids
-    schema = eng.schemas.get(schema_a_id)
-    assert schema.status in ("active", "needs_review")

@@ -284,6 +284,8 @@ svg{width:100%;height:100%}
 .legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
 .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 .legend-line{width:18px;height:3px;border-radius:2px;flex-shrink:0}
+.legend-toggle.off{opacity:0.35;text-decoration:line-through}
+.legend-toggle.off .legend-line{opacity:0.3}
 @media(max-width:1100px){.graph-layout{grid-template-columns:1fr}.graph-side{height:auto}.graph-box{height:500px}}
 
 /* ── TOOLTIP ── */
@@ -410,7 +412,6 @@ tr.expandable:hover td{background:var(--panel3)}
     <button class="tab active" data-tab="overview">📊 Overview</button>
     <button class="tab" data-tab="schemas">📖 Schemas</button>
     <button class="tab" data-tab="graph">🕸 Graph</button>
-    <button class="tab" data-tab="relations">🔗 Relations</button>
     <button class="tab" data-tab="worker">🧠 Worker</button>
     <button class="tab" data-tab="db">💾 DB Health</button>
   </nav>
@@ -571,18 +572,23 @@ tr.expandable:hover td{background:var(--panel3)}
     <div id="dbHealth"></div>
   </div>
 </section>
-<!-- RELATIONS -->
-<section id="relations" class="section">
-  <div class="panel">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div class="panel-title" style="margin:0">🔗 Relations</div>
-      <button class="btn" onclick="loadRelations()">↺ Refresh</button>
-    </div>
-    <div id="relationsTypeBar" style="display:flex;gap:6px;margin-bottom:14px"></div>
-    <div id="relationsLoading" class="loading-overlay"><div class="spinner"></div></div>
-    <div id="relationsContent"></div>
+
+<!-- PROCEDURES -->
+<section id="procedures" class="section">
+  <div class="stat-grid" id="procStatGrid"></div>
+  <div class="controls" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <label style="font-size:12px;color:var(--muted);white-space:nowrap">Min. sessions</label>
+    <input id="procMinSessions" type="number" value="2" min="2" max="20" style="width:55px"/>
+    <label style="font-size:12px;color:var(--muted);white-space:nowrap">Max</label>
+    <input id="procLimit" type="number" value="20" min="5" max="50" style="width:55px"/>
+    <select id="procScope" style="width:180px"><option value="">(all scopes)</option></select>
+    <button class="btn primary" onclick="loadProcedures()">↺ Refresh</button>
   </div>
+  <div id="procLoading" class="loading-overlay" style="display:none"><div class="spinner"></div> Loading procedures…</div>
+  <div id="procGate" style="display:none"></div>
+  <div id="procList"></div>
 </section>
+
 </main>
 
 <div id="forgetModalOverlay" class="modal-overlay" onclick="if(event.target===this)closeForgetModal()">

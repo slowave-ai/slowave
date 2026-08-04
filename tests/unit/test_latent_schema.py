@@ -103,9 +103,11 @@ class TestGeometricContradictionJudge:
         )
         assert result.facet_distance < self.judge.cfg.contradicts_facet_dist
 
-    def test_refining_schemas_high_facet_distance_low_direction(self):
-        """Same topic, orthogonal facet axes, no direction signal -> refines
-        (elaboration on a different aspect, not a value substitution)."""
+    def test_high_facet_distance_no_longer_refines(self):
+        """Same topic, orthogonal facet axes -- previously expected 'refines',
+        now expects 'relates_to' per 2026-07-22 taxonomy collapse: no geometric
+        signal (direction_score, facet_distance) generalizes beyond synthetic
+        seed sets, so the honest verdict for all same-topic pairs is relates_to."""
         c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
         c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0, 0.0]))
         axis_old = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
@@ -113,14 +115,11 @@ class TestGeometricContradictionJudge:
         a = _make_schema(c_old, facet_axes=axis_old, support_count=3)
         b = _make_schema(c_new, facet_axes=axis_new, support_count=4, mean_ts=2_000_000)
         result = self.judge.judge(old=a, new=b)
-        assert result.verdict == "refines"
-        assert result.facet_distance >= self.judge.cfg.contradicts_facet_dist
+        assert result.verdict == "relates_to"
 
-    def test_high_facet_distance_without_direction_signal_refines(self):
-        """High facet_distance alone (no manifold, no direction signal) is
-        no longer enough to reach "contradicts"/"supersedes" -- that string
-        no longer exists as a verdict. It now maps to "refines": divergent
-        facets without a value-substitution signal is elaboration."""
+    def test_high_facet_distance_no_manifold_relates_to(self):
+        """High facet_distance with no manifold -- previously expected 'refines',
+        now expects 'relates_to' per 2026-07-22 taxonomy collapse."""
         c = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
         c2 = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))  # cos ~0.80
         axis_a = np.array([[1.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
@@ -128,14 +127,15 @@ class TestGeometricContradictionJudge:
         old = _make_schema(c, facet_axes=axis_a, support_count=2, mean_ts=1_000_000)
         new = _make_schema(c2, facet_axes=axis_b, support_count=5, mean_ts=2_000_000)
         result = self.judge.judge(old=old, new=new)
-        assert result.verdict == "refines"
+        assert result.verdict == "relates_to"
         assert result.time_delta_s > 0
 
-    def test_newer_with_higher_support_still_refines_without_direction_signal(self):
+    def test_newer_with_higher_support_relates_to(self):
         """Same geometry as above (newer, better-supported, divergent
-        facets) -- without a manifold, support/recency metadata alone
-        cannot promote this to "supersedes"; that requires direction_score
-        (see test_supersedes_via_direction_score)."""
+        facets) -- per 2026-07-22 taxonomy collapse, all same-topic pairs
+        are relates_to regardless of facet distance or support/recency.
+        Supersession (status changes) is now gated at the consolidation
+        call site (cos >= 0.90 + support + recency), not by the judge."""
         c = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
         c2 = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))  # cos ~0.80
         axis_a = np.array([[1.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
@@ -143,7 +143,7 @@ class TestGeometricContradictionJudge:
         old = _make_schema(c, facet_axes=axis_a, support_count=2, mean_ts=1_000_000)
         new = _make_schema(c2, facet_axes=axis_b, support_count=5, mean_ts=2_000_000)
         result = self.judge.judge(old=old, new=new)
-        assert result.verdict == "refines"
+        assert result.verdict == "relates_to"
 
     def test_no_facet_axes_falls_back_to_relates_to(self):
         """Same-topic schemas with no facet axes on either side -> relates_to
@@ -158,84 +158,6 @@ class TestGeometricContradictionJudge:
         result = self.judge.judge(old=a, new=b)
         assert result.verdict == "relates_to"
         assert result.facet_distance == 0.0
-
-    def test_part_of_via_containment(self):
-        """A's diff-from-B lives almost entirely inside B's facet spread,
-        and not the reverse -> part_of (A is the specific instance, B the
-        broader container). Geometry follows the same construction as
-        tests/unit/test_part_of_backfill.py's _seed_pair helper."""
-        cos_t = 0.85
-        sin_t = float(np.sqrt(1 - cos_t**2))
-        a_emb = np.zeros(8, dtype=np.float32)
-        a_emb[0] = 1.0
-        b_emb = np.zeros(8, dtype=np.float32)
-        b_emb[0] = cos_t
-        b_emb[1] = sin_t
-        # theta=0 puts all of the diff's B-axis-relevant component onto
-        # b_axis, maximizing c_ab (comfortably above containment_threshold).
-        b_axis = np.zeros((1, 8), dtype=np.float32)
-        b_axis[0, 1] = 1.0
-        # A's own axes are orthogonal to the diff entirely -> c_ba ~= 0.
-        a_axes = np.zeros((2, 8), dtype=np.float32)
-        a_axes[0, 3] = 1.0
-        a_axes[1, 4] = 1.0
-        a = _make_schema(a_emb, facet_axes=a_axes)
-        b = _make_schema(b_emb, facet_axes=b_axis)
-        result = self.judge.judge(old=a, new=b)
-        assert result.verdict == "part_of"
-        assert result.contains_direction == "old_within_new"
-
-    def test_containment_symmetric_does_not_trigger_part_of(self):
-        """Both directions of containment are high and close together ->
-        NOT part_of (symmetric containment is co-reference/overlap, not
-        hierarchy -- see _subspace_containment's docstring)."""
-        cos_t = 0.85
-        sin_t = float(np.sqrt(1 - cos_t**2))
-        a_emb = np.zeros(8, dtype=np.float32)
-        a_emb[0] = 1.0
-        b_emb = np.zeros(8, dtype=np.float32)
-        b_emb[0] = cos_t
-        b_emb[1] = sin_t
-        # Both sides' single facet axis points straight along the diff's
-        # only non-trivial direction (e1) -> c_ab and c_ba both ~= 1.0.
-        shared_axis = np.zeros((1, 8), dtype=np.float32)
-        shared_axis[0, 1] = 1.0
-        a = _make_schema(a_emb, facet_axes=shared_axis)
-        b = _make_schema(b_emb, facet_axes=shared_axis)
-        result = self.judge.judge(old=a, new=b)
-        assert result.verdict != "part_of"
-
-    def test_supersedes_via_direction_score(self):
-        """A manifold reporting a high direction_score triggers "supersedes"
-        even when facet_distance alone would not have crossed the old
-        contradicts threshold -- the key regression test proving the judge
-        now actually consults direction_score."""
-
-        class _StubManifold:
-            def direction_score(self, emb_new, emb_old):
-                return 0.5  # comfortably >= DIRECTION_THRESHOLD (0.10)
-
-        judge = GeometricContradictionJudge(manifold=_StubManifold())
-        c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))
-        axis = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
-        a = _make_schema(c_old, facet_axes=axis)
-        b = _make_schema(c_new, facet_axes=axis)
-        result = judge.judge(old=a, new=b)
-        assert result.verdict == "supersedes"
-
-    def test_supersedes_requires_manifold_falls_back_when_absent(self):
-        """Same geometry as test_supersedes_via_direction_score but with no
-        manifold injected -- verdict must NOT be "supersedes" (proves the
-        graceful-degradation decision: direction_score defaults to 0.0, not
-        DIRECTION_THRESHOLD, so missing data never fabricates a verdict)."""
-        c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))
-        axis = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
-        a = _make_schema(c_old, facet_axes=axis)
-        b = _make_schema(c_new, facet_axes=axis)
-        result = self.judge.judge(old=a, new=b)  # self.judge has manifold=None
-        assert result.verdict != "supersedes"
 
     def test_relates_to_catch_all(self):
         """Same-topic cosine below reinforce_cosine, but facet axes present

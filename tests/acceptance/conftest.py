@@ -33,11 +33,11 @@ _PHASES: dict[str, str] = {
     "test_relations_schema_evidence": "Relations — Schema evidence links",
     "test_relations_evidence_credits_consolidation_path_across_scopes": "Relations — Consolidation-path evidence crediting",
     "test_relations_cross_scope_isolation": "Relations — Cross-scope isolation",
-    "test_relations_supersession": "Relations — Supersession edges",
-    "test_relations_coactivation": "Relations — Co-activation edges",
-    "test_relations_part_of_hierarchy": "Relations — part_of facet backfill, hierarchy, negative rejection",
+    "test_metadata_gated_supersession": "Relations — Metadata-gated supersession edges",
+    "test_relations_prototype_coactivation": "Relations — Prototype-level co-activation edges",
+    "test_relations_schema_coactivation": "Relations — Schema-level co-activation edges + cross-scope isolation",
     "test_relations_graph_expansion_respects_cross_scope_isolation": "Relations — Graph-expansion cross-scope isolation",
-    "test_relations_no_reverse_directional_duplicates": "Relations — No reverse-directional duplicate edges",
+    "test_forget_unforget_lifecycle": "Forget / unforget lifecycle",
 }
 
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slowave.cli.output import Status
+from slowave.lifecycle import LIFECYCLE_VERSION
 
 
 @dataclass
@@ -16,6 +17,7 @@ class ClientStatus:
     mcp_configured: bool = False
     hooks_installed: bool = False
     lifecycle_enabled: bool = False
+    lifecycle_version: str | None = None
     running: bool = False
 
 
@@ -71,6 +73,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             _claude_settings_path,
             _cline_mcp_settings_path,
             _clinerules_path,
+            _detect_lifecycle_version,
             _read_json,
         )
 
@@ -78,6 +81,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         cc_settings = _claude_settings_path()
         cc_md = _claude_md_path()
         cc_has_mcp = cc_has_hooks = cc_has_lifecycle = False
+        cc_lifecycle_version: str | None = None
 
         if cc_json.exists():
             try:
@@ -99,9 +103,9 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 pass
         if cc_md.exists():
             try:
-                cc_has_lifecycle = _MARKER_START in cc_md.read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                cc_md_text = cc_md.read_text(encoding="utf-8", errors="ignore")
+                cc_has_lifecycle = _MARKER_START in cc_md_text
+                cc_lifecycle_version = _detect_lifecycle_version(cc_md_text)
             except Exception:
                 pass
 
@@ -111,6 +115,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 mcp_configured=cc_has_mcp,
                 hooks_installed=cc_has_hooks,
                 lifecycle_enabled=cc_has_lifecycle,
+                lifecycle_version=cc_lifecycle_version,
             )
 
         cd_config = _claude_desktop_config_path()
@@ -129,6 +134,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         cline_mcp = _cline_mcp_settings_path()
         cline_rules = _clinerules_path()
         cline_has_mcp = cline_has_lifecycle = False
+        cline_lifecycle_version: str | None = None
         if cline_mcp.exists():
             try:
                 cfg = _read_json(cline_mcp)
@@ -137,9 +143,9 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 pass
         if cline_rules.exists():
             try:
-                cline_has_lifecycle = _MARKER_START in cline_rules.read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                cline_rules_text = cline_rules.read_text(encoding="utf-8", errors="ignore")
+                cline_has_lifecycle = _MARKER_START in cline_rules_text
+                cline_lifecycle_version = _detect_lifecycle_version(cline_rules_text)
             except Exception:
                 pass
         if cline_mcp.exists() or cline_rules.exists():
@@ -147,6 +153,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 name="Cline",
                 mcp_configured=cline_has_mcp,
                 lifecycle_enabled=cline_has_lifecycle,
+                lifecycle_version=cline_lifecycle_version,
             )
 
         cursor_mcp = _cursor_mcp_config_path()
@@ -166,6 +173,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
 
         oc_config = _opencode_config_path()
         oc_has_mcp = oc_has_lifecycle = False
+        oc_lifecycle_version: str | None = None
         if oc_config.exists():
             try:
                 cfg = _read_json(oc_config)
@@ -175,9 +183,9 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         oc_inst = _opencode_instructions_path()
         if oc_inst.exists():
             try:
-                oc_has_lifecycle = _MARKER_START in oc_inst.read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                oc_inst_text = oc_inst.read_text(encoding="utf-8", errors="ignore")
+                oc_has_lifecycle = _MARKER_START in oc_inst_text
+                oc_lifecycle_version = _detect_lifecycle_version(oc_inst_text)
             except Exception:
                 pass
         if oc_config.exists() or oc_inst.exists():
@@ -185,6 +193,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 name="OpenCode",
                 mcp_configured=oc_has_mcp,
                 lifecycle_enabled=oc_has_lifecycle,
+                lifecycle_version=oc_lifecycle_version,
             )
 
         # Codex detection — TOML config, mcp_servers key, hooks + AGENTS.md
@@ -200,6 +209,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         codex_agents_md = _codex_agents_md_path()
         codex_override = _codex_home() / "AGENTS.override.md"
         codex_has_mcp = codex_has_hooks = codex_has_lifecycle = False
+        codex_lifecycle_version: str | None = None
         if codex_cfg_path.exists():
             try:
                 ccfg = _read_toml(codex_cfg_path)
@@ -214,9 +224,9 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 pass
         if codex_agents_md.exists():
             try:
-                codex_has_lifecycle = _MARKER_START in codex_agents_md.read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                codex_agents_text = codex_agents_md.read_text(encoding="utf-8", errors="ignore")
+                codex_has_lifecycle = _MARKER_START in codex_agents_text
+                codex_lifecycle_version = _detect_lifecycle_version(codex_agents_text)
             except Exception:
                 pass
         if codex_cfg_path.exists() or codex_agents_md.exists():
@@ -227,6 +237,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 # AGENTS.override.md shadows AGENTS.md entirely at this scope — if it
                 # exists, the injected block in AGENTS.md is never read by Codex.
                 lifecycle_enabled=codex_has_lifecycle and not codex_override.exists(),
+                lifecycle_version=codex_lifecycle_version,
             )
     except ImportError:
         pass
@@ -314,6 +325,13 @@ def summarize_client_status(client: ClientStatus) -> tuple[Status, str]:
         if client.hooks_installed:
             parts.append("hooks")
         if client.lifecycle_enabled:
+            if client.lifecycle_version and client.lifecycle_version != LIFECYCLE_VERSION:
+                return (
+                    Status.WARN,
+                    f"MCP (HTTP); lifecycle block is stale "
+                    f"({client.lifecycle_version}, current {LIFECYCLE_VERSION}) — "
+                    "run: slowave setup",
+                )
             parts.append("lifecycle")
         return (Status.OK, ", ".join(parts))
     return (Status.SKIP, "not configured (run: slowave setup)")

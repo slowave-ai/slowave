@@ -25,6 +25,7 @@ import pytest
 from slowave.cli.setup import (
     _MARKER_START,
     _backup_file,
+    _detect_lifecycle_version,
     _inject_block,
     _lifecycle_block,
     _patch_claude_code_hooks,
@@ -40,6 +41,7 @@ from slowave.cli.setup import (
     _write_json,
     _write_toml,
 )
+from slowave.lifecycle import LIFECYCLE_VERSION
 
 HTTP_URL = "http://127.0.0.1:8766/mcp"
 
@@ -441,6 +443,40 @@ class TestInjectBlock:
         assert "some old content" not in content
         assert "## My Notes" in content
         assert "user content" in content
+
+
+# ===========================================================================
+# _detect_lifecycle_version (WP-8)
+# ===========================================================================
+
+
+class TestDetectLifecycleVersion:
+    def test_detects_current_version_in_generated_block(self):
+        assert _detect_lifecycle_version(_lifecycle_block("claude-code")) == LIFECYCLE_VERSION
+
+    def test_detects_stale_v1(self):
+        text = "<!-- slowave-lifecycle-start v1 -->\nold\n<!-- slowave-lifecycle-end v1 -->\n"
+        assert _detect_lifecycle_version(text) == "v1"
+
+    def test_detects_stale_v2_among_other_content(self):
+        text = (
+            "# My rules\n\n<!-- slowave-lifecycle-start v2 -->\nold\n"
+            "<!-- slowave-lifecycle-end v2 -->\n\n## More rules\n"
+        )
+        assert _detect_lifecycle_version(text) == "v2"
+
+    def test_returns_none_when_absent(self):
+        assert _detect_lifecycle_version("# just some notes, no slowave block\n") is None
+
+    def test_generated_template_markers_match_the_constant_not_a_hardcoded_literal(self):
+        """Regression guard for the "verify every integration receives the
+        current lifecycle version, not only the template in source" gap
+        (WP-8): the start/end markers must both derive from LIFECYCLE_VERSION,
+        so a future version bump can't silently drift between the two.
+        """
+        block = _lifecycle_block("claude-code")
+        assert block.count(f"-start {LIFECYCLE_VERSION} -->") == 1
+        assert block.count(f"-end {LIFECYCLE_VERSION} -->") == 1
 
 
 # ===========================================================================

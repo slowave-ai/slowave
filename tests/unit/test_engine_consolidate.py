@@ -78,10 +78,19 @@ def test_consolidate_once_returns_required_keys(eng):
     assert "decay" in result
 
 
-def test_consolidate_once_returns_part_of_backfill_key(eng):
+def test_consolidate_once_returns_facet_backfill_key(eng):
+    """part_of_backfill was removed 2026-07-23 along with part_of itself (see
+    private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md);
+    facet_backfill stays (still feeds facet_distance/VSA)."""
     result = eng.consolidate_once()
-    assert "part_of_backfill" in result
-    assert set(result["part_of_backfill"]) == {"compared", "created", "skipped_no_facets"}
+    assert "facet_backfill" in result
+    assert set(result["facet_backfill"]) == {
+        "backfilled",
+        "skipped_no_embeddings",
+        "skipped_svd_failed",
+        "backfilled_ids",
+    }
+    assert "part_of_backfill" not in result
 
 
 def test_consolidate_once_records_worker_run_row(eng):

@@ -188,6 +188,15 @@ class GatePolicy:
     max_chars: int = 4000
     max_item_chars: int = 500
     min_activation: float = 0.20
+    # Relevance-first admission floor (WP-4): gates on topical evidence alone
+    # (cosine + lexical cue_overlap, computed BEFORE identity/scope priors),
+    # so query-independent bonuses can no longer rescue a schema with no
+    # actual connection to the cue. Separate from min_activation, which still
+    # gates the final prior/scope-adjusted score used for ranking and the
+    # exploration-slot cutoff. Default 0.0 (disabled) preserves prior
+    # behavior until a value is calibrated per-caller against replay data —
+    # see private/experiments/run_relevance_floor_sweep.py.
+    min_relevance: float = 0.0
     # When more admitted items exist than max_items, this many trailing slots
     # are filled by salience instead of relevance — the serendipity channel
     # that keeps apparently-unrelated memories circulating (and generating the
@@ -261,9 +270,15 @@ class WorkingMemoryGate:
                 traces.append(ActivationTrace(schema.id, 0.0, reason, False))
                 continue
 
-            activation, reason = self._activation(
+            activation, reason, relevance = self._activation(
                 schema, cue=cue, cue_terms=cue_terms, cue_embedding=cue_embedding
             )
+            if relevance < policy.min_relevance:
+                suppressed["below_relevance"] = suppressed.get("below_relevance", 0) + 1
+                traces.append(
+                    ActivationTrace(schema.id, activation, f"below_relevance:{reason}", False)
+                )
+                continue
             if activation < policy.min_activation:
                 suppressed["below_activation"] = suppressed.get("below_activation", 0) + 1
                 traces.append(ActivationTrace(schema.id, activation, reason, False))
@@ -291,9 +306,19 @@ class WorkingMemoryGate:
             if cue.scope and schema.scope_id and schema.scope_id != cue.scope:
                 _gs = getattr(schema, "generalization_stage", 0)
                 if _gs in (1, 2):
-                    _min_cross_activation = (
-                        0.30  # matches GeneralizationConfig.cross_scope_min_score
-                    )
+                    # NOTE (WP-4 audit): this literal has drifted from
+                    # GeneralizationConfig.cross_scope_min_score, which was
+                    # separately raised 0.30 -> 0.40 (schema_store.py) for a
+                    # similar but distinct tightening. The two are on
+                    # different scales (this gates WorkingMemoryGate's
+                    # 0-1 activation; that gates recall()'s schema_scores)
+                    # and are NOT currently kept in sync despite the
+                    # original comment here claiming they matched. This
+                    # value's own 0.20->0.30 justification (the "pytest on
+                    # password" case, see Gate A comment above) still holds
+                    # independently -- left unchanged pending a dedicated
+                    # cross-scope floor ablation (WP-5).
+                    _min_cross_activation = 0.30
                     if activation < _min_cross_activation:
                         suppressed["cross_scope_below_floor"] = (
                             suppressed.get("cross_scope_below_floor", 0) + 1
@@ -370,6 +395,9 @@ class WorkingMemoryGate:
         fetch_schema: Callable[[int], Schema | None],
         cue: MemoryCue,
         policy: GatePolicy | None = None,
+        cue_embedding: "np.ndarray | None" = None,
+        min_neighbor_relevance: float = 0.0,
+        relation_filter: frozenset[str] | None = None,
     ) -> WorkingMemoryState:
         """Spread activation from admitted schemas to their schema_relations
         neighbors, appending any that clear the same admission bar as a
@@ -378,20 +406,34 @@ class WorkingMemoryGate:
 
         `fetch_relations(schema_id)` must return that schema's relation edges
         in EITHER direction as `(neighbor_id, relation, confidence)` tuples
-        (a schema_relations edge is directed, but activation spreads along it
-        regardless of which side is src/dst). `fetch_schema(schema_id)`
-        resolves a neighbor id to its full Schema.
+        (relates_to, the only content-relation type, is symmetric, but
+        activation spreads along it regardless of which side is src/dst).
+        `fetch_schema(schema_id)` resolves a neighbor id to its full Schema.
+        `relation_filter` is forwarded to `spread_relation_activation` --
+        restricts which edge types are allowed to seed a graph neighbor at
+        all (WP-5 edge-channel ablation).
 
-        A schema_relations edge (especially part_of, which
-        backfill_part_of_edges allows across scopes at a stricter containment
-        bar) is NOT itself a scope boundary, so a graph-propagated neighbor
-        must clear the exact same bar a direct candidate would: `_eligible()`
-        (mode-aware -- e.g. its strict_scope hard wall, status, class/layer
-        exclusions) gates admission, and `_cross_scope_penalty()` discounts
-        its activation the same way `_activation()` already discounts a
-        direct cross-scope candidate. Reusing both means a graph-propagated
-        candidate is never MORE permissively scoped than a direct one just
-        because it arrived via a relation edge instead of cosine/lexical match.
+        A schema_relations edge is NOT itself a scope boundary, so a
+        graph-propagated neighbor must clear the exact same bar a direct
+        candidate would: `_eligible()` (mode-aware -- e.g. its strict_scope
+        hard wall, status, class/layer exclusions) gates admission, and
+        `_cross_scope_penalty()` discounts its activation the same way
+        `_activation()` already discounts a direct cross-scope candidate.
+        Reusing both means a graph-propagated candidate is never MORE
+        permissively scoped than a direct one just because it arrived via a
+        relation edge instead of cosine/lexical match.
+
+        `min_neighbor_relevance` (WP-5): a graph edge means "these schemas are
+        related or were recalled together" -- it says nothing about whether
+        the neighbor actually answers THIS query (plan section 4.2,
+        "association is mistaken for answer confidence"). When > 0.0 and both
+        `cue_embedding` and the neighbor's embedding are present, a neighbor
+        whose cosine similarity to the cue falls below this floor is rejected
+        regardless of how much graph mass it accumulated -- a dual gate: a
+        neighbor must be BOTH graph-connected AND topically relevant. Default
+        0.0 (disabled) preserves prior behavior, matching the GatePolicy.
+        min_relevance rollout pattern (see run_graph_channel_sweep.py for
+        calibration against the replay corpus).
         """
         policy = policy or GatePolicy()
         seed_activations = {item.schema.id: item.activation for item in state.items}
@@ -399,6 +441,7 @@ class WorkingMemoryGate:
             seed_activations,
             fetch_relations=fetch_relations,
             min_activation=policy.min_activation,
+            relation_filter=relation_filter,
         )
         if not winners:
             return state
@@ -411,6 +454,30 @@ class WorkingMemoryGate:
             ok, _reason = self._eligible(schema, cue=cue, policy=policy)
             if not ok:
                 continue
+            neighbor_cosine = None
+            if (
+                min_neighbor_relevance > 0.0
+                and cue_embedding is not None
+                and schema.embedding is not None
+            ):
+                neighbor_cosine = _cosine(cue_embedding, schema.embedding)
+                if neighbor_cosine < min_neighbor_relevance:
+                    continue
+            raw_graph_mass = activation
+            if neighbor_cosine is not None:
+                # WP-5 fixed ADMISSION (a neighbor must clear
+                # min_neighbor_relevance to get in at all) but not RANKING:
+                # every admitted neighbor's activation was still the raw
+                # graph mass clamped to 1.0 below, so one that barely
+                # cleared the cosine floor ranked identically to a
+                # near-perfect match -- routinely outranking direct hits,
+                # whose activation is a bounded sum that rarely nears 1.0
+                # (WP-5.1 fix). Scale ranked activation by the same cosine
+                # used for admission -- only when the caller opted into the
+                # dual gate at all (min_neighbor_relevance > 0.0), so a
+                # disabled gate keeps its pre-WP-5 pure-graph-mass ranking
+                # unchanged (see test_expand_via_relations_dual_gate_disabled_by_default).
+                activation = raw_graph_mass * neighbor_cosine
             penalty, _penalty_reason = self._cross_scope_penalty(schema, cue)
             activation += penalty
             if activation < policy.min_activation:
@@ -419,7 +486,7 @@ class WorkingMemoryGate:
                 WorkingMemoryItem(
                     schema=schema,
                     activation=round(min(1.0, activation), 4),
-                    reason="graph:" + "+".join(sorted(via)),
+                    reason=f"graph:{'+'.join(sorted(via))}:{raw_graph_mass:.3f}",
                     text=_compact(schema.content_text, policy.max_item_chars),
                     peripheral=True,
                 )
@@ -427,8 +494,18 @@ class WorkingMemoryGate:
         if not extra_items:
             return state
 
+        # Merge graph items into the full set and re-apply the budget so
+        # graph-propagated neighbors never overflow the declared max_items /
+        # max_chars contract. Graph items are marked peripheral=True so they
+        # are labelled "(peripheral)" in the brief and can be filtered out by
+        # callers passing include_peripheral=False.
         all_items = list(state.items) + extra_items
-        return replace(state, items=all_items, rendered=_render(all_items))
+        all_items.sort(
+            key=lambda i: (i.activation, i.schema.salience, i.schema.last_updated_ts),
+            reverse=True,
+        )
+        budgeted = _apply_budget(all_items, policy)
+        return replace(state, items=budgeted, rendered=_render(budgeted))
 
     def _cross_scope_penalty(self, schema: Schema, cue: MemoryCue) -> tuple[float, str]:
         """Graduated cross-scope activation penalty, shared by `_activation`
@@ -542,7 +619,16 @@ class WorkingMemoryGate:
         cue: MemoryCue,
         cue_terms: set[str],
         cue_embedding: "np.ndarray | None" = None,
-    ) -> tuple[float, str]:
+    ) -> tuple[float, str, float]:
+        """Returns (activation, reason, relevance).
+
+        `relevance` is topical evidence only — cosine + lexical cue_overlap,
+        computed before any identity/scope prior is added — so callers can
+        gate admission on "does this actually match the query" independently
+        of "what class of memory this is" (see GatePolicy.min_relevance).
+        `activation` remains the full prior/scope-adjusted score used for
+        ranking, exploration-slot selection, and min_activation.
+        """
         facets = schema.facets or {}
         schema_terms = _schema_terms(schema)
         overlap = len(cue_terms & schema_terms) / max(1, len(cue_terms)) if cue_terms else 0.0
@@ -571,6 +657,11 @@ class WorkingMemoryGate:
         if overlap:
             activation += lexical_weight * overlap
             reasons.append(f"cue_overlap={overlap:.2f}")
+
+        # Snapshot relevance BEFORE any prior/scope/penalty term is added:
+        # pure topical evidence (cosine + lexical), independent of what class
+        # of memory this is or whether it shares the caller's scope.
+        relevance = activation
 
         # Identity prior: query-independent bonuses accumulate separately and
         # are capped at _IDENTITY_BONUS_CAP so relevance (cosine + overlap)
@@ -644,14 +735,24 @@ class WorkingMemoryGate:
             activation -= 0.15
             reasons.append("assistant_text_inhibition")
 
-        # Feedback-driven noise penalty: context_noise_score is maintained at
-        # consolidation time from shown/used/irrelevant counts.
-        noise = float(facets.get("context_noise_score") or 0.0)
+        # Feedback-driven noise penalty: context_noise_score/context_noise_by_scope
+        # are maintained at consolidation time from shown/used/irrelevant counts.
+        # WP-7: prefer the scope-local ratio when the cue has a scope and the
+        # schema has per-scope history — a scope that never rejected this
+        # memory sees no penalty from rejections recorded in other scopes.
+        # Falls back to the global aggregate for scopeless cues, and for
+        # schemas whose facets predate this field (lazily backfilled the next
+        # time refresh_utility() touches them).
+        noise_by_scope = facets.get("context_noise_by_scope")
+        if cue.scope and isinstance(noise_by_scope, dict):
+            noise = float(noise_by_scope.get(str(cue.scope), 0.0))
+        else:
+            noise = float(facets.get("context_noise_score") or 0.0)
         if noise > 0.0:
             activation -= _NOISE_PENALTY_WEIGHT * noise
             reasons.append(f"noise={noise:.2f}")
 
-        return activation, ",".join(reasons) if reasons else "baseline"
+        return activation, (",".join(reasons) if reasons else "baseline"), max(0.0, relevance)
 
 
 def _lower(value: Any) -> str:
@@ -697,11 +798,18 @@ def _normalize_token(token: str) -> str:
 
 
 def _cue_terms(cue: MemoryCue) -> set[str]:
+    # cue.scope is deliberately excluded: it is the eligibility/context
+    # boundary (see MemoryCue docstring), not topical evidence. Joining the
+    # literal scope string here made lexical cue_overlap trivially non-zero
+    # for any same-scope schema regardless of subject match, since the same
+    # scope string tokenizes identically on both sides (see
+    # _schema_terms — schema.scope_id is excluded for the same reason).
+    # Scope's actual influence on admission is the explicit scope-match bonus
+    # in _activation().
     return _terms(
         " ".join(
             [
                 cue.query or "",
-                cue.scope or "",
                 cue.goal or "",
                 cue.task_type or "",
                 " ".join(f"{k} {v}" for k, v in sorted(cue.situation.items())),
@@ -716,7 +824,10 @@ def _cue_terms(cue: MemoryCue) -> set[str]:
 
 def _schema_terms(schema: Schema) -> set[str]:
     facets = schema.facets or {}
-    chunks = [schema.content_text or "", schema.scope_id or "", " ".join(schema.tags)]
+    # schema.scope_id excluded — see _cue_terms. facets.get("scope") (below)
+    # is a distinct, LLM-extracted semantic-scope facet ("what topic this
+    # claim applies to") and remains legitimate topical evidence.
+    chunks = [schema.content_text or "", " ".join(schema.tags)]
     for key in (
         "scope",
         "topics",
@@ -812,6 +923,7 @@ def spread_relation_activation(
     *,
     fetch_relations: Callable[[int], list[tuple[int, str, float]]],
     min_activation: float,
+    relation_filter: frozenset[str] | None = None,
 ) -> dict[int, tuple[float, set[str]]]:
     """Spreading-activation core shared by WorkingMemoryGate.expand_via_relations
     (context_brief) and RetrievalService.recall(): propagate activation from a
@@ -823,6 +935,14 @@ def spread_relation_activation(
     ever mattered for who was created from whom; activation spreads along the
     edge regardless of which side is src/dst.
 
+    `relation_filter` (WP-5): when given, edges whose `relation` label is not
+    in the set are skipped before they can contribute any activation --  this
+    is what lets a caller ablate `relates_to` (content/semantic relations)
+    against `coactivated_with` (usage co-presentation, see
+    RetrievalService._fetch_all_relations) independently, per the plan's
+    Phase 3 "edge ablation" policy. `None` (default) applies no filter --
+    identical to prior behavior, every edge type contributes.
+
     Contributions converge: a neighbor reachable from more than one seed gets
     the SUM of every path's injected activation before being compared to
     `min_activation` -- this is what lets a schema only weakly linked to
@@ -830,7 +950,7 @@ def spread_relation_activation(
     bar alone (the "sparks"/insight case: convergence, not chain length).
 
     Depth is bounded at _GRAPH_MAX_HOPS with a visited set (cycle-safe --
-    schema_relations can have cycles, e.g. bidirectional refines pairs), and
+    schema_relations can have cycles, e.g. bidirectional relates_to pairs), and
     the result is capped at _GRAPH_MAX_EXTRA winners -- both are engineering
     bounds with no brain equivalent (every hop is a real query, every surfaced
     schema is real context-window tokens), analogous to working-memory
@@ -853,6 +973,8 @@ def spread_relation_activation(
         touched_this_hop: set[int] = set()
         for source_id, source_activation in frontier.items():
             for neighbor_id, relation, confidence in fetch_relations(source_id):
+                if relation_filter is not None and relation not in relation_filter:
+                    continue
                 if neighbor_id in visited:
                     continue
                 contribution = source_activation * confidence * (_GRAPH_HOP_DECAY**hop)
@@ -874,3 +996,11 @@ def spread_relation_activation(
         reverse=True,
     )[:_GRAPH_MAX_EXTRA]
     return {nid: (act, injected_via.get(nid, set())) for nid, act in winners}
+
+
+def _cosine(a: "np.ndarray", b: "np.ndarray") -> float:
+    av = np.asarray(a, dtype=np.float32)
+    bv = np.asarray(b, dtype=np.float32)
+    an = float(np.linalg.norm(av)) + 1e-12
+    bn = float(np.linalg.norm(bv)) + 1e-12
+    return float(av.dot(bv) / (an * bn))

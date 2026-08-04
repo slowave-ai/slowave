@@ -85,14 +85,16 @@ def mock_consolidator():
     cons.schemas.last_create_reinforced_existing_id = None
     # No geometric near-duplicate — let the write path reach the judge.
     cons.schemas.search_embedding.return_value = []
-    # Force the judge to return "supersedes" so we test the gate.
+    # Force the judge to return "relates_to" with high cosine so the
+    # status-change path is reachable (supersession is now gated on
+    # cos >= 0.90 + support + recency, not on a "supersedes" verdict).
     from slowave.latent.schema import GeometricVerdict
 
     cons.geometric_judge.judge = MagicMock(
         return_value=GeometricVerdict(
-            verdict="supersedes",
+            verdict="relates_to",
             reasoning="test",
-            similarity=0.80,
+            similarity=0.92,
             facet_distance=0.40,
             time_delta_s=1000,
         )
@@ -133,7 +135,7 @@ def test_supersedes_passes_with_enough_support(mock_consolidator):
 
 
 def test_supersedes_gated_by_short_time_delta(mock_consolidator):
-    """supersedes with dt=30s < min_time_delta=60s → 'reinforced'."""
+    """high-cosine relates_to with dt=30s < min_time_delta=60s → 'reinforced'."""
     from slowave.latent.schema import GeometricVerdict
 
     old_schema = MagicMock(id=7, content_text="old", confidence=1.0, facets={}, scope_id="p:t")
@@ -147,9 +149,9 @@ def test_supersedes_gated_by_short_time_delta(mock_consolidator):
                     mock_consolidator.geometric_judge,
                     "judge",
                     return_value=GeometricVerdict(
-                        verdict="supersedes",
+                        verdict="relates_to",
                         reasoning="test",
-                        similarity=0.80,
+                        similarity=0.92,
                         facet_distance=0.40,
                         time_delta_s=30,  # below min_time_delta
                     ),

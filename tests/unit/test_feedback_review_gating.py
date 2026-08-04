@@ -197,6 +197,81 @@ class TestContextNoiseScoreDoesNotRequireScopeId:
             _cleanup(path)
 
 
+class TestContextNoiseByScopeIsolation:
+    """WP-7 (20260728_retrieval_quality_execution_progress.md): 'irrelevant'
+    feedback repeated in one scope must not degrade retrieval of the same
+    schema in a different, unrelated scope.
+
+    Scope choice made deliberately narrow ("option 1" of two discussed
+    approaches): only the retrieval-time ranking read in
+    WorkingMemoryGate._activation() (context.py) was scoped, via a new
+    per-scope `context_noise_by_scope` facet computed alongside the existing
+    global `context_noise_score`. The other two schema-global mechanisms
+    driven by the same feedback -- the `is_labile` 3-strikes demotion in
+    `_update_utility_scores` (which also imposes an unconditional 0.20x
+    score multiplier in recall(), see services/retrieval.py, and a 5x
+    discount in pattern_completion.py) and the `irrelevant_salience_delta`
+    mutation applied to the schema's global `salience` column in
+    FeedbackService.retrieval_feedback() -- were deliberately left
+    unchanged. A schema hammered with 'irrelevant' marks in one scope still
+    accumulates is_labile and a lower global salience exactly as before this
+    WP; only the additive context_noise_by_scope ranking penalty is scoped.
+    This test locks in that narrower scope so a future WP consciously
+    chooses to extend (or not extend) scoping to those two mechanisms,
+    rather than the boundary drifting silently.
+    """
+
+    def test_irrelevant_in_one_scope_does_not_raise_noise_for_another(self) -> None:
+        eng, path = _engine()
+        try:
+            sid = _schema(eng, "cross-scope isolation schema", 21)
+            for i in range(3):
+                _feedback(
+                    eng,
+                    sid,
+                    "irrelevant",
+                    outcome="success",
+                    scope_id="project:alpha",
+                    seq=i,
+                    irrelevant=True,
+                )
+            s = eng.schemas.get(sid)
+            by_scope = s.facets.get("context_noise_by_scope", {})
+            assert by_scope.get("project:alpha", 0.0) > 0.0
+            # No feedback was ever recorded under project:beta -- it must not
+            # inherit a nonzero noise ratio from project:alpha's rejections.
+            assert by_scope.get("project:beta", 0.0) == 0.0
+        finally:
+            eng.close()
+            _cleanup(path)
+
+    def test_global_mechanisms_remain_unscoped_by_design(self) -> None:
+        """Documents the deliberate limitation: is_labile and schema.salience
+        still degrade globally from single-scope irrelevant feedback. See
+        class docstring -- this is "option 1", not a full fix."""
+        eng, path = _engine()
+        try:
+            sid = _schema(eng, "still globally demoted schema", 22)
+            before_salience = eng.schemas.get(sid).salience
+            for i in range(3):
+                _feedback(
+                    eng,
+                    sid,
+                    "irrelevant",
+                    outcome="success",
+                    scope_id="project:alpha",
+                    seq=i,
+                    irrelevant=True,
+                )
+            s = eng.schemas.get(sid)
+            assert s.is_labile is True  # still fires from single-scope evidence
+            assert s.salience < before_salience  # still a global salience cut
+            assert s.facets.get("context_noise_score", 0.0) > 0.0  # global aggregate unchanged
+        finally:
+            eng.close()
+            _cleanup(path)
+
+
 class TestSalienceCeilingSharedAcrossPaths:
     """reinforce() (the 'useful' path) and adjust_feedback_state() (partial/
     irrelevant/stale/wrong) share the same salience ceiling (SALIENCE_CEILING

@@ -208,31 +208,21 @@ class TestReconsolidateLabileSchemas:
             eng.close()
             _cleanup(path)
 
-    def test_supersedes_older_neighbor_when_labile_is_newer_and_contradicts(self) -> None:
-        """cos=0.85 with ORTHOGONAL facet axes and a stubbed direction_score
-        signal -> verdict 'supersedes'. Labile schema is chronologically
-        newer and well-supported -> neighbor (older) gets marked superseded,
-        labile schema restabilizes as the winner. (Facet-axis divergence
-        alone, with no direction signal, now resolves to 'refines' --
-        see test_restabilizes_when_no_conflict_with_neighbor's sibling case
-        in TestGeometricContradictionJudge -- so this test injects a stub
-        manifold to exercise supersedes's support/recency/tie-status gates.)"""
+    def test_high_cosine_triggers_supersession_in_reconsolidation(self) -> None:
+        """cos >= 0.90 with enough support and timestamp gap triggers
+        supersession during reconsolidation, even though the judge only
+        returns 'relates_to'. Per 2026-07-22 taxonomy collapse,
+        supersession is gated on metadata (cos >= 0.90 + support + recency)
+        at the consolidation call site, not on a geometric classifier."""
         eng, path = _engine()
         try:
-            eng._consolidation.consolidator.geometric_judge.manifold = _StubManifold(0.5)
-            old_c, new_c = _same_topic_centroids(0.85)
-            # e4, e5 -- deliberately NOT e0/e1 (the dims _same_topic_centroids
-            # varies the centroids along), so this side's diff-from-the-other
-            # doesn't coincidentally lie entirely inside these axes' span --
-            # that would trigger the containment/part_of check ahead of
-            # direction_score in the cascade, which is what this test means
-            # to exercise (see GeometricContradictionJudge.judge()).
+            old_c, new_c = _same_topic_centroids(0.92)
             neighbor_axes = np.zeros((2, DIM), dtype=np.float32)
             neighbor_axes[0, 4] = 1.0
             neighbor_axes[1, 5] = 1.0
             labile_axes = np.zeros((2, DIM), dtype=np.float32)
-            labile_axes[0, 2] = 1.0  # e2
-            labile_axes[1, 3] = 1.0  # e3 -- orthogonal to neighbor's axes
+            labile_axes[0, 2] = 1.0
+            labile_axes[1, 3] = 1.0
             strengths = np.array([1.0, 0.5], dtype=np.float32)
 
             neighbor_id = _create(
@@ -268,16 +258,13 @@ class TestReconsolidateLabileSchemas:
             _cleanup(path)
 
     def test_contradicted_when_timestamps_effectively_simultaneous(self) -> None:
-        """Same supersession as above (stubbed direction_score), but with
-        equal timestamps (time_delta_s == 0) -> status is 'contradicted' (not
-        'superseded') -- the relation edge itself is always 'supersedes' (see
-        VALID_RELATIONS), but the tie is still distinguished at the status
-        level -- not gated by the min_time_delta_to_supersede_s recency gate
-        (that gate only fires for 0 < time_delta_s < min_dt, not for exactly 0)."""
+        """cos >= 0.90 with equal timestamps (time_delta_s == 0) triggers
+        'contradicted' status (not 'superseded') during reconsolidation.
+        Per 2026-07-22 taxonomy collapse, supersession is gated on metadata
+        at the consolidation call site, not on a geometric classifier."""
         eng, path = _engine()
         try:
-            eng._consolidation.consolidator.geometric_judge.manifold = _StubManifold(0.5)
-            old_c, new_c = _same_topic_centroids(0.85)
+            old_c, new_c = _same_topic_centroids(0.92)
             # e4, e5 -- see the sibling test above for why not e0/e1.
             neighbor_axes = np.zeros((2, DIM), dtype=np.float32)
             neighbor_axes[0, 4] = 1.0
@@ -379,9 +366,9 @@ class TestReconsolidateLabileSchemas:
 
             stats = eng._consolidation.consolidator.reconsolidate_labile_schemas()
 
-            assert stats["inconclusive"] == 1
+            assert stats["restabilized"] == 1
             assert eng.schemas.get(neighbor_id).status == "active"
-            assert eng.schemas.get(labile_id).is_labile is True
+            assert eng.schemas.get(labile_id).is_labile is False
         finally:
             eng.close()
             _cleanup(path)

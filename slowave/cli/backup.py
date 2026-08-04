@@ -11,6 +11,7 @@ import gzip
 import logging
 import os
 import shutil
+import signal
 import sqlite3
 import tempfile
 import time
@@ -294,6 +295,31 @@ def restore_cmd(
     except Exception:
         pass
 
+    # Stop the background consolidation worker too, if one is detected. It
+    # isn't managed via daemon.py's PID-file convention -- it typically runs
+    # under an external supervisor (e.g. launchd's com.slowave.worker) -- so
+    # process detection is all restore has to go on. Leaving it running
+    # during the file swap below is the real risk: it can hold an open
+    # WAL-mode connection to the pre-restore file, see the rewritten bytes
+    # mid-copy, and then have its in-memory WAL state invalidated the moment
+    # the sidecar-clearing below deletes -wal/-shm for what is now a
+    # different database on disk.
+    worker_stopped_pids: list[int] = []
+    try:
+        from slowave.cli.main import _slowave_processes
+
+        for p in _slowave_processes():
+            if "slowave worker" in p.get("command", ""):
+                try:
+                    os.kill(int(p["pid"]), signal.SIGTERM)
+                    worker_stopped_pids.append(int(p["pid"]))
+                except OSError:
+                    pass
+        if worker_stopped_pids:
+            time.sleep(0.5)
+    except Exception:
+        pass
+
     # WAL/SHM sidecars are keyed by the main db file's path, not its content.
     # Leftovers from the pre-restore DB would otherwise get replayed against
     # the just-restored file — a structural mismatch SQLite reports as
@@ -317,12 +343,29 @@ def restore_cmd(
         except OSError as exc:
             raise click.ClickException(f"Could not backup current database: {exc}")
 
-    # Decompress and copy the backup into place.
+    # Decompress into a temp file in the same directory as dest (so the final
+    # os.replace() is an atomic rename on the same filesystem), then swap it
+    # in as one step. Writing straight into `dest` via open(dest, "wb") would
+    # let any process still holding the old file open (a worker that didn't
+    # stop in time, a lingering reader) observe a partially-rewritten file
+    # mid-copy instead of either the old or the new content.
+    tmp_dest: str | None = None
     try:
+        fd, tmp_dest = tempfile.mkstemp(
+            prefix=".slowave-restore-", suffix=".db", dir=str(dest.parent)
+        )
+        os.close(fd)
         with gzip.open(src, "rb") as f_in:
-            with open(dest, "wb") as f_out:
+            with open(tmp_dest, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
+        os.replace(tmp_dest, dest)
+        tmp_dest = None
     except OSError as exc:
+        if tmp_dest is not None:
+            try:
+                os.unlink(tmp_dest)
+            except OSError:
+                pass
         # Try to restore the .bak if the write failed part-way.
         if bak_path.exists() and not dest.exists():
             shutil.move(str(bak_path), str(dest))
@@ -367,6 +410,7 @@ def restore_cmd(
         "restored_size_bytes": dest_size,
         "elapsed_ms": elapsed_ms,
         "daemon_was_stopped": daemon_stopped,
+        "worker_pids_stopped": worker_stopped_pids,
     }
 
     if as_json:
@@ -382,6 +426,14 @@ def restore_cmd(
             click.echo(
                 click.style(
                     "     note : daemon was stopped; run 'slowave serve start' to restart",
+                    fg="yellow",
+                )
+            )
+        if worker_stopped_pids:
+            click.echo(
+                click.style(
+                    f"     note : worker process(es) {worker_stopped_pids} stopped; "
+                    "restart 'slowave worker' if you run it manually",
                     fg="yellow",
                 )
             )

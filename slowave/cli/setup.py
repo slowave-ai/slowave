@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from typing import Any
 import click
 
 from slowave.cli.output import safe_emoji
+from slowave.lifecycle import LIFECYCLE_VERSION
 
 # ---------------------------------------------------------------------------
 # Change tracking for summary
@@ -859,8 +861,20 @@ def _remove_mcp_servers_from_settings(config: dict[str, Any]) -> tuple[dict[str,
 _MARKER_START = "<!-- slowave-lifecycle-start"  # prefix match — covers v1 and v2
 _MARKER_END = "<!-- slowave-lifecycle-end"  # prefix match — covers v1 and v2
 
-_LIFECYCLE_BLOCK_TEMPLATE = """\
-<!-- slowave-lifecycle-start v3 -->
+# Extracts the version token from an installed marker line, e.g. "v3" from
+# "<!-- slowave-lifecycle-start v3 -->". Used by clients.py to detect a
+# stale (un-upgraded) block instead of only checking presence/absence.
+_VERSION_MARKER_RE = re.compile(r"<!-- slowave-lifecycle-start (v\d+) -->")
+
+
+def _detect_lifecycle_version(text: str) -> str | None:
+    """Return the lifecycle block version marker found in `text`, or None."""
+    m = _VERSION_MARKER_RE.search(text)
+    return m.group(1) if m else None
+
+
+_LIFECYCLE_BLOCK_TEMPLATE = f"""\
+<!-- slowave-lifecycle-start {LIFECYCLE_VERSION} -->
 ## MANDATORY — Slowave memory (5-verb cognitive cycle)
 
 You are the reasoning module; Slowave is the memory module. Give it honest signals — what you encoded, what helped, what was noise, the outcome — and trust consolidation to do the rest. Do not respond until step 1 completes. Do not end the task without step 5.
@@ -886,8 +900,8 @@ You are the reasoning module; Slowave is the memory module. Give it honest signa
 - If a remembered fact changed: remember the corrected version AND flag the old one via `stale_memory_ids`/`wrong_memory_ids` in step 4.
 - Never encode: what is observable right now, transient state, vague impressions, or what you did this session (step 5 captures that).
 
-**3 — `slowave_recall` (only when activate fell short)**
-`slowave_recall(query, scope="project:<basename(cwd)>")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Always pass `scope` (omitting returns ALL projects). Store the returned `retrieval_id`. Not a substitute for activate.
+**3 — `slowave_recall` (mid-task lookups — call whenever you pivot to a new sub-question, not only on failure)**
+`slowave_recall(query, scope="project:<basename(cwd)>")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Always pass `scope` (omitting returns ALL projects). Store the returned `retrieval_id`. Not a substitute for activate — a deliberate lookup you reach for as often as the task's sub-questions change, not a fallback for when activate came up empty.
 
 **4 — `slowave_reinforce` (after ANY retrieval — reward hits, suppress noise)**
 Call whenever activate/recall returned memories — not only when you used some. Penalizing noise is how the store stays clean.
@@ -897,10 +911,11 @@ Call whenever activate/recall returned memories — not only when you used some.
 - `feedback` and `outcome`: honest, not optimistic. Use `missing` to flag a needed-but-absent memory.
 
 **5 — `slowave_commit` (session close — always)**
-`slowave_commit(scope="project:<basename(cwd)>", outcome="success|partial|failure")`. Non-negotiable. Scope must match activate; outcome honest (`partial` if anything was incomplete). Skipping = no episodes form; the session lingers until the idle reaper closes it with no outcome.
+`slowave_commit(scope="project:<basename(cwd)>", outcome="success|partial|failure", steps=[...])`. Non-negotiable. Scope must match activate; outcome honest (`partial` if anything was incomplete). Skipping = no episodes form; the session lingers until the idle reaper closes it with no outcome.
+- `steps`: ordered list of what you actually did this session, one sentence per meaningful phase. Example: `steps=["Ran full test suite (142 passed)", "Built and pushed Docker image", "Deployed to staging and health-checked"]`. This is how Slowave learns procedural patterns from repeated experience — be honest about what happened, even if it didn't all go perfectly. Do NOT include memory operations (activate/remember/recall/reinforce) as steps — those are the scaffolding, not the work.
 
 Anti-patterns: skip activate · `remember` without `scope` · bundle facts in one call · context-dependent phrasing · re-encode facts already surfaced · leave a superseded fact unflagged · reinforce only hits and never penalize noise · default feedback to `useful` · invent memory IDs · report `success` when partial/failed · skip reinforce or commit · use deleted tools (`slowave_context`, `slowave_session_start/end`, `slowave_event`, `slowave_retrieval_feedback`, `slowave_context_feedback`).
-<!-- slowave-lifecycle-end v3 -->"""
+<!-- slowave-lifecycle-end {LIFECYCLE_VERSION} -->"""
 
 
 def _lifecycle_block(agent: str) -> str:

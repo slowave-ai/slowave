@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from slowave.core.feedback import FeedbackConfig
 from slowave.core.scope import scope_kind as _scope_kind
+from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.symbolic.schema_store import SchemaStore
 from slowave.utils.vec import dumps_json
@@ -62,6 +63,7 @@ class FeedbackService:
         suppressed: dict[str, int] | None = None,
         response: dict[str, Any] | None = None,
         filtered_items: list[dict[str, Any]] | None = None,
+        lifecycle_version: str | None = None,
     ) -> None:
         """Record a retrieval response snapshot for feedback correlation.
 
@@ -71,6 +73,14 @@ class FeedbackService:
         These are persisted to context_recall_items with admitted=0 so the full
         candidate pool (admitted + filtered) is queryable for trace analysis and
         future implicit signal learning.
+
+        lifecycle_version: the lifecycle-instructions contract version in
+        effect for this call (WP-8 telemetry) -- defaults to the server's
+        current contract (slowave.lifecycle.LIFECYCLE_VERSION). Stamped here
+        rather than derived from the session because recall() has no session
+        concept at all (ops.recall() never sets session_id), so this is the
+        only reliable per-call attribution point covering both activate's
+        "context" and recall's "recall" retrieval_type rows.
         """
         if not self.cfg.enabled or not self.cfg.persist_context_snapshots:
             return
@@ -94,8 +104,8 @@ class FeedbackService:
               application, query, goal, task_type, situation_json, requirements_json,
               mode, limit_n, count_n, topics_json, entities_json,
               cue_terms_json, suppressed_json, memory_ids_json,
-              response_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              response_json, created_at, lifecycle_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(retrieval_id),
@@ -119,6 +129,7 @@ class FeedbackService:
                 dumps_json(memory_ids),
                 response_json_text,
                 now,
+                LIFECYCLE_VERSION if lifecycle_version is None else (lifecycle_version or None),
             ),
         )
 
@@ -142,6 +153,8 @@ class FeedbackService:
                         proc_item,
                     )
                 )
+            for related_item in response.get("related_schemas", []):
+                items.append(("related", related_item.get("id"), related_item))
 
         if items:
             for rank, (memory_type, memory_id, item) in enumerate(items):
@@ -151,8 +164,8 @@ class FeedbackService:
                         INSERT INTO context_recall_items (
                           context_id, memory_id, retrieval_type, memory_type, rank,
                           activation, reason, content_text, status,
-                          salience, confidence, admitted, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          salience, confidence, admitted, pathway, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(retrieval_id),
@@ -167,6 +180,7 @@ class FeedbackService:
                             item.get("salience"),
                             item.get("confidence"),
                             1,  # admitted=1: item was selected into context
+                            item.get("pathway", "direct"),
                             now,
                         ),
                     )
@@ -184,8 +198,8 @@ class FeedbackService:
                 INSERT OR IGNORE INTO context_recall_items (
                   context_id, memory_id, retrieval_type, memory_type, rank,
                   activation, reason, content_text, status,
-                  salience, confidence, admitted, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  salience, confidence, admitted, pathway, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(retrieval_id),
@@ -200,6 +214,7 @@ class FeedbackService:
                     f_item.get("salience"),
                     f_item.get("confidence"),
                     0,  # admitted=0: item was filtered by working-memory gate
+                    f_item.get("pathway", "direct"),
                     now,
                 ),
             )
@@ -255,6 +270,37 @@ class FeedbackService:
             "situation": situation,
             "requirements": requirements,
         }
+
+    def _valid_schema_ids_for_context(self, retrieval_id: str) -> set[int] | None:
+        """Schema ids actually surfaced (admitted=1) by this retrieval.
+
+        Returns None (meaning "can't validate, don't restrict") only when no
+        snapshot rows exist at all for this retrieval_id -- e.g. persistence
+        was disabled, or a caller-supplied retrieval_id that predates this
+        check. When rows do exist, feedback calls must not be allowed to
+        mutate schemas the client never actually saw: reinforce/reinforce-like
+        calls have no scope filter of their own (schema_store.reinforce and
+        friends do a bare `WHERE id = ?`), so an ID copied or hallucinated
+        from a different scope/retrieval would otherwise silently mutate
+        another project's memory.
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT memory_id FROM context_recall_items "
+            "WHERE context_id = ? AND memory_type IN ('schema', 'related') AND admitted = 1",
+            (str(retrieval_id),),
+        ).fetchall()
+        if not rows:
+            return None
+        ids: set[int] = set()
+        for row in rows:
+            mid = row["memory_id"]
+            if isinstance(mid, str) and mid.startswith("sch_"):
+                try:
+                    ids.add(int(mid[4:]))
+                except (ValueError, IndexError):
+                    pass
+        return ids
 
     def retrieval_feedback(
         self,
@@ -378,12 +424,34 @@ class FeedbackService:
             "penalized": [],
             "marked_review": [],
             "procedures": [],
+            "rejected": [],
         }
+
+        # Restrict mutations to schema ids this retrieval actually surfaced.
+        # See _valid_schema_ids_for_context docstring for why this matters.
+        valid_ids = self._valid_schema_ids_for_context(retrieval_id)
+        if valid_ids is not None:
+
+            def _authorize(ids: list[int]) -> list[int]:
+                kept = []
+                for i in ids:
+                    if i in valid_ids:
+                        kept.append(i)
+                    else:
+                        applied["rejected"].append(f"sch_{i}")
+                return kept
+
+            used_ids = _authorize(used_ids)
+            irrelevant_ids = _authorize(irrelevant_ids)
+            stale_ids = _authorize(stale_ids)
+            wrong_ids = _authorize(wrong_ids)
 
         if self.cfg.apply_learning:
             if self.cfg.apply_positive_learning and fb_label in ("useful", "partially_useful"):
                 for schema_id in used_ids:
                     try:
+                        if self.schemas.get(schema_id).status == "forgotten":
+                            continue
                         if fb_label == "useful":
                             self.schemas.reinforce(
                                 schema_id,
@@ -410,6 +478,8 @@ class FeedbackService:
             if self.cfg.apply_negative_learning:
                 for schema_id in irrelevant_ids:
                     try:
+                        if self.schemas.get(schema_id).status == "forgotten":
+                            continue
                         self.schemas.adjust_feedback_state(
                             schema_id,
                             salience_delta=irrelevant_signal.salience_delta * source_weight,
@@ -425,6 +495,8 @@ class FeedbackService:
             if self.cfg.apply_stale_wrong_review:
                 for schema_id in stale_ids:
                     try:
+                        if self.schemas.get(schema_id).status == "forgotten":
+                            continue
                         self.schemas.adjust_feedback_state(
                             schema_id,
                             salience_delta=stale_signal.salience_delta * source_weight,
@@ -440,6 +512,9 @@ class FeedbackService:
 
                 for schema_id in wrong_ids:
                     try:
+                        schema = self.schemas.get(schema_id)
+                        if schema.status == "forgotten":
+                            continue
                         self.schemas.adjust_feedback_state(
                             schema_id,
                             salience_delta=wrong_signal.salience_delta * source_weight,
@@ -452,7 +527,12 @@ class FeedbackService:
                         # wrong + outcome=failed: escalate status to needs_review so the
                         # mode-gated filter in recall() fully excludes the schema in
                         # default mode rather than relying on score-penalisation alone.
-                        if outcome == "failure":
+                        # Only escalate from "active" -- schemas already in a resolved
+                        # state (superseded/contradicted/archived) must not be pulled
+                        # back into needs_review visibility by an ordinary feedback call;
+                        # that resolution should only be undone by whatever process
+                        # reached it (e.g. a new supersession, or explicit unforget).
+                        if outcome == "failure" and schema.status == "active":
                             self.schemas.update_status(schema_id, status="needs_review")
                         applied["marked_review"].append(f"sch_{schema_id}")
                     except KeyError:
@@ -529,10 +609,10 @@ class FeedbackService:
                 outcome,
                 dumps_json(dataclasses.asdict(signal)),
                 signal.outcome_reward,
-                dumps_json(used_memory_ids or []),
-                dumps_json(irrelevant_memory_ids or []),
-                dumps_json(stale_memory_ids or []),
-                dumps_json(wrong_memory_ids or []),
+                dumps_json([f"sch_{i}" for i in used_ids]),
+                dumps_json([f"sch_{i}" for i in irrelevant_ids]),
+                dumps_json([f"sch_{i}" for i in stale_ids]),
+                dumps_json([f"sch_{i}" for i in wrong_ids]),
                 dumps_json(used_procedure_ids or []),
                 dumps_json(irrelevant_procedure_ids or []),
                 dumps_json(stale_procedure_ids or []),

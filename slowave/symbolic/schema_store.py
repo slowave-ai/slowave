@@ -8,10 +8,11 @@ and relations to other schemas.
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable, List
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -64,14 +65,22 @@ VALID_STATUS = (
 # belief". See GeometricContradictionJudge.judge() and
 # Consolidator._link_schemas_via_prototype_centroid, both of which now write
 # this relation directly.
-VALID_RELATIONS = ("refines", "supersedes", "part_of", "relates_to")
-# Relations whose direction carries meaning (src=acting/contained side,
-# dst=acted-upon/container side, per dashboard/_js.py's documented
-# convention) -- as opposed to relates_to, which is the only symmetric
-# association where "A->B" and "B->A" are the same fact. add_relation()
-# uses this set to reject writing both directions of the same directional
-# relation for one pair (see its reverse-edge guard below).
-_DIRECTIONAL_RELATIONS = frozenset({"refines", "supersedes", "part_of"})
+# (2026-07-22): the 4-relation taxonomy (refines, supersedes, part_of,
+# relates_to) has been collapsed to a single content-relation type.
+# "refines" and "supersedes" were removed because no geometric signal
+# (direction_score, facet_distance) generalizes beyond synthetic seed
+# sets, per independent measurement in the semantic-relations sibling
+# repo. "part_of" (subspace containment) survived that round, but was
+# removed 2026-07-23 after a hand-labeled audit of production edges found
+# ~11% precision -- broad/generic schemas' wider facet-axis spread made
+# them geometrically absorb containment edges from unrelated facts almost
+# regardless of real hierarchy, and it carried no differential weight at
+# retrieval time vs relates_to anyway. See
+# private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md.
+# All same-topic pairs (cosine above same_topic_cosine) are now relates_to
+# -- the only content-relation type left, and symmetric, so no relation
+# in schema_relations carries directional meaning anymore.
+VALID_RELATIONS = ("relates_to",)
 DEDUP_ACTIVE_STATUSES = ("active", "needs_review")
 
 # Shared salience ceiling for every reinforcement/feedback write path. The
@@ -181,6 +190,7 @@ class GeneralizationConfig:
         distinct_scope_kinds: int,
         scope_breadth_pct: float,
         distinct_sessions: int = 0,
+        total_active_scopes: int | None = None,
     ) -> int:
         """Return the promoted stage (0-3) given current breadth metrics.
 
@@ -210,26 +220,45 @@ class GeneralizationConfig:
         distinct_sessions is the temporal spread guard — a memory must have
         survived multiple separate cognitive episodes (distinct waking/sleep
         cycles) before cross-scope visibility. Within-session rehearsal cannot
-        drive promotion.
+        drive promotion. Unlike scope breadth, this floor does NOT scale with
+        total_active_scopes -- repeated confirmation over time is required
+        regardless of how many scopes exist to spread across.
+
+        total_active_scopes (2026-07-23): each stage's min_distinct_scopes was a
+        fixed constant (2/4/8), which is unreachable for a user with fewer total
+        scopes than that constant -- a fact confirmed in 100% of a 3-scope
+        universe could never clear stage 2's floor of 4, permanently capping it
+        below what its own evidence justifies. Passing total_active_scopes caps
+        each floor at min(total_active_scopes, fixed_floor): for users with at
+        least as many scopes as the largest floor (8), this is a no-op and
+        behavior is identical to before. Omit (None) to keep the old fixed-floor
+        behavior exactly, e.g. for tests exercising the thresholds in isolation.
+        See private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md
+        for the full derivation and worked examples across scope counts.
         """
         # Cross-kind bonus: one fewer required session when the memory spans
         # at least 2 distinct scope kinds, reflecting genuine cross-domain use.
         kind_bonus = 1 if distinct_scope_kinds >= 2 else 0
 
+        def _floor(fixed_floor: int) -> int:
+            if total_active_scopes is None:
+                return fixed_floor
+            return min(total_active_scopes, fixed_floor)
+
         if (
-            distinct_scopes >= self.stage3_min_distinct_scopes
+            distinct_scopes >= _floor(self.stage3_min_distinct_scopes)
             and scope_breadth_pct >= self.stage3_scope_breadth_pct
             and distinct_sessions + kind_bonus >= self.stage3_min_distinct_sessions
         ):
             return 3
         if (
-            distinct_scopes >= self.stage2_min_distinct_scopes
+            distinct_scopes >= _floor(self.stage2_min_distinct_scopes)
             and scope_breadth_pct >= self.stage2_scope_breadth_pct
             and distinct_sessions + kind_bonus >= self.stage2_min_distinct_sessions
         ):
             return 2
         if (
-            distinct_scopes >= self.stage1_min_distinct_scopes
+            distinct_scopes >= _floor(self.stage1_min_distinct_scopes)
             and scope_breadth_pct >= self.stage1_scope_breadth_pct
             and distinct_sessions >= self.stage1_min_distinct_sessions
         ):
@@ -280,6 +309,18 @@ class ScopeRegistry:
             (scope_id, scope_kind, now, now, session_inc, recall_inc, session_inc, recall_inc),
         )
         conn.commit()
+
+    def list_scope_ids(self) -> list[str]:
+        """Return every distinct scope_id ever registered.
+
+        Used by activate()'s cold-start path to warn about likely scope-string
+        fragmentation (e.g. "project:my-repo" vs "project:my_repo" silently
+        creating two isolated memory stores) -- the table is one row per
+        scope, so a full scan here is cheap.
+        """
+        conn = self.db.connect()
+        rows = conn.execute("SELECT scope_id FROM scope_registry").fetchall()
+        return [str(r["scope_id"]) for r in rows]
 
     def active_counts(self, window_days: int = 90) -> tuple[int, int]:
         """Return (total_active_scopes, total_active_scope_kinds) within window."""
@@ -760,45 +801,25 @@ class SchemaStore:
     ) -> None:
         """Write a schema_relations edge.
 
-        IMPORTANT for the symmetric relation relates_to: callers
+        relates_to is the only relation type and it's symmetric: callers
         MUST canonicalize src/dst as (min(id), max(id)) before calling, since
         this store has no way to recognize that A->B and B->A represent the
         same symmetric fact -- the ON CONFLICT dedup below is keyed on the
         literal (src, dst, relation) tuple. See
         Consolidator._link_schemas_via_prototype_centroid for the reference
-        pattern. Directional relations (refines, supersedes,
-        part_of) must NOT be canonicalized this way -- direction is the
-        meaning.
+        pattern.
+
+        Historical note: part_of (removed 2026-07-23, see
+        private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md)
+        was the last directional relation -- its removal took the
+        reverse-edge consistency guard with it, since there is no longer any
+        relation for which "A->B" and "B->A" existing simultaneously would be
+        a contradiction rather than a duplicate of the same symmetric fact.
         """
         if relation not in VALID_RELATIONS:
             raise ValueError(
                 f"add_relation: invalid relation {relation!r}, must be one of {VALID_RELATIONS}"
             )
-        if relation in _DIRECTIONAL_RELATIONS and src_schema_id != dst_schema_id:
-            # A directional relation encodes an asymmetric claim
-            # (specialization, value-update, subspace containment); both
-            # directions existing simultaneously is a logical contradiction,
-            # not two independent facts (e.g. "A refines B" AND "B refines
-            # A" can't both be true), and downstream consumers (the
-            # dashboard's part_of tree view, belief-revision damping) assume
-            # a single direction per pair. Check before write rather than
-            # reconciling after the fact -- add_relation is the single write
-            # chokepoint for every relation edge in the system, so this is
-            # the one place that can guarantee the invariant holds at all
-            # times with no window where an inconsistent pair exists.
-            conn = self.db.connect()
-            reverse = conn.execute(
-                "SELECT 1 FROM schema_relations WHERE src_schema_id = ? AND dst_schema_id = ? "
-                "AND relation = ? LIMIT 1",
-                (int(dst_schema_id), int(src_schema_id), relation),
-            ).fetchone()
-            if reverse is not None:
-                raise ValueError(
-                    f"add_relation: refusing to add {src_schema_id}->{dst_schema_id} "
-                    f"({relation}); reverse edge {dst_schema_id}->{src_schema_id} "
-                    f"({relation}) already exists -- this is a modeling inconsistency, "
-                    f"not a valid state. Reconcile the existing edge before retrying."
-                )
         conn = self.db.connect()
         conn.execute(
             "INSERT INTO schema_relations "
@@ -836,6 +857,103 @@ class SchemaStore:
             (int(schema_id), int(schema_id)),
         ).fetchall()
         return [(int(r["neighbor_id"]), str(r["relation"]), float(r["confidence"])) for r in rows]
+
+    # -- co-activation (Phase 2) -----------------------------------------------
+
+    def get_coactivations(self, schema_id: int) -> list[tuple[int, str, float]]:
+        """Return `schema_id`'s co-activation edges in EITHER direction as
+        `(neighbor_id, 'coactivated_with', weight)` tuples.
+
+        Same shape as get_relations() so both can be consumed identically
+        by spread_relation_activation() via a composite fetch callback.
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT dst_schema_id AS neighbor_id, weight FROM schema_coactivation "
+            "WHERE src_schema_id = ? "
+            "UNION ALL "
+            "SELECT src_schema_id AS neighbor_id, weight FROM schema_coactivation "
+            "WHERE dst_schema_id = ?",
+            (int(schema_id), int(schema_id)),
+        ).fetchall()
+        return [(int(r["neighbor_id"]), "coactivated_with", float(r["weight"])) for r in rows]
+
+    def upsert_coactivation(
+        self,
+        src_schema_id: int,
+        dst_schema_id: int,
+        *,
+        now_ts: int,
+        half_life_s: float = 604800.0,
+        boost: float = 1.0,
+    ) -> None:
+        """Strengthen the directional co-activation edge src -> dst.
+
+        Applies Hebbian update: weight = weight * decay + boost
+        where decay = exp(-lambda * dt) and lambda = ln(2) / half_life_s.
+
+        `boost` (WP-6) lets a stronger, explicitly-grounded signal (a client
+        reporting both schemas as `used` together) earn a bigger bump than
+        ordinary same-call co-presentation, without a separate edge table --
+        see ConsolidationService._write_coactivations.
+
+        Self-loops (src == dst) are silently skipped.
+        """
+        if src_schema_id == dst_schema_id:
+            return
+        import math
+
+        lam = math.log(2) / half_life_s
+        conn = self.db.connect()
+        conn.execute(
+            "INSERT INTO schema_coactivation (src_schema_id, dst_schema_id, weight, last_touched_ts) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(src_schema_id, dst_schema_id) DO UPDATE SET "
+            "weight = weight * EXP(? * (? - last_touched_ts)) + ?, "
+            "last_touched_ts = excluded.last_touched_ts",
+            (
+                int(src_schema_id),
+                int(dst_schema_id),
+                float(boost),
+                int(now_ts),
+                (-lam),
+                int(now_ts),
+                float(boost),
+            ),
+        )
+        conn.commit()
+
+    def decay_all_coactivations(
+        self,
+        *,
+        now_ts: int,
+        half_life_s: float = 604800.0,
+    ) -> int:
+        """Apply pure exponential decay to every co-activation row.
+
+        Returns the number of rows decayed. Rows whose weight drops to
+        or below 1e-6 are deleted (they'll never contribute meaningfully).
+        """
+        import math
+
+        lam = math.log(2) / half_life_s
+        conn = self.db.connect()
+        # Decay in-place
+        cur = conn.execute(
+            "UPDATE schema_coactivation SET "
+            "weight = weight * EXP(? * (? - last_touched_ts)), "
+            "last_touched_ts = ? "
+            "WHERE last_touched_ts < ?",
+            ((-lam), int(now_ts), int(now_ts), int(now_ts)),
+        )
+        # conn.total_changes is cumulative for the connection's whole
+        # lifetime, not this statement -- rowcount is the actual count
+        # of rows this UPDATE touched.
+        decayed = cur.rowcount
+        # Prune near-zero edges
+        conn.execute("DELETE FROM schema_coactivation WHERE weight <= 1e-6")
+        conn.commit()
+        return decayed
 
     def reinforce(
         self,
@@ -974,6 +1092,32 @@ class SchemaStore:
         """
         self._update_utility_scores(schema_id, recall_hit=False)
 
+    def full_generalization_sweep(self, *, limit: int = 2000) -> dict[str, Any]:
+        """Recompute generalization_stage for every active/needs_review schema.
+
+        Safety net for staleness the incremental refresh (schemas touched
+        since the last worker run) can't catch: total_active_scopes is the
+        denominator in scope_breadth_pct, and it changes as the user's scope
+        universe grows or shrinks -- a schema promoted when there were 4 active
+        scopes can sit at an inflated stage indefinitely if it's never
+        recalled/reinforced again, since nothing schema-local ever triggers a
+        recompute for it. This is meant to run rarely (e.g. once a day), not
+        every consolidation cycle -- generalization_stage is a slow-moving
+        stat, and this does one query per schema (_update_utility_scores joins
+        context_recall_items/schema_evidence/scope_registry per call).
+
+        Returns {"swept": <count>}.
+        """
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT id FROM schemas WHERE status IN ('active', 'needs_review') "
+            "ORDER BY id LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        for r in rows:
+            self.refresh_utility(int(r["id"]))
+        return {"swept": len(rows)}
+
     def _update_utility_scores(
         self, schema_id: int, *, recall_hit: bool = False, force_clear_labile: bool = False
     ) -> None:
@@ -1089,11 +1233,17 @@ class SchemaStore:
         negative_scopes: set[str] = set()
         total_used_marks = 0
         total_negative_marks = 0
+        # Per-scope tallies (WP-7): same shape as the global counters above,
+        # bucketed by fb_scope, so a per-scope noise ratio can be derived
+        # without a second query. See context_noise_by_scope below.
+        used_marks_by_scope: dict[str, int] = {}
+        negative_marks_by_scope: dict[str, int] = {}
         for fb in fb_rows:
             fb_scope = str(fb["scope_id"])
             if token in (fb["used_memory_ids_json"] or ""):
                 used_scopes.add(fb_scope)
                 total_used_marks += 1
+                used_marks_by_scope[fb_scope] = used_marks_by_scope.get(fb_scope, 0) + 1
             if any(
                 token in (fb[col] or "")
                 for col in (
@@ -1104,6 +1254,7 @@ class SchemaStore:
             ):
                 negative_scopes.add(fb_scope)
                 total_negative_marks += 1
+                negative_marks_by_scope[fb_scope] = negative_marks_by_scope.get(fb_scope, 0) + 1
 
         recall_rows = conn.execute(
             """
@@ -1213,6 +1364,7 @@ class SchemaStore:
             distinct_scope_kinds=distinct_scope_kinds,
             scope_breadth_pct=scope_breadth_pct,
             distinct_sessions=distinct_sessions,
+            total_active_scopes=total_active_scopes,
         )
 
         facets["cross_scope_recall_count"] = total_cross_recalls
@@ -1228,12 +1380,35 @@ class SchemaStore:
         # WorkingMemoryGate._activation as a ranking penalty. A memory shown
         # repeatedly and marked irrelevant with never a used mark converges to
         # ~1.0; a single used mark outweighs three irrelevant marks.
-        facets["context_shown_count"] = total_cross_recalls
+        facets["context_shown_scoped_count"] = total_cross_recalls
         facets["context_used_count"] = total_used_marks
         facets["context_irrelevant_count"] = total_negative_marks
         facets["context_noise_score"] = round(
             total_negative_marks / (total_negative_marks + 3.0 * total_used_marks + 1.0), 4
         )
+
+        # --- per-scope noise score (WP-7) ---
+        # Same ratio as context_noise_score above, but computed independently
+        # per scope so WorkingMemoryGate._activation can penalize a memory
+        # only in the scope(s) that actually rejected it, instead of the
+        # global aggregate leaking that penalty into every other scope's
+        # ranking (see 20260728_retrieval_quality_execution_progress.md,
+        # WP-7). Deliberately additive: context_noise_score, the is_labile
+        # 3-strikes demotion below, and the direct salience_delta mutation in
+        # FeedbackService.retrieval_feedback() are all left as schema-global
+        # signals — only the ranking-time read in context.py is scoped.
+        facets["context_noise_by_scope"] = {
+            scope: round(
+                negative_marks_by_scope.get(scope, 0)
+                / (
+                    negative_marks_by_scope.get(scope, 0)
+                    + 3.0 * used_marks_by_scope.get(scope, 0)
+                    + 1.0
+                ),
+                4,
+            )
+            for scope in set(used_marks_by_scope) | set(negative_marks_by_scope)
+        }
 
         # Demotion: flags consistently-negative memories as labile, but this
         # alone does NOT exclude them from default-mode retrieval — only a
@@ -1713,9 +1888,16 @@ class SchemaStore:
 
         Returns a dict with keys ``backfilled``, ``skipped_no_embeddings``,
         ``skipped_svd_failed``, ``backfilled_ids`` (schema ids that gained
-        facet axes this call -- used by callers, e.g. backfill_part_of_edges,
-        to check only the schemas that just became eligible for a subspace-
-        containment comparison instead of re-scanning the whole pool).
+        facet axes this call). backfill_part_of_edges used to consume
+        ``backfilled_ids`` to restrict its subspace-containment comparison to
+        newly-eligible schemas instead of re-scanning the whole pool; removed
+        2026-07-23 (see
+        private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md).
+        This method itself stays -- facet_distance (logged into relates_to's
+        reason string) and the dormant VSA hypervector encoding
+        (slowave/latent/vsa.py) both still read facet_axes off schemas.
+        ``backfilled_ids`` currently has no caller; kept for whichever of
+        those two picks it up next (e.g. a VSA re-encode step).
         """
         conn = self.db.connect()
         rows = conn.execute(
@@ -1798,175 +1980,6 @@ class SchemaStore:
             "skipped_svd_failed": skipped_svd_failed,
             "backfilled_ids": backfilled_ids,
         }
-
-    def backfill_part_of_edges(
-        self,
-        *,
-        min_cos: float = 0.70,
-        max_cos: float = 0.92,
-        containment_threshold: float = 0.55,
-        asymmetry_margin: float = 0.10,
-        cross_scope_containment_threshold: float = 0.75,
-        restrict_ids: List[int] | None = None,
-    ) -> dict[str, int]:
-        """Retrospectively detect and create ``part_of`` edges between all
-        schemas that have facet axes.
-
-        Compares every pair of active/needs_review schemas with
-        ``n_facet_axes > 0``, applies the subspace containment test,
-        and inserts ``part_of`` edges for hierarchical containment
-        relationships. Idempotent — ON CONFLICT on the PK prevents
-        duplicate edges.
-
-        Cross-scope pairs are not blocked (the brain generalises schemas
-        across contexts once they've earned it — see generalization_stage/
-        GeneralizationConfig.compute_stage), but require a higher containment
-        score than same-scope pairs, mirroring how reinforces already treats
-        cross-scope evidence as weaker (increment_cross_scope_reinforcement's
-        half-weight discount) rather than either blocking it outright or
-        trusting it exactly as much as same-scope evidence.
-
-        ``restrict_ids``, when given, skips any pair where NEITHER side's id
-        is in the set — i.e. it still compares each newly-eligible schema
-        against the whole facet-bearing pool, but doesn't re-compare
-        already-checked pairs against each other. This turns the full O(N^2)
-        sweep (every schema in the DB) into O(len(restrict_ids) * N), which
-        matters once the facet-bearing pool grows beyond a few hundred
-        schemas — callers doing an incremental pass (e.g. right after
-        backfill_facet_axes reports which ids just gained facets) should
-        always pass this; a bare, unrestricted call is for one-off/manual
-        full-graph backfills only.
-
-        Returns a dict with keys ``compared``, ``created``, ``skipped_no_facets``.
-        """
-        conn = self.db.connect()
-
-        # Load all schemas with embeddings + facet axes
-        rows = conn.execute("""
-            SELECT id, embedding, dim, facet_axes, n_facet_axes,
-                   supporting_episode_ids, content_text, scope_id
-            FROM schemas
-            WHERE status IN ('active', 'needs_review')
-              AND embedding IS NOT NULL
-              AND n_facet_axes > 0
-            """).fetchall()
-
-        schemas = []
-        for r in rows:
-            dim = int(r["dim"])
-            emb = unpack_f32(r["embedding"], dim)
-            emb = emb / (np.linalg.norm(emb) + 1e-12)
-            n_facets = int(r["n_facet_axes"])
-            axes = unpack_f32_matrix(r["facet_axes"], n_facets, dim)
-            supp = loads_json(r["supporting_episode_ids"])
-            schemas.append(
-                {
-                    "id": int(r["id"]),
-                    "emb": emb,
-                    "axes": axes,
-                    "support": len(supp.get("ids", [])),
-                    "scope_id": r["scope_id"],
-                }
-            )
-
-        if len(schemas) < 2:
-            return {"compared": 0, "created": 0, "skipped_no_facets": 0}
-
-        # Pre-compute cosine matrix
-        N = len(schemas)
-        emb_matrix = np.stack([s["emb"] for s in schemas])
-        cos_matrix = emb_matrix @ emb_matrix.T
-
-        created = 0
-        compared = 0
-        now = int(time.time())
-        restrict_set = set(restrict_ids) if restrict_ids is not None else None
-
-        for i in range(N):
-            for j in range(i + 1, N):
-                if restrict_set is not None and (
-                    schemas[i]["id"] not in restrict_set and schemas[j]["id"] not in restrict_set
-                ):
-                    continue
-                cos = float(cos_matrix[i, j])
-                if not (min_cos <= cos < max_cos):
-                    continue
-                compared += 1
-
-                sa = schemas[i]
-                sb = schemas[j]
-
-                # Cross-scope pairs aren't blocked, but need stronger evidence
-                # than same-scope pairs (same reasoning as reinforces' half-
-                # weight cross-scope discount, not a hard scope wall).
-                cross_scope = (
-                    sa["scope_id"] is not None
-                    and sb["scope_id"] is not None
-                    and sa["scope_id"] != sb["scope_id"]
-                )
-                pair_threshold = (
-                    max(containment_threshold, cross_scope_containment_threshold)
-                    if cross_scope
-                    else containment_threshold
-                )
-
-                # Subspace containment: A within B
-                diff_ab = sa["emb"] - sb["emb"]
-                dn_ab = float(np.dot(diff_ab, diff_ab))
-                if dn_ab < 1e-12:
-                    continue
-                c_ab = 0.0
-                for axis in sb["axes"]:
-                    p = float(np.dot(diff_ab, axis))
-                    c_ab += p * p
-                c_ab /= dn_ab
-
-                # Reverse: B within A
-                diff_ba = sb["emb"] - sa["emb"]
-                dn_ba = float(np.dot(diff_ba, diff_ba))
-                c_ba = 0.0
-                for axis in sa["axes"]:
-                    p = float(np.dot(diff_ba, axis))
-                    c_ba += p * p
-                c_ba /= dn_ba + 1e-12
-
-                if c_ab > c_ba + asymmetry_margin and c_ab >= pair_threshold:
-                    # A is part of B
-                    confidence = round(0.5 * cos + 0.5 * c_ab, 3)
-                    conn.execute(
-                        """INSERT INTO schema_relations
-                           (src_schema_id, dst_schema_id, relation, confidence, reason, created_ts)
-                           VALUES (?, ?, 'part_of', ?, ?, ?)
-                           ON CONFLICT(src_schema_id, dst_schema_id, relation) DO NOTHING""",
-                        (
-                            sa["id"],
-                            sb["id"],
-                            confidence,
-                            f"subspace containment cos={cos:.3f} c={c_ab:.3f}",
-                            now,
-                        ),
-                    )
-                    created += 1
-                elif c_ba > c_ab + asymmetry_margin and c_ba >= pair_threshold:
-                    # B is part of A
-                    confidence = round(0.5 * cos + 0.5 * c_ba, 3)
-                    conn.execute(
-                        """INSERT INTO schema_relations
-                           (src_schema_id, dst_schema_id, relation, confidence, reason, created_ts)
-                           VALUES (?, ?, 'part_of', ?, ?, ?)
-                           ON CONFLICT(src_schema_id, dst_schema_id, relation) DO NOTHING""",
-                        (
-                            sb["id"],
-                            sa["id"],
-                            confidence,
-                            f"subspace containment cos={cos:.3f} c={c_ba:.3f}",
-                            now,
-                        ),
-                    )
-                    created += 1
-
-        conn.commit()
-        return {"compared": compared, "created": created, "skipped_no_facets": 0}
 
     def count(self) -> int:
         conn = self.db.connect()

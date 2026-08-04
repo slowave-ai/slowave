@@ -166,4 +166,4 @@ def test_divergent_facets_now_reachable_with_persisted_facet_axes(real_store):
         .execute("SELECT relation FROM schema_relations WHERE src_schema_id = ?", (new_id,))
         .fetchall()
     )
-    assert any(r["relation"] == "refines" for r in relations)
+    assert any(r["relation"] == "relates_to" for r in relations)

@@ -42,6 +42,7 @@ from slowave.cli.setup import setup_cmd
 from slowave.core.config import DEFAULT_RECALL_TOP_K, SlowaveConfig
 from slowave.core.engine import SlowaveEngine
 from slowave.core.paths import default_db_path
+from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.symbolic.encoder import EncoderConfig
 
 DEFAULT_DB = "__DEFAULT_DB__"
@@ -145,14 +146,26 @@ def session_end(ctx: click.Context, session_id: str, consolidate: bool) -> None:
     type=click.Choice(["success", "partial", "failure", "unknown"]),
     help="Task result.",
 )
+@click.option(
+    "--step",
+    "steps",
+    multiple=True,
+    help="What you did this session (repeatable, ordered).",
+)
 @click.pass_context
-def commit_cmd(ctx: click.Context, session_id: str, outcome: str) -> None:
+def commit_cmd(ctx: click.Context, session_id: str, outcome: str, steps: tuple[str, ...]) -> None:
     """Close a task session and encode events into episodic memories.
 
     MCP equivalent of slowave_commit.  Pass the session_id from 'slowave activate'.
+
+    Use --step repeatedly to record what you did, e.g.
+        slowave commit sess_abc123 --outcome success \
+            --step "Ran full test suite" \
+            --step "Built and pushed Docker image"
     """
     eng = _build_engine(ctx.obj["db"], disable_encoder=True)
-    result = ops.commit(eng, session_id=session_id, outcome=outcome)
+    step_list = list(steps) if steps else None
+    result = ops.commit(eng, session_id=session_id, outcome=outcome, steps=step_list)
     _print(result, ctx.obj["json"])
     eng.close()
 
@@ -785,7 +798,7 @@ def stats_cmd(ctx: click.Context, scope: str | None, verbose: bool, show_graph: 
             "memory": {
                 "episodes": data.get("episodes", 0),
                 "schemas": data.get("schemas", 0),
-                "procedures": 0,
+                "procedures": data.get("procedures", 0),
                 "prototypes": data.get("prototypes", 0),
                 "edges": data.get("edges", 0),
             },
@@ -1328,6 +1341,123 @@ def _session_lifecycle_health(db_path: str) -> dict[str, Any]:
     return result
 
 
+def _lifecycle_version_health(db_path: str) -> dict[str, Any]:
+    """Per-lifecycle-version activate/recall/feedback telemetry (WP-8).
+
+    Groups context_recall_events (activate = retrieval_type 'context', recall
+    = retrieval_type 'recall') by the lifecycle_version stamped on the row
+    itself at call time (see slowave.lifecycle.LIFECYCLE_VERSION), and
+    context_feedback_events by joining back to its context_recall_events row
+    via context_id (a mandatory FK). Per-call stamping, not a session join,
+    is the reliable attribution point here: recall() has no session concept
+    at all (ops.recall() never sets session_id), so a session-keyed join
+    would silently bucket every recall() call as "unknown". This reflects
+    which cognitive-cycle *contract* the server enforced for that call -- not
+    necessarily what's physically installed in the caller's client
+    instruction file; `slowave doctor`'s per-client lifecycle_version reports
+    that separately. Rows predating this column are bucketed as "unknown".
+
+    The recall/activate ratio is a behavioral diagnostic only (per the
+    2026-07-28 retrieval-quality plan's Phase 6): it is reported for
+    visibility, not as a target to optimize toward.
+    """
+    import sqlite3
+
+    path = os.path.abspath(os.path.expanduser(db_path))
+    result: dict[str, Any] = {
+        "db_path": path,
+        "available": False,
+        "current_version": LIFECYCLE_VERSION,
+        "by_version": {},
+        "warnings": [],
+    }
+
+    if not os.path.exists(path):
+        result["warnings"].append("database does not exist yet")
+        return result
+
+    def _has_table(cur: Any, name: str) -> bool:
+        cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
+        return cur.fetchone() is not None
+
+    def _has_column(cur: Any, table: str, column: str) -> bool:
+        try:
+            cur.execute(f"PRAGMA table_info({table})")
+            return any(str(row[1]) == column for row in cur.fetchall())
+        except Exception:
+            return False
+
+    by_version: dict[str, dict[str, Any]] = {}
+
+    def _bucket(version: Any) -> dict[str, Any]:
+        key = str(version) if version else "unknown"
+        return by_version.setdefault(
+            key, {"activate_calls": 0, "recall_calls": 0, "feedback_calls": 0}
+        )
+
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        try:
+            cur.execute("PRAGMA writable_schema=ON")
+        except Exception:
+            pass
+        result["available"] = True
+
+        if not _has_table(cur, "context_recall_events") or not _has_column(
+            cur, "context_recall_events", "lifecycle_version"
+        ):
+            result["warnings"].append(
+                "context_recall_events.lifecycle_version column not present yet; "
+                "run any slowave command once to apply migrations"
+            )
+            conn.close()
+            return result
+
+        cur.execute(
+            "SELECT COALESCE(lifecycle_version, 'unknown') AS version, "
+            "retrieval_type, COUNT(*) "
+            "FROM context_recall_events "
+            "GROUP BY version, retrieval_type"
+        )
+        for version, retrieval_type, count in cur.fetchall():
+            bucket = _bucket(version)
+            if retrieval_type == "recall":
+                bucket["recall_calls"] += int(count)
+            else:
+                bucket["activate_calls"] += int(count)
+
+        if _has_table(cur, "context_feedback_events"):
+            cur.execute(
+                "SELECT COALESCE(cre.lifecycle_version, 'unknown') AS version, COUNT(*) "
+                "FROM context_feedback_events cfe "
+                "LEFT JOIN context_recall_events cre ON cre.context_id = cfe.context_id "
+                "GROUP BY version"
+            )
+            for version, count in cur.fetchall():
+                _bucket(version)["feedback_calls"] += int(count)
+
+        conn.close()
+    except Exception as exc:
+        msg = str(exc)
+        if "malformed database schema" in msg.lower():
+            result["warnings"].append(
+                "lifecycle version health could not inspect legacy/malformed SQLite schema; counters unavailable"
+            )
+        else:
+            result["warnings"].append(f"could not inspect lifecycle version health: {msg}")
+        return result
+
+    for counts in by_version.values():
+        total = counts["activate_calls"] + counts["recall_calls"]
+        counts["recall_activate_ratio"] = (
+            round(counts["recall_calls"] / total, 3) if total else None
+        )
+
+    result["by_version"] = by_version
+    return result
+
+
 @cli.command("status")
 @click.pass_context
 def status_cmd(ctx: click.Context) -> None:
@@ -1343,6 +1473,7 @@ def status_cmd(ctx: click.Context) -> None:
         "worker_health": _worker_health(),
         "session_lifecycle_health": _session_lifecycle_health(db),
         "feedback_health": _feedback_health(db),
+        "lifecycle_version_health": _lifecycle_version_health(db),
     }
     eng.close()
     if ctx.obj["json"]:
@@ -1379,6 +1510,14 @@ def status_cmd(ctx: click.Context) -> None:
         f"remember={fh['remember_calls']} "
         f"feedback_or_reinforcement={fh['feedback_or_reinforcement_calls']}"
     )
+    lvh = payload["lifecycle_version_health"]
+    click.echo(f"Lifecycle version telemetry (current={lvh['current_version']}):")
+    for version, counts in lvh.get("by_version", {}).items():
+        click.echo(
+            f"  {version}: activate={counts['activate_calls']} recall={counts['recall_calls']} "
+            f"feedback={counts['feedback_calls']} "
+            f"recall/activate={counts['recall_activate_ratio']}"
+        )
 
 
 @cli.command("dashboard")
@@ -1636,9 +1775,11 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         worker = _worker_health()
         session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
         feedback = _feedback_health(ctx.obj["db"])
+        lifecycle_version = _lifecycle_version_health(ctx.obj["db"])
         result["worker_health"] = worker
         result["session_lifecycle_health"] = session_lifecycle
         result["feedback_health"] = feedback
+        result["lifecycle_version_health"] = lifecycle_version
 
         # Client checks
         clients = get_client_statuses()
@@ -1648,6 +1789,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             ("WORKER_HEALTH", worker),
             ("SESSION_LIFECYCLE_HEALTH", session_lifecycle),
             ("FEEDBACK_HEALTH", feedback),
+            ("LIFECYCLE_VERSION_HEALTH", lifecycle_version),
         ):
             for warning in health.get("warnings", []):
                 warnings.append(
@@ -1663,6 +1805,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
                 "name": client.name,
                 "status": status.value,
                 "detail": detail,
+                "lifecycle_version": client.lifecycle_version,
             }
             if status == Status.WARN:
                 warnings.append(
@@ -1715,6 +1858,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         worker = _worker_health()
         session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
         feedback = _feedback_health(ctx.obj["db"])
+        lifecycle_version = _lifecycle_version_health(ctx.obj["db"])
 
         renderer.section("Worker Health")
         renderer.item("Worker process detected", str(worker.get("process_detected", False)))
@@ -1739,6 +1883,19 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             "never" if age is None else f"{age:g} day(s) ago",
         )
 
+        renderer.section("Lifecycle Version Telemetry")
+        renderer.item("Current contract version", str(lifecycle_version.get("current_version")))
+        by_version = lifecycle_version.get("by_version", {})
+        if not by_version:
+            renderer.item("Activity by version", "none recorded yet")
+        for version, counts in by_version.items():
+            renderer.item(
+                version,
+                f"activate={counts['activate_calls']} recall={counts['recall_calls']} "
+                f"feedback={counts['feedback_calls']} "
+                f"recall/activate={counts['recall_activate_ratio']} (diagnostic, not a target)",
+            )
+
         # Client checks
         renderer.section("Clients")
         clients = get_client_statuses()
@@ -1756,6 +1913,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             ("Worker", worker),
             ("Session lifecycle", session_lifecycle),
             ("Feedback", feedback),
+            ("Lifecycle version", lifecycle_version),
         ):
             for warning in health.get("warnings", []):
                 operational_warnings.append((label, str(warning)))

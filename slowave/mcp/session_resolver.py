@@ -29,6 +29,22 @@ In-process, thread-safe map: scope → (session_id, set_at_ts).
 - Keyed by scope (string or None). One binding per scope at a time.
   (If agent switches scopes mid-task, the old scope's session goes stale.)
 
+KNOWN LIMITATION (2026-07-24 Tier-0 audit): the "per-thread, so concurrent
+clients are isolated" claim below assumes each client's activate/remember/
+commit cycle runs on its own OS thread. Under the HTTP daemon
+(slowave/mcp/http_server.py, FastMCP/Starlette), the registered tool
+functions are `async def` and call the synchronous engine directly with no
+`asyncio.to_thread`/executor offload -- so in practice everything runs on the
+single asyncio event-loop thread, not a per-connection thread. That still
+isolates concurrent clients using *different* scope strings (bindings are
+scope-keyed), but two concurrent clients activating the *same* scope within
+the same ~second can have the second bind() silently overwrite the first's
+session_id, so the first client's later implicit remember()/commit() calls
+would resolve to the second client's session. Not yet fixed: doing so
+properly needs a per-connection identity (e.g. FastMCP's Context/
+request_context) added to the bind key, not just scope, and that change
+needs its own concurrency test coverage before landing.
+
 ## Usage
 
 1. activate() opens a session and calls bind(scope, sid)
@@ -98,8 +114,9 @@ class SessionResolver:
         If stale, removes the binding and returns None (triggers ad-hoc fallback).
         If not found, returns None.
 
-        Per-thread — each connection's activate/remember/commit cycle
-        is on the same thread, so bindings are correctly isolated.
+        Isolated across concurrent clients using different scope strings.
+        See the KNOWN LIMITATION note in this module's docstring for the
+        same-scope-concurrent-clients case under the async HTTP daemon.
 
         Args:
             scope: Scope key (string or None).

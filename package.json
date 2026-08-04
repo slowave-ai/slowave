@@ -1,0 +1,7 @@
+{
+  "name": "_slowave_helper",
+  "private": true,
+  "scripts": {
+    "start": "echo '=== Killing dashboards ===' && lsof -ti :8765 :8420 2>/dev/null | xargs kill -9 2>/dev/null; echo '=== Starting fresh ===' && nohup slowave dashboard --no-open > /tmp/slowave-dashboard.log 2>&1 & sleep 2 && echo 'Dashboard: http://127.0.0.1:8765' && echo '' && echo '=== Co-activation data ===' && sqlite3 ~/.slowave/slowave.db 'SELECT COUNT(*) AS edges, ROUND(AVG(weight),4) AS avg_w, MAX(weight) AS max_w, MIN(weight) AS min_w FROM schema_coactivation;' 2>/dev/null && echo '=== Recent co-activation sessions ===' && sqlite3 ~/.slowave/slowave.db 'SELECT coactivation_sessions_processed, coactivation_edges_written FROM consolidation_runs ORDER BY id DESC LIMIT 5;' 2>/dev/null || echo '(no co-activation stats table)'"
+  }
+}

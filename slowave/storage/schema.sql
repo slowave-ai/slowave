@@ -71,14 +71,20 @@ CREATE TABLE IF NOT EXISTS prototype_edges (
 
 -- Sessions: agent conversations. Scope for events; trigger for replay at end.
 CREATE TABLE IF NOT EXISTS sessions (
-  id          TEXT PRIMARY KEY,
-  agent       TEXT NOT NULL,
-  scope_id    TEXT,
-  scope_kind  TEXT,
-  started_ts  INTEGER NOT NULL,
-  ended_ts    INTEGER,
-  goal        TEXT,
-  outcome     TEXT
+  id                TEXT PRIMARY KEY,
+  agent             TEXT NOT NULL,
+  scope_id          TEXT,
+  scope_kind        TEXT,
+  started_ts        INTEGER NOT NULL,
+  ended_ts          INTEGER,
+  goal              TEXT,
+  outcome           TEXT,
+  -- WP-8 (2026-07-28): the lifecycle-instructions contract version (see
+  -- slowave/lifecycle.py) in effect when this session was opened. Lets
+  -- activate/recall/feedback counts be grouped by which cognitive-cycle
+  -- contract produced them -- NULL for sessions started before this column
+  -- existed.
+  lifecycle_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_scope ON sessions(scope_id);
 
@@ -222,6 +228,28 @@ CREATE TABLE IF NOT EXISTS schema_relations (
 CREATE INDEX IF NOT EXISTS idx_schema_relations_src ON schema_relations(src_schema_id);
 CREATE INDEX IF NOT EXISTS idx_schema_relations_dst ON schema_relations(dst_schema_id);
 
+-- Schema co-activation: usage-based associative edges (Phase 2 -- 2026-07-22).
+-- Distinct from schema_relations (content-based, geometric-judge-derived): these
+-- edges reflect real recall co-occurrence patterns ("schemas A and B were
+-- recalled together in the same session") via Hebbian strengthen-and-decay,
+-- following STDP-like directional plasticity: src->dst strengthens when src was
+-- recalled before dst in the same session.
+--
+-- weight: continuous counter, incremented on each co-activation event,
+--   multiplied by exponential decay between events (half-life ~7 days).
+-- last_touched_ts: enables per-row decay during consolidation.
+CREATE TABLE IF NOT EXISTS schema_coactivation (
+  src_schema_id   INTEGER NOT NULL,
+  dst_schema_id   INTEGER NOT NULL,
+  weight          REAL NOT NULL DEFAULT 0.0,
+  last_touched_ts INTEGER NOT NULL,
+  PRIMARY KEY (src_schema_id, dst_schema_id),
+  FOREIGN KEY (src_schema_id) REFERENCES schemas(id) ON DELETE CASCADE,
+  FOREIGN KEY (dst_schema_id) REFERENCES schemas(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_schema_coactivation_src ON schema_coactivation(src_schema_id);
+CREATE INDEX IF NOT EXISTS idx_schema_coactivation_dst ON schema_coactivation(dst_schema_id);
+
 -- Audit log for user-initiated schema forget/unforget (CLI/dashboard only,
 -- never MCP -- see private/docs decision on trust boundary). prior_status
 -- records what the schema's status was before a forget, so unforget() can
@@ -332,7 +360,11 @@ CREATE TABLE IF NOT EXISTS context_recall_events (
   suppressed_json   TEXT NOT NULL DEFAULT '{}',
   memory_ids_json   TEXT NOT NULL DEFAULT '[]',
   response_json     TEXT,
-  created_at        INTEGER NOT NULL
+  created_at        INTEGER NOT NULL,
+  -- WP-8 (2026-07-28): lifecycle-instructions contract version in effect for
+  -- this call (see slowave/lifecycle.py). Stamped per-call rather than
+  -- derived from session_id, since recall() has no session concept at all.
+  lifecycle_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_context_recall_session ON context_recall_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_context_recall_scope ON context_recall_events(scope_id);
@@ -352,6 +384,7 @@ CREATE TABLE IF NOT EXISTS context_recall_items (
   salience          REAL,
   confidence        REAL,
   admitted          INTEGER NOT NULL DEFAULT 1, -- 1=selected into context, 0=filtered by gate
+  pathway           TEXT NOT NULL DEFAULT 'direct', -- direct/exploration/graph (WP-6)
   created_at        INTEGER NOT NULL,
   PRIMARY KEY (context_id, memory_id),
   FOREIGN KEY (context_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE
@@ -443,6 +476,16 @@ CREATE TABLE IF NOT EXISTS graph_health_snapshots (
   FOREIGN KEY (worker_run_id) REFERENCES worker_runs(id)
 );
 CREATE INDEX IF NOT EXISTS idx_gh_snapshots_ts ON graph_health_snapshots(ts);
+
+-- Singleton state: last time full_generalization_sweep() ran (2026-07-23).
+-- The per-cycle incremental refresh only recomputes schemas touched since the
+-- last worker run; this tracks the rarer (e.g. daily) full sweep that catches
+-- generalization_stage staleness from a growing/shrinking total_active_scopes
+-- denominator on schemas nothing else would touch. Singleton row (id=1).
+CREATE TABLE IF NOT EXISTS generalization_sweep_state (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  last_full_sweep_ts INTEGER NOT NULL DEFAULT 0
+);
 
 -- ============================================================================
 -- Procedural memory system (REMOVED in Phase 1 P1 — 2026-06-25)
