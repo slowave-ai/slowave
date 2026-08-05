@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.4](https://github.com/mrsalty/slowave/compare/slowave-v0.16.3...slowave-v0.16.4) (2026-08-04)
+
+
+### Bug Fixes
+
+* retrieval improvements ([#121](https://github.com/mrsalty/slowave/issues/121)) ([a2ce793](https://github.com/mrsalty/slowave/commit/a2ce7938f21ca4d698c7ed2e7d1d0fcd02fab1f9))
+
 ## [0.16.3](https://github.com/mrsalty/slowave/compare/slowave-v0.16.2...slowave-v0.16.3) (2026-07-17)
 
 
