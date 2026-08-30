@@ -80,6 +80,18 @@ def test_static_shell_preserves_action_gate(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_package_data_includes_dashboard_shell_and_referenced_assets() -> None:
+    """The wheel manifest must include every static dashboard file it serves."""
+    source_root = Path(__file__).parents[2]
+    assert '"dashboard/static/**/*"' in (source_root / "pyproject.toml").read_text()
+    static_root = source_root / "slowave/dashboard/static"
+    index = (static_root / "index.html").read_text()
+    assets = [value for value in index.split('"') if value.startswith(("/assets/", "/img/"))]
+    assert assets
+    for asset in assets:
+        assert (static_root / asset.lstrip("/")).is_file()
+
+
 def test_canonical_product_routes_refresh_to_react_shell(tmp_path: Path) -> None:
     server = _server(tmp_path, experimental=True)
     try:
