@@ -1,31 +1,7 @@
-"""Regression test for the facet-axis persistence fix (2026-07-09).
+"""Regression tests for persisted facet axes and topical relation diagnostics.
 
-Companion to test_contradicts_verdict_unreachable.py, which documents the
-bug: Consolidator._write_latent_schema used to reconstruct the *old*
-schema's facet axes as an unconditional empty placeholder, because raw
-facet axes were never persisted anywhere retrievable. That made the
-"contradicts" verdict provably unreachable regardless of threshold tuning.
-
-The fix: `schemas` table gained `facet_axes`/`facet_strengths`/`n_facet_axes`
-columns (schema.sql), `SchemaStore.create()` persists them, and
-`SchemaStore._row_to_schema()` unpacks them back into `Schema.facet_axes`/
-`.facet_strengths`. `_write_latent_schema` now uses `related.facet_axes`
-(the real, persisted data) to build `old_view` instead of a hardcoded
-zero-row matrix, falling back to the placeholder only when the related
-schema genuinely has no persisted facet data.
-
-This test uses a REAL SchemaStore (not mocked) end-to-end: create an "old"
-schema with real facet axes, then run a divergent "new" schema through
-Consolidator._write_latent_schema and confirm the facet-distance-driven
-verdict is now reachable. As of the 2026-07-15 relation-taxonomy rewire
-(GeometricContradictionJudge.judge()), high facet_distance WITHOUT a
-direction_score signal maps to "refines" (elaboration), not "supersedes" --
-"supersedes" now requires direction_score, a distinct signal this test's
-no-manifold judge never computes (see test_supersedes_via_direction_score
-in test_latent_schema.py for that path). The persistence fix under test
-here is unchanged: it's still what makes old.facet_axes real instead of an
-empty placeholder, which is what makes a facet-distance-driven verdict
-reachable at all.
+Facet geometry is diagnostic only; contradiction and supersession come from
+explicit client feedback.
 """
 
 from __future__ import annotations
@@ -38,7 +14,7 @@ import numpy as np
 import pytest
 
 from slowave.core.consolidation import Consolidator
-from slowave.latent.schema import GeometricContradictionJudge, GeometricJudgeConfig, LatentSchema
+from slowave.latent.schema import GeometricRelationConfig, GeometricRelationJudge, LatentSchema
 from slowave.symbolic.schema_store import SchemaStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -57,7 +33,7 @@ def real_store():
     conn.execute("PRAGMA foreign_keys = OFF")
     schemas = SchemaStore(db, dim=DIM)
 
-    judge = GeometricContradictionJudge(GeometricJudgeConfig())
+    judge = GeometricRelationJudge(GeometricRelationConfig())
     cons = Consolidator(
         db=db,
         semantic=MagicMock(),
@@ -65,7 +41,7 @@ def real_store():
         schemas=schemas,
         encoder=None,
         latent_builder=MagicMock(),
-        geometric_judge=judge,
+        relation_judge=judge,
     )
     yield cons, schemas
     db.close()
@@ -150,11 +126,11 @@ def test_divergent_facets_now_reachable_with_persisted_facet_axes(real_store):
         member_episode_ids=[1, 2, 3, 4, 5],
         central_episode_id=1,
         central_episode_text="the deployment target is now kubernetes",
-        mean_ts=100_000,  # >3600s (min_time_delta_to_supersede_s) after old's implicit ts=0
+        mean_ts=100_000,
         ts_span_s=100,
         tags=[],
         confidence=0.9,
-        support_count=5,  # >= min_support_to_supersede (2)
+        support_count=5,
         facets={"source_kind": "consolidation"},
     )
 

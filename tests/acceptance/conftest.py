@@ -1,49 +1,51 @@
-"""Acceptance test configuration.
+"""Session setup for the black-box MCP acceptance suite."""
 
-The end-to-end tests are stateful: each phase builds on the DB state left
-by the previous one and MUST run in definition order.
+from __future__ import annotations
 
-Run with:
-    pytest tests/acceptance/ -v -p no:randomly
-or simply:
-    pytest tests/acceptance/test_e2e.py -v
-"""
+import os
+
+import pytest
 
 
-def pytest_collection_modifyitems(config, items):
-    """Re-sort acceptance tests back to definition order after any randomisation."""
-    acceptance = [i for i in items if i.fspath.dirpath().basename == "acceptance"]
-    if len(acceptance) < 2:
+@pytest.fixture(scope="session", autouse=True)
+def _prepare_production_encoder() -> None:
+    """Download the production model once, then make MCP children cache-only.
+
+    Every scenario gets its own MCP subprocess and database so that tests are
+    isolated.  The subprocess boundary cannot share an in-memory encoder, but
+    it can share the Hugging Face cache.  A single preflight avoids repeated
+    network metadata checks and makes missing model files fail at suite start.
+    """
+    if os.environ.get("SLOWAVE_ACCEPTANCE_ENCODER", "deterministic") != "production":
         return
-    acceptance.sort(key=lambda i: (str(i.fspath), i.function.__code__.co_firstlineno))
-    non_acceptance = [i for i in items if i.fspath.dirpath().basename != "acceptance"]
-    items[:] = non_acceptance + acceptance
+
+    if os.environ.get("SLOWAVE_ACCEPTANCE_VERBOSE") != "1":
+        os.environ.setdefault("SLOWAVE_ACCEPTANCE_QUIET", "1")
+
+    # Configure dependency verbosity before importing the tokenizer stack; the
+    # transformers import itself can emit an advisory when torch is absent.
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    from slowave.symbolic.encoder import TextEncoder
+
+    try:
+        # Accessing dim forces lazy ONNX model and tokenizer initialization.
+        TextEncoder().dim
+    except Exception as exc:  # pragma: no cover - exercised by environment failures
+        raise pytest.UsageError(
+            "The production acceptance encoder could not be prepared. "
+            "Check model dependencies/network access and retry."
+        ) from exc
+
+    # Child MCP servers must reuse the files prepared above and must not make
+    # one network request per test.  These variables are inherited by the
+    # stdio subprocesses created by tests/acceptance/mcp_harness.py.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 
-_PHASES: dict[str, str] = {
-    "test_phase0_register_scopes": "Phase  0 — Register 10 scopes",
-    "test_phase1_inject_dataset": "Phase  1 — Ingest dataset + cross-scope remember L1",
-    "test_phase2_context_ranking": "Phase  2 — Context ranking (P@1 = 3/3)",
-    "test_phase3_recall": "Phase  3 — Semantic recall + cross-scope isolation",
-    "test_phase4_demotion": "Phase  4 — Noise demotion (S1 → needs_review) + recovery via feedback",
-    "test_phase4b_scope_independent_noise_tracking": "Phase 4b — Noise demotion with no scope_id (D2)",
-    "test_phase5_consolidation_hygiene": "Phase  5 — Consolidation hygiene + reconsolidation (D2)",
-    "test_phase6_promotion_ladder": "Phase  6 — Promotion ladder (0 → 1 → 2 → 3)",
-    "test_phase7_decay": "Phase  7 — Salience decay",
-    "test_relations_schema_evidence": "Relations — Schema evidence links",
-    "test_relations_evidence_credits_consolidation_path_across_scopes": "Relations — Consolidation-path evidence crediting",
-    "test_relations_cross_scope_isolation": "Relations — Cross-scope isolation",
-    "test_metadata_gated_supersession": "Relations — Metadata-gated supersession edges",
-    "test_relations_prototype_coactivation": "Relations — Prototype-level co-activation edges",
-    "test_relations_schema_coactivation": "Relations — Schema-level co-activation edges + cross-scope isolation",
-    "test_relations_graph_expansion_respects_cross_scope_isolation": "Relations — Graph-expansion cross-scope isolation",
-    "test_forget_unforget_lifecycle": "Forget / unforget lifecycle",
-}
-
-
-def pytest_runtest_logstart(nodeid: str, location) -> None:
-    """Print a one-line phase description before each acceptance test."""
-    test_name = nodeid.split("::")[-1]
-    desc = _PHASES.get(test_name)
-    if desc:
-        print(f"\n  {desc}", flush=True)
+def pytest_report_header() -> str:
+    encoder = os.environ.get("SLOWAVE_ACCEPTANCE_ENCODER", "deterministic")
+    return f"Slowave MCP acceptance scenarios (encoder: {encoder}; isolated server per test)"

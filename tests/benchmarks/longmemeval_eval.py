@@ -22,12 +22,13 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ from slowave.latent.replay_engine import ReplayConfig
 from slowave.latent.retrieval import RetrievalConfig
 from slowave.latent.salience import SalienceConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
+from tests.benchmarks.evidence_format import format_retrieved_evidence
 from tests.benchmarks.llm_judge import (
     confirm_paid_run,
     estimate_cost_usd,
@@ -141,6 +143,13 @@ def keyword_score(hypothesis: str, answer: str) -> float:
 HIT_THRESHOLD = 0.5  # fraction of answer keywords that must appear in recall
 
 
+def _parse_longmemeval_ts(value: str) -> int:
+    """Parse LongMemEval's ``YYYY/MM/DD (Day) HH:MM`` session timestamps."""
+    cleaned = re.sub(r"\s*\([^)]*\)\s*", " ", str(value)).strip()
+    parsed = datetime.strptime(cleaned, "%Y/%m/%d %H:%M").replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
 # ---- per-question runner ----
 
 
@@ -201,6 +210,7 @@ def run_question(
     surprise_weight: float = 0.3,
     judge_model: str | None = None,
     openai_client: Any = None,
+    save_full_hypothesis: bool = False,
 ) -> tuple[QuestionResult, tuple[str, str, str] | None]:
     """Returns (result, pending_judge_job). `pending_judge_job` is
     (question, hypothesis, expected_answer) if judge_model was set, to be
@@ -210,6 +220,12 @@ def run_question(
     qtext = str(question["question"])
     expected = str(question["answer"])
     sessions = question["haystack_sessions"]  # list of lists of {role, content}
+    session_dates = question.get("haystack_dates", [])
+    if len(session_dates) != len(sessions):
+        raise ValueError(
+            f"haystack_dates/session mismatch for {qid}: "
+            f"{len(session_dates)} dates for {len(sessions)} sessions"
+        )
 
     # Deterministic seed per question so consolidation sampling is reproducible.
     import hashlib as _hashlib
@@ -246,8 +262,12 @@ def run_question(
         eng = SlowaveEngine(cfg, shared_encoder=shared_encoder)
 
         t_ingest_start = time.time()
-        for i, session_turns in enumerate(sessions):
+        for i, (session_turns, session_date) in enumerate(zip(sessions, session_dates)):
+            session_ts = _parse_longmemeval_ts(str(session_date))
             sid = eng.session_start(agent="longmemeval")
+            conn = eng.db.connect()
+            conn.execute("UPDATE sessions SET started_ts=? WHERE id=?", (session_ts, sid))
+            conn.commit()
             # Keep only the first 10 turns per session to bound ingest time.
             # The evidence turns that contain the answer are typically early.
             #
@@ -268,8 +288,28 @@ def run_question(
                 if not content:
                     continue
                 etype = "user_message" if role == "user" else "assistant_message"
-                eng.event_append(session_id=sid, type=etype, content=content)
-            eng.session_end(sid, consolidate=consolidate)
+                embedding = shared_encoder.encode(content)
+                eng.raw_log.append(
+                    session_id=sid,
+                    ts=session_ts,
+                    type=etype,
+                    content=content,
+                    embedding=embedding,
+                )
+            eng.session_end(sid, consolidate=False)
+            conn = eng.db.connect()
+            conn.execute(
+                "UPDATE sessions SET started_ts=?, ended_ts=? WHERE id=?",
+                (session_ts, session_ts, sid),
+            )
+            conn.execute(
+                "UPDATE episodic_memories SET ts=?, last_salience_ts=? "
+                "WHERE event_id LIKE ? OR event_id LIKE ?",
+                (session_ts, session_ts, f"micro_{sid}_%", f"macro_{sid}"),
+            )
+            conn.commit()
+        if consolidate:
+            eng.consolidate_once(triggered_by="longmemeval_eval")
         latency_ingest = time.time() - t_ingest_start
 
         # Stage 3/5 latent-only mode: run replay to train the transition model,
@@ -313,12 +353,19 @@ def run_question(
             hypothesis = episodes_hypothesis
         else:
             hypothesis = " ".join([schemas_hypothesis, episodes_hypothesis]).strip()
+        structured_hypothesis = format_retrieved_evidence(
+            result,
+            include_schemas=recall_mode in {"schemas", "hybrid"},
+            include_episodes=recall_mode in {"episodes", "hybrid"},
+            episodes_first=recall_mode == "hybrid",
+        )
 
         component_scores = {
             "schemas": round(keyword_score(schemas_hypothesis, expected), 3),
             "episodes": round(keyword_score(episodes_hypothesis, expected), 3),
             "hybrid": round(
-                keyword_score(" ".join([schemas_hypothesis, episodes_hypothesis]), expected), 3
+                keyword_score(" ".join([schemas_hypothesis, episodes_hypothesis]), expected),
+                3,
             ),
             "recall_mode": recall_mode,
         }
@@ -362,7 +409,7 @@ def run_question(
                 question_type=qtype,
                 question=qtext,
                 expected_answer=expected,
-                hypothesis=hypothesis[:400],
+                hypothesis=structured_hypothesis if save_full_hypothesis else hypothesis[:400],
                 keyword_score=round(ks, 3),
                 hit=hit,
                 n_schemas=len(result.schemas),
@@ -426,7 +473,6 @@ def _schema_dict(s: Any) -> dict[str, Any]:
         "confidence": s.confidence,
         "salience": s.salience,
         "supporting_episode_ids": s.supporting_episode_ids,
-        "contradicting_episode_ids": s.contradicting_episode_ids,
         "needs_review": s.is_labile,
         "first_formed_ts": s.first_formed_ts,
         "last_updated_ts": s.last_updated_ts,
@@ -605,15 +651,15 @@ def print_report(
         all_ingest_s = sorted(all_ingest)
         all_recall_s = sorted(all_recall)
         print(
-            f"  ingest: sum={sum(all_ingest):.1f}s  mean={sum(all_ingest)/len(all_ingest):.2f}s  "
-            f"p50={all_ingest_s[len(all_ingest_s)//2]:.2f}s  "
-            f"p95={all_ingest_s[int(0.95*(len(all_ingest_s)-1))]:.2f}s  "
+            f"  ingest: sum={sum(all_ingest):.1f}s  mean={sum(all_ingest) / len(all_ingest):.2f}s  "
+            f"p50={all_ingest_s[len(all_ingest_s) // 2]:.2f}s  "
+            f"p95={all_ingest_s[int(0.95 * (len(all_ingest_s) - 1))]:.2f}s  "
             f"max={all_ingest_s[-1]:.2f}s"
         )
         print(
-            f"  recall: sum={sum(all_recall):.1f}s  mean={sum(all_recall)/len(all_recall)*1000:.1f}ms  "
-            f"p50={all_recall_s[len(all_recall_s)//2]*1000:.1f}ms  "
-            f"max={all_recall_s[-1]*1000:.1f}ms"
+            f"  recall: sum={sum(all_recall):.1f}s  mean={sum(all_recall) / len(all_recall) * 1000:.1f}ms  "
+            f"p50={all_recall_s[len(all_recall_s) // 2] * 1000:.1f}ms  "
+            f"max={all_recall_s[-1] * 1000:.1f}ms"
         )
 
     print()
@@ -621,7 +667,7 @@ def print_report(
     valid = [r for r in results if not r.error]
     if valid:
         sizes_mb = [r.db_size_bytes / (1024 * 1024) for r in valid]
-        print(f"  db size/q: mean={sum(sizes_mb)/len(sizes_mb):.2f}MB  max={max(sizes_mb):.2f}MB")
+        print(f"  db size/q: mean={sum(sizes_mb) / len(sizes_mb):.2f}MB  max={max(sizes_mb):.2f}MB")
 
         calls = [r.n_llm_calls for r in valid]
         if sum(calls) > 0:
@@ -629,10 +675,10 @@ def print_report(
             compl = [r.llm_completion_tokens for r in valid]
             total = [p + c for p, c in zip(prompt, compl)]
             print(
-                f"  consolidation llm_calls/q: mean={sum(calls)/len(calls):.1f}  max={max(calls)}  total={sum(calls)}"
+                f"  consolidation llm_calls/q: mean={sum(calls) / len(calls):.1f}  max={max(calls)}  total={sum(calls)}"
             )
             print(
-                f"  consolidation tokens/q:     mean={sum(total)/len(total):.0f}  total={sum(total)}"
+                f"  consolidation tokens/q:     mean={sum(total) / len(total):.0f}  total={sum(total)}"
             )
         else:
             print("  consolidation: zero LLM calls (brain-only, geometric schema extraction)")
@@ -703,7 +749,10 @@ def _build_payload(
             "recall_at_k": cat_recall_at_k,
             "mrr": cat_mrr,
             "llm_judge_score_pct": (
-                round(100 * sum(r.llm_judge_score for r in cat_judge_rows) / len(cat_judge_rows), 2)
+                round(
+                    100 * sum(r.llm_judge_score for r in cat_judge_rows) / len(cat_judge_rows),
+                    2,
+                )
                 if cat_judge_rows
                 else None
             ),
@@ -737,7 +786,10 @@ def _build_payload(
         "anchor_fired_n": len(fired_all),
         "anchor_fired_rate": round(len(fired_all) / max(1, len(results)), 4),
         "mean_displacement_s": (
-            round(sum(r.anchor_displacement_s for r in fired_all) / max(1, len(fired_all)), 1)
+            round(
+                sum(r.anchor_displacement_s for r in fired_all) / max(1, len(fired_all)),
+                1,
+            )
             if fired_all
             else 0.0
         ),
@@ -781,6 +833,8 @@ def _build_payload(
             "no_graph_expansion": args.no_graph_expansion,
             "no_temporal": args.no_temporal,
             "judge_model": args.judge_model or None,
+            "full_hypotheses": args.save_full_hypotheses,
+            "evidence_format": "structured_v1" if args.save_full_hypotheses else "preview",
             "total_elapsed_s": round(total_elapsed, 2),
         },
         "summary": {
@@ -941,6 +995,12 @@ def main() -> None:
         "default so the benchmark stays free.",
     )
     parser.add_argument(
+        "--save-full-hypotheses",
+        action="store_true",
+        help="Persist complete retrieved contexts instead of 400-character previews. "
+        "Required when the artifact will be passed to aml_answer_eval.py.",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -994,7 +1054,11 @@ def main() -> None:
 
     # Pre-load the encoder once; shared across all questions to avoid
     # reloading weights for every fresh per-question engine instance.
-    print("Loading encoder (paraphrase-multilingual-MiniLM-L12-v2)...", end=" ", flush=True)
+    print(
+        "Loading encoder (paraphrase-multilingual-MiniLM-L12-v2)...",
+        end=" ",
+        flush=True,
+    )
     enc_cfg = EncoderConfig()
     shared_enc = TextEncoder(enc_cfg)
     _ = shared_enc.dim  # force model load now
@@ -1045,6 +1109,7 @@ def main() -> None:
                 surprise_weight=args.surprise_weight,
                 judge_model=args.judge_model or None,
                 openai_client=openai_client,
+                save_full_hypothesis=args.save_full_hypotheses,
             )
             results.append(r)
             if judge_job is not None:
@@ -1052,7 +1117,7 @@ def main() -> None:
 
             if r.error:
                 print(
-                    f"[{i+1:>4}/{len(selected)}] {r.question_type:<26} ERROR: {r.error[:80]}",
+                    f"[{i + 1:>4}/{len(selected)}] {r.question_type:<26} ERROR: {r.error[:80]}",
                     flush=True,
                 )
 

@@ -78,7 +78,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_ts        INTEGER NOT NULL,
   ended_ts          INTEGER,
   goal              TEXT,
+  initial_goal      TEXT,
+  final_goal        TEXT,
   outcome           TEXT,
+  outcome_summary   TEXT,
+  verification_json TEXT NOT NULL DEFAULT '{}',
+  feedback_status   TEXT NOT NULL DEFAULT 'pending',
+  retrieval_context_json TEXT NOT NULL DEFAULT '{}',
+  task_context_json TEXT NOT NULL DEFAULT '{}',
+  continuity_id     TEXT,
   -- WP-8 (2026-07-28): the lifecycle-instructions contract version (see
   -- slowave/lifecycle.py) in effect when this session was opened. Lets
   -- activate/recall/feedback counts be grouped by which cognitive-cycle
@@ -87,6 +95,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   lifecycle_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_scope ON sessions(scope_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_scope_continuity
+  ON sessions(scope_id, continuity_id) WHERE continuity_id IS NOT NULL;
+
+-- Client-conversation identity is separate from task sessions.  Legacy
+-- session continuity_id values remain untouched; new public MCP tokens live
+-- here so they can be validated before a new session is inserted.
+CREATE TABLE IF NOT EXISTS continuities (
+  continuity_id   TEXT PRIMARY KEY,
+  scope_id        TEXT NOT NULL,
+  integration     TEXT,
+  client_identity TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_continuities_scope ON continuities(scope_id);
 
 -- Raw events: canonical source-of-truth log. Everything else cites back here.
 CREATE TABLE IF NOT EXISTS raw_events (
@@ -149,23 +172,19 @@ CREATE TABLE IF NOT EXISTS schemas (
   tags_json                TEXT NOT NULL DEFAULT '{"tags":[]}',
   scope_id                 TEXT,
   scope_kind               TEXT,
-  status                   TEXT NOT NULL DEFAULT 'active', -- active/needs_review/superseded/contradicted/archived
+  status                   TEXT NOT NULL DEFAULT 'active', -- active/needs_review/stale/archived
+  stale_reason             TEXT,                           -- contradicted/superseded/outdated/unsupported/withdrawn
   confidence               REAL NOT NULL DEFAULT 1.0,
   salience                 REAL NOT NULL DEFAULT 1.0,
   embedding                BLOB,
   dim                      INTEGER,
-  -- Facet axes (within-cluster PCA directions, see 05-consolidation.md Phase 2) and
-  -- their singular-value strengths, packed as flat float32 blobs (n_facet_axes x dim
-  -- and n_facet_axes respectively). Persisted so Consolidator._write_latent_schema can
-  -- reconstruct a real "old" LatentSchema view for the geometric judge's facet-distance
-  -- comparison, instead of an always-empty placeholder (root cause fixed 2026-07-09 —
-  -- see PROGRESS.md). NULL / n_facet_axes=0 means no facet data (legacy row, or the
-  -- schema genuinely had fewer than min_members_for_facets member episodes).
+  -- Facet axes and strengths, packed as float32 blobs. They support topical
+  -- relation diagnostics and replay inspection; they do not determine semantic
+  -- truth. NULL / n_facet_axes=0 means no facet data.
   facet_axes               BLOB,
   facet_strengths          BLOB,
   n_facet_axes             INTEGER NOT NULL DEFAULT 0,
   supporting_episode_ids   TEXT NOT NULL DEFAULT '[]',     -- JSON array
-  contradicting_episode_ids TEXT NOT NULL DEFAULT '[]',    -- JSON array
   -- "Labile" (reconsolidation-theory term for a reactivated, temporarily
   -- uncertain memory trace) — distinct from the unrelated status='needs_review'
   -- string value above. See core/08-feedback.md's "Labile State &
@@ -292,7 +311,6 @@ CREATE TABLE IF NOT EXISTS worker_runs (
   episodes_processed    INTEGER NOT NULL DEFAULT 0,
   schemas_created       INTEGER NOT NULL DEFAULT 0,
   schemas_reinforced    INTEGER NOT NULL DEFAULT 0,
-  schemas_contradicted  INTEGER NOT NULL DEFAULT 0,
   schemas_skipped       INTEGER NOT NULL DEFAULT 0,
   procedures_promoted   INTEGER NOT NULL DEFAULT 0,
   procedures_generalized INTEGER NOT NULL DEFAULT 0,
@@ -360,6 +378,12 @@ CREATE TABLE IF NOT EXISTS context_recall_events (
   suppressed_json   TEXT NOT NULL DEFAULT '{}',
   memory_ids_json   TEXT NOT NULL DEFAULT '[]',
   response_json     TEXT,
+  cue_embedding     BLOB,
+  cue_dim           INTEGER,
+  retrieval_policy_version TEXT,
+  continuity_state  TEXT,
+  response_chars    INTEGER,
+  estimated_tokens  INTEGER,
   created_at        INTEGER NOT NULL,
   -- WP-8 (2026-07-28): lifecycle-instructions contract version in effect for
   -- this call (see slowave/lifecycle.py). Stamped per-call rather than
@@ -385,6 +409,9 @@ CREATE TABLE IF NOT EXISTS context_recall_items (
   confidence        REAL,
   admitted          INTEGER NOT NULL DEFAULT 1, -- 1=selected into context, 0=filtered by gate
   pathway           TEXT NOT NULL DEFAULT 'direct', -- direct/exploration/graph (WP-6)
+  topical_relevance REAL,
+  final_rank_score  REAL,
+  score_margin      REAL,
   created_at        INTEGER NOT NULL,
   PRIMARY KEY (context_id, memory_id),
   FOREIGN KEY (context_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE
@@ -429,6 +456,88 @@ CREATE INDEX IF NOT EXISTS idx_context_feedback_feedback ON context_feedback_eve
 CREATE INDEX IF NOT EXISTS idx_context_feedback_outcome ON context_feedback_events(outcome);
 CREATE INDEX IF NOT EXISTS idx_context_feedback_created ON context_feedback_events(created_at);
 
+-- Append-only, contract-neutral feedback ledger (FDB-1).  This coexists with
+-- context_feedback_events so immutable historical evidence remains replayable.
+-- Rows with status='rejected' are audit telemetry only and never
+-- authorize learning mutations.
+CREATE TABLE IF NOT EXISTS feedback_events (
+  event_id             TEXT PRIMARY KEY,
+  retrieval_id         TEXT NOT NULL,
+  session_id           TEXT,
+  scope_id             TEXT,
+  target_kind          TEXT NOT NULL CHECK (target_kind IN ('retrieval', 'memory', 'procedure')),
+  target_id            TEXT NOT NULL,
+  replacement_target_id TEXT,
+  assessment           TEXT,
+  stale_reason         TEXT,
+  effect               TEXT,
+  contribution         TEXT,
+  reason               TEXT,
+  coverage             TEXT NOT NULL CHECK (coverage IN ('partial', 'complete')),
+  retrieval_quality    TEXT,
+  missing_json         TEXT NOT NULL DEFAULT '[]',
+  status               TEXT NOT NULL DEFAULT 'accepted' CHECK (status IN ('accepted', 'rejected')),
+  rejection_reason     TEXT,
+  source_contract      TEXT NOT NULL,
+  source_feedback_id   INTEGER,
+  refines_event_id     TEXT,
+  mutation_mode        TEXT NOT NULL DEFAULT 'shadow' CHECK (mutation_mode IN ('shadow', 'active')),
+  created_at           INTEGER NOT NULL,
+  FOREIGN KEY (retrieval_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE,
+  FOREIGN KEY (source_feedback_id) REFERENCES context_feedback_events(id) ON DELETE SET NULL,
+  FOREIGN KEY (refines_event_id) REFERENCES feedback_events(event_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_events_retrieval ON feedback_events(retrieval_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_events_target ON feedback_events(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_events_created ON feedback_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_events_source ON feedback_events(source_contract, source_feedback_id);
+
+-- ============================================================================
+-- Retrieval-access evidence
+-- ============================================================================
+
+-- Cue prototypes compress repeated retrieval cues into stable, bounded
+-- representations. They are distinct from semantic prototypes: their purpose
+-- is to identify retrieval context, not to represent claim content.
+CREATE TABLE IF NOT EXISTS retrieval_cue_prototypes (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  embedding         BLOB NOT NULL,
+  dim               INTEGER NOT NULL,
+  scope_id          TEXT,
+  scope_kind        TEXT,
+  task_type         TEXT,
+  support_count     INTEGER NOT NULL DEFAULT 1,
+  first_seen_ts     INTEGER NOT NULL,
+  last_seen_ts      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_cue_prototypes_scope
+  ON retrieval_cue_prototypes(scope_id);
+
+-- Aggregate, pathway-isolated access evidence. This records how a schema has
+-- helped or failed for a cue prototype without changing its semantic truth
+-- lifecycle. One row represents one schema/cue/pathway combination.
+CREATE TABLE IF NOT EXISTS schema_retrieval_evidence (
+  schema_id          INTEGER NOT NULL,
+  cue_prototype_id   INTEGER NOT NULL,
+  pathway            TEXT NOT NULL,
+  useful_count       INTEGER NOT NULL DEFAULT 0,
+  irrelevant_count   INTEGER NOT NULL DEFAULT 0,
+  last_useful_ts     INTEGER,
+  last_irrelevant_ts INTEGER,
+  inhibition_strength REAL NOT NULL DEFAULT 0.0,
+  access_state       TEXT NOT NULL DEFAULT 'eligible',
+  updated_at         INTEGER NOT NULL,
+  PRIMARY KEY (schema_id, cue_prototype_id, pathway),
+  FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE,
+  FOREIGN KEY (cue_prototype_id) REFERENCES retrieval_cue_prototypes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_schema_retrieval_evidence_cue_pathway
+  ON schema_retrieval_evidence(cue_prototype_id, pathway);
+CREATE INDEX IF NOT EXISTS idx_schema_retrieval_evidence_schema
+  ON schema_retrieval_evidence(schema_id);
+CREATE INDEX IF NOT EXISTS idx_schema_retrieval_evidence_access_state
+  ON schema_retrieval_evidence(access_state);
+
 -- ============================================================================
 -- Scope registry: lightweight catalogue of known scopes for generalization
 -- ============================================================================
@@ -455,7 +564,7 @@ CREATE TABLE IF NOT EXISTS graph_health_snapshots (
   worker_run_id            INTEGER,
   ts                       INTEGER NOT NULL,
   total_schemas            INTEGER,
-  superseded_pct           REAL,
+  stale_pct                REAL,
   schema_isolates          INTEGER,
   schema_isolate_pct       REAL,
   schema_components        INTEGER,

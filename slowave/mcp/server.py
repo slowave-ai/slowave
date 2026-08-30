@@ -10,9 +10,11 @@ Tools exposed (5-verb cognitive cycle):
   - slowave_activate    : prime working memory; opens implicit session
   - slowave_remember    : explicitly encode a durable typed claim
   - slowave_recall      : semantic retrieval mid-task
-  - slowave_reinforce   : strengthen/suppress memories (feedback)
+  - slowave_feedback    : append target-specific memory/procedure evidence
   - slowave_commit      : close the task; form episodes
-  - slowave_stats       : return system counts
+
+Administrative counts and health remain available through ``slowave stats``;
+they are intentionally absent from the cognitive MCP registry.
 
 Deleted (hard break from old surface):
   slowave_context, slowave_session_start, slowave_session_end,

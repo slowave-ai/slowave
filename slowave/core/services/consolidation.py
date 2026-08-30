@@ -79,7 +79,6 @@ class ConsolidationService:
         try:
             replay_stats = self.replay_engine.replay_once()
             consolidation: dict[str, Any] = {}
-            reconsolidation: dict[str, Any] = {}
             if self.consolidator is not None:
                 # Consolidate only the prototypes this replay pass actually
                 # touched (new/updated episode assignments), not every
@@ -90,14 +89,6 @@ class ConsolidationService:
                 protos = replay_stats.get("touched_prototype_ids", [])
                 cs = self.consolidator.consolidate(prototype_ids=protos)
                 consolidation = dataclasses.asdict(cs)
-                # Reconsolidation (2026-07-10): re-examine labile schemas
-                # (needs_review=True) by replaying them against their
-                # nearest active neighbor via the same judge, instead of
-                # leaving them flagged indefinitely. "Labile" is the state,
-                # "reconsolidation" is the process that resolves it — see
-                # core/08-feedback.md's "Labile State & Reconsolidation"
-                # section and outcomes/08-feedback.md.
-                reconsolidation = self.consolidator.reconsolidate_labile_schemas()
             # Backfill facet axes for schemas that have accumulated enough
             # supporting episodes but lack them (engine.remember() creates
             # schemas from single episodes so axes can only be computed
@@ -122,7 +113,6 @@ class ConsolidationService:
             result = {
                 "replay": replay_stats,
                 "consolidation": consolidation,
-                "reconsolidation": reconsolidation,
                 "facet_backfill": facet_backfill,
                 "coactivation": coactivation,
                 "generalization": generalization,
@@ -147,7 +137,7 @@ class ConsolidationService:
                           ended_ts=?, duration_ms=?, prototypes_processed=?,
                           episodes_processed=?,
                           schemas_created=?, schemas_reinforced=?,
-                          schemas_contradicted=?, schemas_skipped=?,
+                          schemas_skipped=?,
 
                           schemas_decayed=?, error_text=?
                         WHERE id=?
@@ -159,7 +149,6 @@ class ConsolidationService:
                             replay_stats.get("replay_sampled", 0),
                             cs.get("schemas_created", 0),
                             cs.get("schemas_reinforced", 0),
-                            cs.get("schemas_contradicted", 0),
                             cs.get("schemas_skipped", 0),
                             decay.get("decayed", 0),
                             error_text,

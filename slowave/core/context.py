@@ -203,6 +203,10 @@ class GatePolicy:
     # exposure data cross-scope generalization needs) without ever displacing
     # a relevant memory from the top of the brief.
     exploration_slots: int = 2
+    # Compact answer contexts can deliberately avoid filling a second slot
+    # unless the query asks for multiple answers.  This is opt-in so broader
+    # working-memory callers retain their existing ranked-list semantics.
+    require_explicit_multi_answer: bool = False
     allowed_classes: tuple[str, ...] = _DEFAULT_ALLOWED_CLASSES
     excluded_layers: tuple[str, ...] = _DEFAULT_EXCLUDED_LAYERS
     excluded_source_kinds: tuple[str, ...] = _DEFAULT_EXCLUDED_SOURCES
@@ -259,6 +263,11 @@ class WorkingMemoryGate:
     ) -> WorkingMemoryState:
         policy = policy or GatePolicy()
         cue_terms = _cue_terms(cue)
+        distinctive_terms = (
+            _distinctive_terms(cue.query or "")
+            if _requires_distinctive_match(cue.query or "")
+            else set()
+        )
         suppressed: dict[str, int] = {}
         traces: list[ActivationTrace] = []
         items: list[WorkingMemoryItem] = []
@@ -268,6 +277,13 @@ class WorkingMemoryGate:
             if not ok:
                 suppressed[reason] = suppressed.get(reason, 0) + 1
                 traces.append(ActivationTrace(schema.id, 0.0, reason, False))
+                continue
+
+            if distinctive_terms and not (distinctive_terms & _schema_terms(schema)):
+                suppressed["distinctive_term_mismatch"] = (
+                    suppressed.get("distinctive_term_mismatch", 0) + 1
+                )
+                traces.append(ActivationTrace(schema.id, 0.0, "distinctive_term_mismatch", False))
                 continue
 
             activation, reason, relevance = self._activation(
@@ -364,6 +380,18 @@ class WorkingMemoryGate:
             reverse=True,
         )
         items = _mmr_deduplicate(items, cos_threshold=0.92)
+
+        # Compact activation is answer context, not a generic top-k search
+        # result.  A second item is useful only when the caller explicitly
+        # asks for more than one answer.  Without this guard, a same-entity
+        # but different-facet memory can occupy the second slot merely because
+        # the server budget is two items (for example, an export-format fact
+        # beside a question that asks only for a database).  Do not use a
+        # score threshold here: score scales differ across encoders and a
+        # threshold would either preserve this intrusion or drop legitimate
+        # lower-scoring answers in a genuinely multi-part question.
+        if policy.require_explicit_multi_answer and not _cue_requests_multiple_answers(cue):
+            items = items[:1]
 
         # Exploration slots: when more admitted items exist than fit, the top
         # slots are earned by relevance-ranked activation and the trailing
@@ -765,16 +793,82 @@ def _source_kind(facets: dict[str, Any]) -> str:
 
 def _terms(text: str) -> set[str]:
     terms = set()
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9_/-]{2,}", text.lower()):
-        token = token.strip("_-/")
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_.:/-]{2,}", text.lower()):
+        token = token.strip("_.:/-")
         if token and token not in _STOPWORDS:
             terms.add(token)
             terms.add(_normalize_token(token))
-            for part in re.split(r"[_/-]+", token):
+            for part in re.split(r"[_.:/-]+", token):
                 if len(part) >= 3 and part not in _STOPWORDS:
                     terms.add(part)
                     terms.add(_normalize_token(part))
     return terms
+
+
+_GENERIC_TITLE_TERMS = {
+    "what",
+    "which",
+    "who",
+    "recall",
+    "remember",
+    "project",
+    "phase",
+    "layer",
+    "check",
+    "review",
+}
+
+
+def _distinctive_terms(text: str) -> set[str]:
+    """Return identifier/proper-name anchors that semantic similarity cannot waive.
+
+    A query naming a file, symbol, incident ID, or proper noun should not be
+    answered by a merely adjacent memory that omits every named anchor. The
+    returned forms intentionally overlap `_terms()`' whole-token and split-token
+    forms so paths, snake_case symbols, and hyphenated IDs remain comparable.
+    """
+    anchors: set[str] = set()
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_.:/-]{2,}", text)
+    for index, token in enumerate(tokens):
+        lower = token.strip("_.:/-").lower()
+        if not lower:
+            continue
+        has_structure = bool(re.search(r"[0-9_.:/-]", token))
+        has_internal_upper = any(char.isupper() for char in token[1:])
+        is_proper = index > 0 and token[0].isupper() and lower not in _GENERIC_TITLE_TERMS
+        if not (has_structure or has_internal_upper or is_proper):
+            continue
+        anchors.add(lower)
+        anchors.add(_normalize_token(lower))
+        for part in re.split(r"[_.:/-]+", lower):
+            if len(part) >= 3 and part not in _STOPWORDS:
+                anchors.add(part)
+                anchors.add(_normalize_token(part))
+    return anchors
+
+
+_ANCHOR_LOOKUP_PATTERNS = (
+    r"\bwhat decision\b",
+    r"\bwhat (?:is|was) (?:our|the) preference\b",
+    r"\bwho owns\b",
+    r"\bwhich owner\b",
+    r"\brecall the\b",
+    r"\bremember the\b",
+    r"\bwhat (?:is|was) the .{0,40}(?:percentage|owner|runbook|procedure)\b",
+)
+
+
+def _requires_distinctive_match(text: str) -> bool:
+    """Whether an activate query claims to look up a named stored fact.
+
+    Analysis and comparison tasks may legitimately name an external artifact
+    while benefiting from local background that does not repeat that name.
+    Hard anchor matching is therefore limited to explicit fact-lookup wording;
+    recall() applies the anchor rule independently because its entire surface
+    is an explicit memory lookup.
+    """
+    lowered = text.lower()
+    return any(re.search(pattern, lowered) for pattern in _ANCHOR_LOOKUP_PATTERNS)
 
 
 def _normalize_token(token: str) -> str:
@@ -893,6 +987,18 @@ def _compact(text: str, max_chars: int) -> str:
     if len(one_line) <= max_chars:
         return one_line
     return one_line[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _cue_requests_multiple_answers(cue: MemoryCue) -> bool:
+    """Return whether a compact two-item context has an explicit second need.
+
+    This is deliberately a cue-shape decision, not a ranking-score threshold.
+    A conjunction in the query is the smallest reliable public signal that the
+    caller requested two facts; task goals and requirements often contain
+    incidental conjunctions and must not silently expand the context budget.
+    """
+    query = (cue.query or "").casefold()
+    return bool(re.search(r"\b(?:and|also|both)\b|[;]", query))
 
 
 def _apply_budget(items: list[WorkingMemoryItem], policy: GatePolicy) -> list[WorkingMemoryItem]:

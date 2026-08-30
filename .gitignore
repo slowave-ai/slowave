@@ -59,6 +59,7 @@ data/longmemeval/logs/
 data/longmemeval/RESULTS_SUMMARY.md
 data/temporal_eval_*.json
 data/token_efficiency/
+data/performance_corpora/
 
 # Benchmark datasets — not tracked in git (too large or third-party licensed).
 # Run scripts/download_datasets.sh to fetch them.
@@ -76,6 +77,7 @@ data/beam/beam_*
 *.whl
 *.tar.gz
 *.zip
+node_modules/
 
 # Backup files
 *.bak

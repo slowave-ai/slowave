@@ -66,7 +66,13 @@ def _prefix_date(text: str, ts: int) -> str:
 def _default_memory_layer(schema_type: str) -> str:
     """Best-effort generic layer for explicit user memories."""
     t = str(schema_type or "").strip().lower()
-    if t in {"preference", "interaction_preference", "constraint", "habit", "relationship"}:
+    if t in {
+        "preference",
+        "interaction_preference",
+        "constraint",
+        "habit",
+        "relationship",
+    }:
         return "profile"
     if t in {"fact", "lesson", "warning"}:
         return "domain"
@@ -82,18 +88,14 @@ class RememberResult(int):
     value as an integer continue to work, while Python API users can access the
     created memory/schema metadata through attributes.
 
-    ``superseded_schema_ids`` is always ``[]``: supersession is decided
-    asynchronously by consolidation's ``reconsolidate_labile_schemas()``, never
-    at ``remember()`` time (see ``remember()``'s docstring and
-    ``private/docs/iterations/20260720_supersession_classification_investigation.md``).
-    The field is kept only for return-shape stability — do not poll it
-    expecting same-call supersession signal.
+    Semantic retirement is intentionally absent from this result. Clients
+    assess exposed memories through ``slowave_feedback`` instead.
     """
 
     event_id: int
     schema_id: int
     created_schema: "Schema | None"
-    superseded_schema_ids: list[int]  # always [] — see class docstring
+    disposition: str
 
     def __new__(
         cls,
@@ -101,13 +103,13 @@ class RememberResult(int):
         *,
         schema_id: int,
         created_schema: "Schema | None" = None,
-        superseded_schema_ids: list[int] | None = None,
+        disposition: str = "created",
     ) -> "RememberResult":
         obj = int.__new__(cls, event_id)
         obj.event_id = event_id
         obj.schema_id = schema_id
         obj.created_schema = created_schema
-        obj.superseded_schema_ids = list(superseded_schema_ids or [])
+        obj.disposition = disposition
         return obj
 
     def as_dict(self) -> dict[str, Any]:
@@ -115,7 +117,7 @@ class RememberResult(int):
         return {
             "event_id": self.event_id,
             "schema_id": self.schema_id,
-            "superseded_schema_ids": list(self.superseded_schema_ids),
+            "disposition": self.disposition,
         }
 
 
@@ -316,10 +318,7 @@ class SlowaveEngine:
 
         # Latent consolidator: schemas are prototype geometry + lexical signatures.
         # Zero LLM calls in ingest, consolidation, and retrieval.
-        from slowave.latent.schema import (
-            GeometricContradictionJudge,
-            LatentSchemaBuilder,
-        )
+        from slowave.latent.schema import GeometricRelationJudge, LatentSchemaBuilder
 
         self.consolidator: Consolidator | None = Consolidator(
             db=self.db,
@@ -328,7 +327,7 @@ class SlowaveEngine:
             schemas=self.schemas,
             encoder=self.encoder,
             latent_builder=LatentSchemaBuilder(),
-            geometric_judge=GeometricContradictionJudge(self.cfg.judge),
+            relation_judge=GeometricRelationJudge(self.cfg.relation),
             # The latent consolidator needs episode embeddings + ts.
             episodic_store=self.episodic,
             logic_version=self.cfg.current_logic_version,
@@ -388,6 +387,7 @@ class SlowaveEngine:
             db=self.db,
             schemas=self.schemas,
             cfg=self.cfg.feedback,
+            encoder=self.encoder,
         )
         self._pattern_completion = PatternCompletionService(
             schemas=self.schemas,
@@ -405,6 +405,8 @@ class SlowaveEngine:
         # post-construction assignment (e.g. test monkey-patching) stays in sync.
         if hasattr(self, "_retrieval"):
             self._retrieval.encoder = value
+        if hasattr(self, "_feedback"):
+            self._feedback.encoder = value
 
     @classmethod
     def from_config(
@@ -426,6 +428,10 @@ class SlowaveEngine:
         scope: str | None = None,
         ts: int | None = None,
         goal: str | None = None,
+        initial_goal: str | None = None,
+        retrieval_context: dict[str, Any] | None = None,
+        task_context: dict[str, Any] | None = None,
+        continuity_id: str | None = None,
         lifecycle_version: str | None = None,
     ) -> str:
         """Open a new session: mint an id every subsequent event_append() call
@@ -458,6 +464,10 @@ class SlowaveEngine:
             scope_kind=scope_kind(scope_id),
             ts=ts,
             goal=goal,
+            initial_goal=initial_goal,
+            retrieval_context=retrieval_context,
+            task_context=task_context,
+            continuity_id=continuity_id,
             lifecycle_version=(
                 LIFECYCLE_VERSION if lifecycle_version is None else (lifecycle_version or None)
             ),
@@ -478,6 +488,10 @@ class SlowaveEngine:
         consolidate: bool = False,
         ts: int | None = None,
         outcome: str | None = None,
+        final_goal: str | None = None,
+        outcome_summary: str | None = None,
+        verification: dict[str, Any] | None = None,
+        feedback_status: str | None = None,
     ) -> dict[str, Any]:
         """End a session: form episodes from raw events.
 
@@ -507,7 +521,15 @@ class SlowaveEngine:
         # no UNIQUE constraint on event_id to catch this. Check before
         # end_session() overwrites ended_ts.
         already_ended = self.raw_log.is_session_ended(session_id)
-        self.raw_log.end_session(session_id, ts=ts, outcome=outcome)
+        self.raw_log.end_session(
+            session_id,
+            ts=ts,
+            outcome=outcome,
+            final_goal=final_goal,
+            outcome_summary=outcome_summary,
+            verification=verification,
+            feedback_status=feedback_status,
+        )
 
         if already_ended:
             episode_ids: list[int] = []
@@ -544,11 +566,9 @@ class SlowaveEngine:
                     "prototypes_processed": cstats.prototypes_processed,
                     "schemas_created": cstats.schemas_created,
                     "schemas_reinforced": cstats.schemas_reinforced,
-                    "schemas_contradicted": cstats.schemas_contradicted,
                     "schemas_skipped": cstats.schemas_skipped,
                     "verdict_counts": dict(cstats.verdict_counts),
                     "near_dup_intercepts": cstats.near_dup_intercepts,
-                    "gate_downgrades": dict(cstats.gate_downgrades),
                     "confidence_histogram": list(cstats.confidence_histogram),
                 }
         return stats
@@ -561,8 +581,23 @@ class SlowaveEngine:
         type: str,
         content: str,
         metadata: dict[str, Any] | None = None,
+        memory_role: str = "experience",
         ts: int | None = None,
     ) -> int:
+        """Append an immutable event, embedding only semantic memory roles.
+
+        ``control`` and ``procedural_evidence`` remain queryable raw history but
+        cannot enter episodic/declarative consolidation. The producer assigns
+        the role from event semantics; no content-string filtering is involved.
+        """
+        valid_memory_roles = {
+            "experience",
+            "explicit_memory",
+            "control",
+            "procedural_evidence",
+        }
+        if memory_role not in valid_memory_roles:
+            raise ValueError(f"memory_role must be one of {sorted(valid_memory_roles)}")
         # Sanitize content: strip whitespace and handle empty strings.
         # This prevents the error "messages: text content blocks must be non-empty"
         # from downstream Claude API calls. Empty content is logged with a placeholder.
@@ -594,16 +629,18 @@ class SlowaveEngine:
             )
 
         emb = None
-        if self.encoder is not None:
+        if self.encoder is not None and memory_role in {"experience", "explicit_memory"}:
             try:
                 emb = self.encoder.encode(content_stripped)
             except Exception as e:
                 log.warning("encoder failed: %s", e)
+        event_metadata = dict(metadata or {})
+        event_metadata["memory_role"] = memory_role
         return self.raw_log.append(
             session_id=session_id,
             type=type,
             content=content_stripped,
-            metadata=metadata,
+            metadata=event_metadata,
             embedding=emb,
             ts=ts,
             logic_version=self.cfg.current_logic_version,
@@ -617,6 +654,8 @@ class SlowaveEngine:
         session_id: str | None = None,
         agent: str = "cli",
         scope: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        occurred_at: int | None = None,
     ) -> RememberResult:
         """Explicit user-driven memory. Logged as a high-salience event.
 
@@ -636,9 +675,7 @@ class SlowaveEngine:
 
         Returns a ``RememberResult``. It behaves like the old integer event id
         for backward compatibility, and also exposes ``event_id``, ``schema_id``,
-        and ``created_schema`` for Python API users. It also exposes
-        ``superseded_schema_ids``, which is always ``[]`` — see
-        ``RememberResult``'s docstring for why.
+        and ``created_schema`` for Python API users.
         """
         caller_owns_session = session_id is not None
 
@@ -649,7 +686,13 @@ class SlowaveEngine:
             session_id=session_id,
             type=f"remember:{type}",
             content=content,
-            metadata={"explicit": True, "declared_type": type},
+            metadata={
+                "explicit": True,
+                "declared_type": type,
+                **({"occurred_at": int(occurred_at)} if occurred_at is not None else {}),
+                **({"provenance": provenance} if provenance else {}),
+            },
+            memory_role="explicit_memory",
         )
 
         emb = self.encoder.encode(content) if self.encoder is not None else None
@@ -673,8 +716,11 @@ class SlowaveEngine:
                 "schema_class": type,
                 "source": "explicit_remember",
                 "source_kind": "explicit_remember",
+                "execution_backed": False,
+                "instruction": type == "instruction",
                 "memory_layer": _default_memory_layer(type),
                 "injectable": True,
+                **({"source_provenance": provenance} if provenance else {}),
             },
             tags=[type, "explicit"],
             embedding=emb,
@@ -685,16 +731,11 @@ class SlowaveEngine:
             evidence=[(episode_ids[0] if episode_ids else None, event_id, content, 1.0)],
             logic_version=self.cfg.current_logic_version,
         )
+        matched_existing = self.schemas.last_create_reinforced_existing_id is not None
 
-        # Pattern-completion check (hippocampal familiarity check at encoding
-        # time, not classification): flags a close same-scope neighbor as
-        # labile for consolidation to reconsolidate later, and
-        # reinforces/skips cross-scope neighbors for the promotion ladder.
-        # remember() itself never decides supersedes/refines/relates_to —
-        # see PatternCompletionService's class docstring for the full
-        # rationale (moved there from this method in the 2026-07-21
-        # simplification pass; originally documented in
-        # private/docs/iterations/20260720_supersession_classification_investigation.md).
+        # Familiarity check at encoding time. Same-scope semantic truth is
+        # untouched; independently observed cross-scope evidence may reinforce
+        # an existing schema for the promotion ladder.
         if emb is not None:
             self._pattern_completion.process_candidates(
                 new_schema_id=new_schema_id,
@@ -712,8 +753,8 @@ class SlowaveEngine:
         return RememberResult(
             event_id,
             schema_id=new_schema_id,
-            created_schema=created_schema,
-            superseded_schema_ids=[],
+            created_schema=None if matched_existing else created_schema,
+            disposition="matched" if matched_existing else "created",
         )
 
     # ---- consolidation ----------------------------------------------------
@@ -820,6 +861,33 @@ class SlowaveEngine:
 
     def retrieval_feedback(self, **kwargs: Any) -> dict[str, Any]:
         return self._feedback.retrieval_feedback(**kwargs)
+
+    def feedback(self, **kwargs: Any) -> dict[str, Any]:
+        return self._feedback.feedback(**kwargs)
+
+    def retrieval_access_evidence(self, schema_id: int) -> list[dict[str, object]]:
+        """Inspect derived retrieval-access evidence without affecting admission."""
+        return self._feedback.access_evidence.inspect_schema(schema_id)
+
+    def shadow_retrieval_access(
+        self,
+        *,
+        schema_id: int,
+        raw_semantic_relevance: float,
+        pathway: str,
+        cue_embedding,
+        scope_id: str | None,
+        task_type: str | None,
+    ) -> dict[str, object]:
+        """Evaluate the Phase-2 policy without changing retrieval admission."""
+        return self._feedback.access_evidence.shadow_policy().evaluate(
+            schema_id=schema_id,
+            raw_semantic_relevance=raw_semantic_relevance,
+            pathway=pathway,
+            cue_embedding=cue_embedding,
+            scope_id=scope_id,
+            task_type=task_type,
+        )
 
     def context_feedback(self, *, context_id: str, **kwargs: Any) -> dict[str, Any]:
         return self._feedback.context_feedback(context_id=context_id, **kwargs)

@@ -1,6 +1,6 @@
 # Slowave local dashboard
 
-Slowave includes a dependency-free local web dashboard for inspecting the memory
+Slowave includes a local web dashboard for inspecting the memory
 database, MCP/server processes, schema health, schema relations, and schema graph.
 
 The dashboard is intended for local development and operational hygiene. The
@@ -30,11 +30,14 @@ slowave dashboard --port 8766
 # Do not open the browser automatically.
 slowave dashboard --no-open
 
-# Refresh the overview every 5 seconds instead of 2 seconds.
+# Refresh visible Home and Diagnostics observations every 5 seconds.
 slowave dashboard --refresh-ms 5000
 
 # Disable the Forget/Unforget buttons for a strictly read-only dashboard.
 slowave dashboard --no-allow-actions
+
+# Enable creator-only diagnostics and experimental measurements.
+slowave dashboard --experimental
 ```
 
 The default DB is `~/.slowave/slowave.db`. Use `SLOWAVE_DB` or the global
@@ -46,89 +49,70 @@ user information.
 
 ## What it shows
 
-### Overview
+### Home
 
-Live cards for:
+The default landing view separates three operational observations: MCP daemon
+availability, SQLite integrity, and the last recorded maintenance result. It
+then shows actionable exceptions and a chronological feed of conservatively
+observed memory, retrieval, activity, and procedure changes for the selected
+period. It does not claim to know when a particular viewer last looked.
 
-- DB size and WAL size
-- sessions and raw events
-- episodes and episode text rows
-- prototypes and prototype graph edges
-- schemas and schema relations
-- active schemas and review queue size
-- running Slowave MCP processes
+When enough recent data exists, Home shows separate lanes for captured activity,
+episodes formed, and memories formed. It never sums these unlike records into a
+single health or quality signal. A new installation instead shows the ordinary
+lifecycle steps that will populate the workbench.
 
-The overview also surfaces warnings such as:
+### Memory
 
-- multiple `slowave-mcp` processes
-- orphaned MCP processes
-- schemas needing review
-- exact duplicate active schemas
+The **Memory** page is a server-paginated library. Search text stays in local page
+state rather than browser history. Structural state, scope, date, sort, and page
+filters are bookmarkable. Open a memory to inspect its current retrieval effect,
+evidence, recorded exposures, feedback or replacement observations, relations,
+and advanced metadata.
 
-### Processes
+Use **Suppress memory** or **Restore memory** only from detail. The confirmation
+states the scope and reversibility and confirms that source evidence remains.
 
-Lists local Slowave-related processes:
+### Retrieval
 
-- `slowave-mcp`
-- `slowave worker`
-- `slowave dashboard`
+The **Retrieval** page lists activation and recall snapshots. Detail shows the
+exact admitted items, their persisted pathway, the product-level Direct or
+Associated grouping, and explicit target feedback. Exposure, use, effect, and
+task outcome remain separate; missing feedback is shown as unknown, not negative.
 
-For each process, it shows PID, PPID, process age, RSS, orphan status, command,
-and parent command. This helps catch stale MCP servers left by multiple IDE or
-agent sessions.
+### Procedures
 
-### Schemas
+The **Procedures** page lists execution-backed records captured at session close.
+Detail links verification, source activity, context, steps, caveats, retrieval
+exposures, and explicit use/effect feedback. A capture is not presented as a
+proven general playbook.
 
-Searchable schema table with status filtering. Columns include schema id,
-status, salience, schema class, scope, support count, and content preview.
-Click a row to expand its full detail: content, facets, tags, evidence,
-outgoing/incoming relations, and generalization info. Unless the server was
-started with `--no-allow-actions`, the expanded view also shows a Forget (or
-Unforget, for already-forgotten schemas) button — see
-[Forgetting a memory](#forgetting-a-memory).
+### Activity
 
-### Schema graph
+The **Activity** page lists recorded task sessions and opens a bookmarkable,
+chronological detail view. It links events, episodes, retrievals, feedback,
+supported memory-formation evidence, and a captured procedure. Related sessions
+share a continuity identifier; the UI explicitly treats that as correlation,
+not a complete work-attempt model.
 
-Interactive graph of explicit `schema_relations`:
+### Diagnostics
 
-- node = schema
-- edge = relation from `schema_relations`
-- node color = schema status
-- node size = salience
-- edge color = relation type
-- edge width = relation confidence
+**Diagnostics** contains service probes, maintenance-run history, database
+integrity, storage sizes, and collapsed raw SQLite details. These are operational
+observations, not measures of memory value. No repair, restart, or graph mutation
+is available from the beta dashboard.
 
-Controls:
+### Labs (creator-only)
 
-- scope filter
-- result limit
-- schema status toggles
-- minimum salience slider
+Pass `--experimental` to expose **Labs** under Diagnostics. It contains lifecycle
+cohort measurements, procedure-exposure diagnostics, and the bounded graph
+explorer with an accessible table alternative. Every section states its
+population and limitation and is labelled as not a product metric.
 
-Click a schema node to inspect content, facets, tags, evidence rows, outgoing
-relations, and incoming relations.
-
-The MVP graph intentionally shows only explicit schema relations. Future graph
-modes can add same-prototype links, shared-evidence links, and neighborhood-only
-views.
-
-### Relations
-
-Browsable view over `schema_relations`, split by relation type:
-
-- **supersedes** / **refines** — pair table; click a row to expand a two-column
-  detail (full text, status/salience/confidence/scope/stage, reason, adjacent
-  chain links)
-- **part_of** — parent/children tree
-
-### DB health
-
-Shows SQLite pragmas, `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and
-table counts.
 
 ## Forgetting a memory
 
-If you spot a memory in the Schemas tab that's wrong, stale, or something you
+If you spot a memory in the Memories tab that's wrong, stale, or something you
 just don't want influencing future recall, you can suppress it — expand the
 schema and click **Forget** (shown by default). This sets the schema's
 status to `forgotten`, which hides it
@@ -154,26 +138,26 @@ The dashboard serves a small JSON API on the same local HTTP server:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/status` | Overview stats, schema health, recent sessions, process warnings |
-| `GET /api/processes` | Slowave MCP/worker/dashboard process snapshot |
+| `GET /api/home?hours=24&scope=...` | Home availability sources, attention observations, recent changes, and separate activity lanes |
+| `GET /api/status` | Installation snapshot, scopes, recent sessions, and service observations |
 | `GET /api/db/health` | SQLite pragmas, integrity check, FK check, table counts |
-| `GET /api/schemas?limit=100&status=active&q=text` | Schema table data |
-| `GET /api/schemas/123` | Schema detail, evidence, incoming/outgoing relations |
+| `GET /api/schemas?states=active,needs_review&page=1&per_page=50` | Paginated memory list, state counts, structural filters, and server sort |
+| `GET /api/schemas/123` | Memory detail, evidence, retrieval exposures, feedback, audit, and relations |
+| `GET /api/retrievals?page=1&per_page=50` | Paginated retrieval snapshots and denominator-safe observed summary |
+| `GET /api/retrievals/:id` | Exact exposed items, stored pathways, feedback, and source activity |
+| `GET /api/activity?page=1&per_page=50` | Paginated session activity list |
+| `GET /api/activity/:session_id` | Chronological activity detail with retrieval, feedback, memory, and procedure links |
+| `GET /api/procedures/:id` | Captured procedure detail, verification, exposures, and explicit effects |
 | `GET /api/graph/schemas?limit=120&min_salience=2.5` | Schema graph data |
-| `GET /api/relations?type=supersedes&limit=50` | Relations tab data; `type` is one of `supersedes`, `refines`, `part_of`, `relates_to` (default `supersedes`), `limit` is 1-200 (default 50) |
+| `GET /api/procedural-memory?page=1&per_page=50` | Paginated captured procedures and observed transfer fields |
+| `GET /api/labs/rollout` | Experimental retrieval, lifecycle, and feedback diagnostics; available only with `--experimental` |
 | `POST /api/schemas/123/forget` | Suppress schema 123 (status → `forgotten`). Body: optional JSON `{"reason": "..."}`. `403` if started with `--no-allow-actions`. |
 | `POST /api/schemas/123/unforget` | Undo a forget, restoring schema 123's prior status. `403` if started with `--no-allow-actions`. |
 
-Example graph request:
+Example Labs graph request:
 
 ```bash
 curl 'http://127.0.0.1:8765/api/graph/schemas?limit=120&statuses=active,needs_review&min_salience=2.5'
-```
-
-Example relations request:
-
-```bash
-curl 'http://127.0.0.1:8765/api/relations?type=part_of&limit=100'
 ```
 
 ## Safety and limitations
@@ -182,7 +166,8 @@ curl 'http://127.0.0.1:8765/api/relations?type=part_of&limit=100'
   by default; pass `--no-allow-actions` for a strictly read-only dashboard —
   see [Forgetting a memory](#forgetting-a-memory).
 - It is local-first and binds to `127.0.0.1` by default.
-- It uses Python stdlib HTTP serving and embedded HTML/JS; no FastAPI, Node, or
-  frontend build step is required.
-- The schema graph uses a simple SVG layout suitable for MVP-scale inspection.
-  Large graph exploration may later move to Cytoscape.js or another graph UI.
+- It uses Python stdlib HTTP serving and packaged Vite-built React/TypeScript
+  assets. Users do not need Node.js at runtime; contributors can rebuild the UI
+  from `slowave/dashboard/ui` with `npm run build`.
+- Labs measurements are exploratory diagnostics, not claims about retrieval
+  quality, causal usefulness, or system-wide reliability.

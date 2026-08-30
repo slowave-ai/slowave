@@ -520,7 +520,6 @@ def _schema(schema_id: int, *, embedding: np.ndarray | None):
         confidence=1.0,
         salience=1.0,
         supporting_episode_ids=[],
-        contradicting_episode_ids=[],
         is_labile=False,
         first_formed_ts=now,
         last_updated_ts=now,

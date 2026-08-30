@@ -165,7 +165,10 @@ class Summary:
         if grouped[ChangeType.WORKER_SERVICE]:
             services = grouped[ChangeType.WORKER_SERVICE]
             lines.append(
-                click.style(f"{safe_emoji('⚙️', '[gear]')}  Background Worker Service", bold=True)
+                click.style(
+                    f"{safe_emoji('⚙️', '[gear]')}  Background Worker Service",
+                    bold=True,
+                )
             )
             for change in services:
                 status_label = f"({change.status.value.upper()})"
@@ -290,16 +293,34 @@ def _windsurf_global_rules_path() -> Path:
 def _cline_mcp_settings_path() -> Path:
     """Return the active Cline MCP settings path (best-effort detection).
 
-    Priority:
-      1. ~/.cline/mcp.json             — Cline CLI v3 (preferred)
-      2. ~/.cline/data/settings/cline_mcp_settings.json  — older CLI / TUI
-      3. VS Code globalStorage path    — VS Code extension
-      4. Cursor globalStorage path     — Cursor extension
+    Cline >= 3.0.x (CLI, VS Code, and Cursor extensions) resolves its MCP
+    server settings from a single path — ``resolveMcpSettingsPath()`` in
+    ``@cline/shared/storage`` — which is::
+
+        $CLINE_MCP_SETTINGS_PATH  (if set)
+        else <dataDir>/settings/cline_mcp_settings.json
+
+    where ``dataDir`` defaults to ``~/.cline/data``. The legacy
+    ``~/.cline/mcp.json`` is NOT consulted by current Cline core (the bundled
+    code has no reference to it), so routing MCP config there silently breaks
+    the integration even though ``slowave doctor`` reports it as configured.
+
+    Routing rules:
+      1. If Cline CLI is present (``~/.cline`` exists) → always use
+         ``~/.cline/data/settings/cline_mcp_settings.json``. This is the path
+         current Cline reads, regardless of whether a stale legacy
+         ``~/.cline/mcp.json`` from an older ``slowave setup`` also exists.
+      2. Otherwise fall back to an existing VS Code / Cursor extension
+         ``globalStorage`` path (older extension installs).
+      3. Default to ``~/.cline/data/settings/cline_mcp_settings.json`` on a
+         fresh install (creates it as needed).
     """
+    cline_dir = _home() / ".cline"
+    if cline_dir.exists():
+        return cline_dir / "data" / "settings" / "cline_mcp_settings.json"
+
     if SYSTEM == "Darwin":
-        candidates = [
-            _home() / ".cline" / "mcp.json",  # Cline CLI v3
-            _home() / ".cline/data/settings/cline_mcp_settings.json",  # older TUI
+        extension_candidates = [
             _home() / "Library/Application Support/Code/User/globalStorage"
             "/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
             _home() / "Library/Application Support/Cursor/User/globalStorage"
@@ -307,9 +328,7 @@ def _cline_mcp_settings_path() -> Path:
         ]
     elif SYSTEM == "Windows":
         appdata = os.environ.get("APPDATA", str(_home() / "AppData" / "Roaming"))
-        candidates = [
-            _home() / ".cline" / "mcp.json",  # Cline CLI v3
-            _home() / ".cline/data/settings/cline_mcp_settings.json",  # older TUI
+        extension_candidates = [
             Path(appdata) / "Code/User/globalStorage"
             "/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
             Path(appdata) / "Cursor/User/globalStorage"
@@ -317,19 +336,16 @@ def _cline_mcp_settings_path() -> Path:
         ]
     else:
         xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
-        candidates = [
-            _home() / ".cline" / "mcp.json",  # Cline CLI v3
-            _home() / ".cline/data/settings/cline_mcp_settings.json",  # older TUI
+        extension_candidates = [
             Path(xdg) / "Code/User/globalStorage"
             "/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
             Path(xdg) / "Cursor/User/globalStorage"
             "/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
         ]
-    for p in candidates:
+    for p in extension_candidates:
         if p.exists():
             return p
-    # Default to CLI v3 path (creates it if needed)
-    return _home() / ".cline" / "mcp.json"
+    return cline_dir / "data" / "settings" / "cline_mcp_settings.json"
 
 
 def _opencode_config_dir() -> Path:
@@ -558,6 +574,28 @@ def _clients_for(client_arg: str) -> list[ClientSpec]:
     if client_arg == "all":
         return _clients()
     return [c for c in _clients() if c.key == client_arg]
+
+
+def _is_client_detected(spec: ClientSpec) -> bool:
+    """Return whether the selected client's installation directory exists.
+
+    Most clients use the MCP config's parent directory as their installation
+    signal. Claude Code and Cline need explicit handling because their active
+    MCP files can live directly under a shared home directory or be created
+    below ``~/.cline`` only after the client has launched.
+    """
+    if not spec.require_dir_exists:
+        return True
+    if spec.key == "claude-code":
+        return (_home() / ".claude").exists()
+    if spec.key == "cline":
+        return (_home() / ".cline").exists() or spec.mcp_path().parent.exists()
+    return spec.mcp_path().parent.exists()
+
+
+def _detected_clients(client_arg: str) -> list[ClientSpec]:
+    """Return only selected clients detected on this machine."""
+    return [spec for spec in _clients_for(client_arg) if _is_client_detected(spec)]
 
 
 def _all_mcp_paths() -> list[Path]:
@@ -837,7 +875,9 @@ def _patch_codex_mcp(
     return config, True
 
 
-def _remove_mcp_servers_from_settings(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def _remove_mcp_servers_from_settings(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
     """Remove any slowave mcpServers entry from settings.json.
 
     Handles both old stdio entries and any stale entries left in the wrong file.
@@ -877,55 +917,87 @@ _LIFECYCLE_BLOCK_TEMPLATE = f"""\
 <!-- slowave-lifecycle-start {LIFECYCLE_VERSION} -->
 ## MANDATORY — Slowave memory (5-verb cognitive cycle)
 
-You are the reasoning module; Slowave is the memory module. Give it honest signals — what you encoded, what helped, what was noise, the outcome — and trust consolidation to do the rest. Do not respond until step 1 completes. Do not end the task without step 5.
+Slowave is your persistent memory layer across tasks. You are the reasoning layer, and the quality of your long-term decisions depends on how effectively you use and maintain that memory.
+
+You are responsible for actively consulting Slowave when past experience may help, preserving durable knowledge when it emerges, and providing accurate signals that improve memory quality over time.
+
+The Slowave lifecycle is mandatory: call `slowave_activate` before responding, assess every retrieval with feedback, and call `slowave_commit` before ending the task.
+
+Each endpoint has a distinct role:
+
+- `slowave_activate` — Start a session, establish its provisional goal, and retrieve potentially relevant memories and procedures.
+- `slowave_remember` — Preserve a durable fact, decision, constraint, preference, or lesson that should remain useful in future tasks.
+- `slowave_recall` — Retrieve relevant past knowledge when the active question or situation changes and prior experience may help.
+- `slowave_feedback` — Record append-only, target-specific evidence about retrieved memories and procedures without conflating retrieval quality with task outcome.
+- `slowave_commit` — Close the session with the actual outcome and, when applicable, the procedure that was attempted. Record what really happened, including incomplete or failed results.
+
+Every v9 tool returns discriminated JSON. Read successful payloads from `{{"ok":true,"data":...}}`. Treat `{{"ok":false,"error":{{"code":...,"message":...,"retryable":...}}}}` as a failed lifecycle operation; do not continue as though an empty result succeeded.
+
+For coding agents, resolve the Slowave scope from the repository root before activation: use the client-provided workspace root when available; otherwise use the nearest Git working-tree root (for example, `git rev-parse --show-toplevel`). Set the scope to `project:<repository-root-name>` and reuse that exact value for every Slowave call in the session. If no workspace or Git root is available, fall back to `project:<basename(cwd)>` and report the fallback.
 
 **1 — `slowave_activate` (before your first response)**
-`slowave_activate(query="<verbatim task>", goal="<short goal>", scope="project:<basename(cwd)>")` → store `retrieval_id`.
-- `query`: the task verbatim — do not summarize (raw text drives retrieval).
-- `goal`: 3–6 word verb-noun phrase (e.g. `"fix auth null pointer"`). Phrase it naturally; it is folded into the retrieval cue, so roughly consistent wording for the same kind of task gives a small overlap boost. Exact matching is NOT needed.
-- `scope`: `project:<name>` (or `user:<id>` / `domain:<topic>`). Never omit.
+`slowave_activate(task="<verbatim task>", initial_goal="<short goal>", scope="project:<repository-root-name>", continuity_id=<optional>, task_context=<optional>)` → store `retrieval_id`, `session_id`, and `continuity_id`.
+- `task`: the task verbatim — do not summarize (raw text drives retrieval).
+- `initial_goal`: a concise provisional statement of the outcome sought. Start with an action verb and include the object plus any constraint that materially distinguishes the task. Prefer one short sentence; do not force a word count or copy the full request. Example: `"replace the legacy procedure audit with a structured dogfooding view"`.
+- `continuity_id`: on the first Slowave activation in the current client conversation, omit it. Store the server-returned opaque `continuity_id` and pass it unchanged to every subsequent activation in that same client conversation. Never invent, modify, or reuse an ID from another conversation. Omitting it (including `null`) always starts a new continuity.
+- `task_context` (optional): structured facts useful for ordinary and procedural retrieval, e.g. `{{"aiops":{{"cluster_id":"prod-1"}}}}`; context never overrides scope isolation.
+- `scope`: for coding agents, `project:<repository-root-name>` resolved as described above; other integrations may supply a different stable scope policy. Never omit it or change it within the session.
 - Call ONCE.
 
-   **Cold start gate — if the response contains `cold_start: true`:**
+   **Cold start gate — if the response `data.memory_state` is `"cold_start"`:**
    - Find the most stable context document available (project README/overview, system instructions, or user profile).
-   - For each fact, ask: is it durable AND not already observable from the current context? If yes to both, call `slowave_remember(content, type, scope)` — one call per fact, never grouped.
+   - For each fact, ask: is it durable AND not already observable from the current context? If yes to both, call `slowave_remember(content, type, scope, session_id)` — one call per fact, never grouped.
    - Exhaust that document before responding. Do NOT scan the full codebase.
 
 **2 — `slowave_remember` (encode durable knowledge)**
-`slowave_remember(content, type, scope="project:<basename(cwd)>")` — call per durable fact.
+`slowave_remember(content=<claim>, type=<explicit type>, scope="project:<repository-root-name>", session_id=<activate session_id>)` — scalar form; batch form is `slowave_remember(memories=[{{"content":...,"type":...}}], scope=..., session_id=...)`.
 - Novelty gate — skip if it already surfaced in activate/recall, is reconstructible from current context, or is transient/session-only state.
 - ONE fact per call (never bundle — it blurs the embedding).
 - Blank-slate phrasing: write so a reader with zero session context understands it. WRONG: `"fixed it by adding the field"`. RIGHT: `"SessionReaper idle timeout defaults to 3600s; the HTTP daemon disables it (0)"`.
-- `type` (pick the most specific; default `decision`): `fact` · `preference` (how the user wants things) · `decision` (choice + reason) · `constraint` (invariant) · `procedure` (repeatable steps) · `lesson` (from failure/surprise) · `warning` (hazard) · `open_question` · `task` (durable to-do) · `artifact` (produced/external ref).
+- `type` is required; pick exactly one: `fact` · `preference` (how the user wants things) · `decision` (choice + reason) · `constraint` (invariant) · `instruction` (explicit reusable direction, not an execution-backed procedure) · `lesson` (from failure/surprise) · `warning` (hazard) · `open_question` · `task` (durable to-do) · `artifact` (produced/external ref). Execution-backed procedures belong only in commit.
+- Scalar and batch forms inherit one required outer scope/session. Batch entries contain only `content` and `type`; never place scope or session IDs inside an entry.
+- Read each result's `memory_id` and `disposition`. `created` means a new memory was stored; `matched` means exact existing content was reinforced. Never infer novelty from success, and never claim `reconsolidated` unless the server explicitly returns it. Batch results are ordered best-effort item envelopes with an `index` and independent `ok/data` or `ok/error` result.
 - If a remembered fact changed: remember the corrected version AND flag the old one via `stale_memory_ids`/`wrong_memory_ids` in step 4.
 - Never encode: what is observable right now, transient state, vague impressions, or what you did this session (step 5 captures that).
 
 **3 — `slowave_recall` (mid-task lookups — call whenever you pivot to a new sub-question, not only on failure)**
-`slowave_recall(query, scope="project:<basename(cwd)>")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Always pass `scope` (omitting returns ALL projects). Store the returned `retrieval_id`. Not a substitute for activate — a deliberate lookup you reach for as often as the task's sub-questions change, not a fallback for when activate came up empty.
+`slowave_recall(query, session_id=<activate session_id>, scope="project:<repository-root-name>", task_context=<optional>, evidence="references|full")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Session and scope are required and must match. Retrieval budget and policy are server-owned. Store the returned `retrieval_id`.
 
-**4 — `slowave_reinforce` (after ANY retrieval — reward hits, suppress noise)**
-Call whenever activate/recall returned memories — not only when you used some. Penalizing noise is how the store stays clean.
-`slowave_reinforce(retrieval_id=<id>, feedback="useful|partially_useful|irrelevant|stale|wrong|missing|too_much_context", outcome="success|partial|failure|unknown", used_memory_ids=[...], irrelevant_memory_ids=[...], stale_memory_ids=[...], wrong_memory_ids=[...])`
-- `used_memory_ids`: IDs you actually relied on (strengthens them).
-- `irrelevant`/`stale`/`wrong_memory_ids`: IDs that were noise, outdated, or incorrect (this is how the store self-cleans). Use real IDs only — never invent.
-- `feedback` and `outcome`: honest, not optimistic. Use `missing` to flag a needed-but-absent memory.
+**4 — `slowave_feedback` (whenever evidence becomes available)**
+`slowave_feedback(retrieval_id=<id>, memory_feedback=[...], procedure_feedback=[...], retrieval_quality=<optional>, missing=[...], coverage="partial|complete")`
+- Memory assessments are `used|irrelevant|stale`; use only IDs exposed by that
+  retrieval. A `stale` assessment MUST include `stale_reason` from
+  `contradicted|superseded|outdated|unsupported|withdrawn` and a concise
+  `reason`; `superseded` MUST also include `replacement_memory_id` for the
+  active replacement in the same retrieval scope.
+- Procedure feedback separates `use="used|not_used"` from `effect="helped|no_effect|harmed|unknown"`; `contribution` is required when used.
+- Task outcome never belongs in feedback. `slowave_commit` owns the task outcome.
+- `coverage="complete"` means every exposed memory and procedure was explicitly assessed. Silence under partial coverage is not negative evidence.
+- Later evidence appends a refining event; it never rewrites earlier feedback.
 
 **5 — `slowave_commit` (session close — always)**
-`slowave_commit(scope="project:<basename(cwd)>", outcome="success|partial|failure", steps=[...])`. Non-negotiable. Scope must match activate; outcome honest (`partial` if anything was incomplete). Skipping = no episodes form; the session lingers until the idle reaper closes it with no outcome.
-- `steps`: ordered list of what you actually did this session, one sentence per meaningful phase. Example: `steps=["Ran full test suite (142 passed)", "Built and pushed Docker image", "Deployed to staging and health-checked"]`. This is how Slowave learns procedural patterns from repeated experience — be honest about what happened, even if it didn't all go perfectly. Do NOT include memory operations (activate/remember/recall/reinforce) as steps — those are the scaffolding, not the work.
+`slowave_commit(session_id=<activate session_id>, final_goal="<confirmed goal>", outcome="success|partial|failure", outcome_summary="<actual result>", verification={{"status":"verified|partially_verified|unverified","summary":"...","evidence_refs":[]}}, procedure={{...}}, trajectory=[{{"kind":"action|observation","summary":"...","status":"started|succeeded|failed|unknown"}}])`. Non-negotiable. Outcome must be honest (`partial` if anything was incomplete). Trajectory is optional and bounded to 32 entries; include material attempted branches and observations that are not already captured automatically, without adding source/provenance fields (the integration owns those).
+- Commit is the feedback-completeness gate. If it returns `error.code="incomplete_feedback"`, submit feedback for every listed outstanding target with complete coverage and retry; the session remains open.
+- `final_goal`: the most accurate objective actually pursued; it may equal `initial_goal`.
+- Treat this commit as writing memory for your future self. `final_goal`, `outcome_summary`, all `summary` descriptions, and all free-form JSON fields are critical retrieval and reuse inputs, not bookkeeping. Make them specific, standalone, accurate, and rich in the stable facts that would help a future agent find and safely apply the procedure; avoid vague text such as `"fixed it"`, omitted constraints, secrets, and incidental identifiers.
+- `procedure` is REQUIRED whenever a clear procedure was attempted, whether the outcome was success, partial, or failure. A procedure is clear when: (a) the session performed at least two causally ordered actions toward the goal, (b) the method could plausibly inspire another task with the same kind of goal, and (c) you can state its material context or caveats. If all three are true, you MUST submit it; do not omit it merely because the task failed, was noisy, or the method seems obvious.
+- Omit `procedure` only when the work was answer-only or trivial, no multi-step operational method was attempted, or the executed actions cannot honestly form a coherent reusable sequence. When uncertain, submit the procedure and describe the uncertainty, failure, or partial result in `outcome_summary`.
+- Use this accepted `procedure` shape: `{{"summary":"...","context":{{...}},"steps":[{{"summary":"..."}}],"caveats":["..."]}}`. `summary` and at least one summary-only step are required; `context` defaults to `{{}}`; `caveats` defaults to `[]`; optional `version`, if sent, must be `2`.
+- `procedure.summary`, every `procedure.steps[].summary`, and every `procedure.caveats[]` entry must be non-empty natural-language strings. `procedure.context` must be a JSON object containing only durable client-defined facts that materially shaped the approach. Caveats are guidance, not hard applicability gates. Preserve critical checks, ordering, safety bounds, and verification while abstracting incidental filenames, generated IDs, literal values, and tool calls.
+- A procedure is a retrieval-oriented abstraction of the reusable method, not a reconstruction of the completed session. Write the summary so that a future task with the same kind of goal can retrieve it. Include only the causally necessary steps, decision points, safety checks, ordering constraints, and verification method. Exclude investigation history, transient execution details, completed-session results, and information already recorded in the outcome summary. Avoid duplication between summary, context, steps, and caveats. Write the shortest procedure that preserves the method’s useful logic; do not target a fixed length or require it to be independently executable. Place durable applicability facts in `context` and conditional guidance in `caveats`; do not add new fields.
+- Do NOT send `procedure.preconditions`, `procedure.retrieval_context`, or `operation`/`target` inside procedure steps: those fields belong to older experimental contracts and the current validator rejects them. Do not place top-level retrieval cues inside `procedure`; activation/recall `task_context` is a separate contract.
 
-Anti-patterns: skip activate · `remember` without `scope` · bundle facts in one call · context-dependent phrasing · re-encode facts already surfaced · leave a superseded fact unflagged · reinforce only hits and never penalize noise · default feedback to `useful` · invent memory IDs · report `success` when partial/failed · skip reinforce or commit · use deleted tools (`slowave_context`, `slowave_session_start/end`, `slowave_event`, `slowave_retrieval_feedback`, `slowave_context_feedback`).
+Anti-patterns: skip activate · `remember` without `scope` · bundle facts in one call · context-dependent phrasing · re-encode facts already surfaced · leave a superseded fact unflagged · invent memory IDs · put task outcome in feedback · treat not-used as harmful · report `success` when partial/failed · skip feedback or commit · use deleted tools (`slowave_reinforce`, `slowave_context`, `slowave_session_start/end`, `slowave_event`, `slowave_retrieval_feedback`, `slowave_context_feedback`).
 <!-- slowave-lifecycle-end {LIFECYCLE_VERSION} -->"""
 
 
 def _lifecycle_block(agent: str) -> str:
-    # NOTE: `agent` is intentionally unused. The v3 lifecycle block is
+    # NOTE: `agent` is intentionally unused. The lifecycle block is
     # client-agnostic — every AI client receives identical instructions, by
     # design, so Slowave stays consistent across models. The parameter is
-    # kept for ClientSpec API stability; the .format() call is a no-op (the
-    # template contains no {agent} placeholder). Do NOT re-add {agent} to
-    # the template without a brain-system justification.
-    return _LIFECYCLE_BLOCK_TEMPLATE.format(agent=agent)
+    # kept for ClientSpec API stability; the template contains no agent
+    # placeholder. Do NOT add one without a brain-system justification.
+    return _LIFECYCLE_BLOCK_TEMPLATE
 
 
 # Heading used by legacy (pre-marker) slowave setup to write lifecycle instructions.
@@ -1015,6 +1087,17 @@ def _inject_block(path: Path, block: str) -> bool:
     return True
 
 
+def _lifecycle_block_up_to_date(existing: str, block: str) -> bool:
+    """Return whether the installed managed block exactly matches ``block``."""
+    if _MARKER_START not in existing or _MARKER_END not in existing:
+        return False
+    start = existing.index(_MARKER_START)
+    end_marker_pos = existing.index(_MARKER_END)
+    end_of_line = existing.find("\n", end_marker_pos)
+    end = end_of_line + 1 if end_of_line != -1 else len(existing)
+    return existing[start:end].rstrip("\n") == block.rstrip("\n")
+
+
 # ---------------------------------------------------------------------------
 # Claude Code hooks
 # ---------------------------------------------------------------------------
@@ -1023,18 +1106,23 @@ _HOOKS_MARKER = "SLOWAVE MANDATORY"
 
 _USER_PROMPT_CMD = (
     "echo 'SLOWAVE MANDATORY: Before writing your first word call: "
-    "(1) derive goal=3-6 word verb-noun phrase e.g. implement-oauth-login fix-auth-bug refactor-db-layer, "
-    "(2) slowave_activate(query=<verbatim task>,goal=<derived goal>,scope=project:<basename(cwd)>) "
+    "(1) derive initial_goal as one concise action-led statement of the sought outcome, including any materially distinguishing object or constraint, "
+    "(2) slowave_activate(task=<verbatim task>,initial_goal=<derived goal>,scope=project:<repository-root-name>) "
     "store retrieval_id and session_id. "
     "Produce NO output until this call succeeds.'"
 )
 
 _STOP_CMD = (
     "echo 'SLOWAVE MANDATORY: Before finishing this turn call: "
-    "(1) if you used memories: slowave_reinforce(retrieval_id=<id>,feedback=useful|irrelevant|stale|wrong,outcome=success|partial|failure|unknown), "
-    "(2) slowave_commit(scope=project:<basename(cwd)>,outcome=success|partial|failure|unknown). "
+    "(1) assess every retrieval with slowave_feedback(retrieval_id=<id>,memory_feedback=<target-specific assessments>,procedure_feedback=<use/effect/contribution>,coverage=partial|complete), "
+    "(2) slowave_commit(session_id=<activate session_id>,final_goal=<confirmed goal>,outcome=success|partial|failure,"
+    "outcome_summary=<specific standalone result>,verification=<status,summary,evidence_refs>,procedure=<required structured procedure whenever a clear reusable multi-step method was attempted, even if partial or failed>,"
+    "trajectory=<optional bounded action/observation entries for material attempts not captured automatically>,"
+    "with no task outcome fields in feedback). "
     "Do NOT end the turn without step 2.'"
 )
+
+_CODEX_STOP_CMD = "slowave hook codex-stop # SLOWAVE MANDATORY"
 
 
 def _hooks_up_to_date(config: dict[str, Any], event: str, cmd: str) -> bool:
@@ -1116,7 +1204,7 @@ def _patch_codex_hooks(config: Any) -> tuple[Any, bool]:
     """
     changed = False
     hooks = config.setdefault("hooks", {})
-    for event, cmd in [("UserPromptSubmit", _USER_PROMPT_CMD), ("Stop", _STOP_CMD)]:
+    for event, cmd in [("UserPromptSubmit", _USER_PROMPT_CMD), ("Stop", _CODEX_STOP_CMD)]:
         if _hooks_up_to_date(config, event, cmd):
             continue
         existing = [
@@ -1304,7 +1392,11 @@ def _register_windows_task(task_name: str, execute: str, argument: str) -> tuple
     Returns (ok, detail). Registration failures are surfaced with the
     PowerShell error text instead of being swallowed.
     """
-    exe_q, arg_q, name_q = _ps_squote(execute), _ps_squote(argument), _ps_squote(task_name)
+    exe_q, arg_q, name_q = (
+        _ps_squote(execute),
+        _ps_squote(argument),
+        _ps_squote(task_name),
+    )
 
     # Idempotency: skip only when the existing task matches this exact form
     # (marker + executable + arguments). Older registrations get upgraded.
@@ -1462,14 +1554,20 @@ def _verify_daemon_health(timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
     return False
 
 
-def _build_summary(client: str, worker: bool, install_hooks: bool, slowave_bin: str) -> Summary:
+def _build_summary(
+    client: str,
+    worker: bool,
+    install_hooks: bool,
+    slowave_bin: str,
+    specs: list[ClientSpec] | None = None,
+) -> Summary:
     """Build a summary of changes without modifying any files."""
     summary = Summary()
     summary.add_binary("slowave", slowave_bin)
 
-    for spec in _clients_for(client):
+    for spec in _detected_clients(client) if specs is None else specs:
         mcp_file = spec.mcp_path()
-        if spec.require_dir_exists and not mcp_file.parent.exists():
+        if not _is_client_detected(spec):
             continue
 
         cfg = _read_toml(mcp_file) if spec.key == "codex" else _read_json(mcp_file)
@@ -1517,7 +1615,9 @@ def _build_summary(client: str, worker: bool, install_hooks: bool, slowave_bin: 
         if spec.lifecycle_path is not None:
             lc_file = spec.lifecycle_path()
             existing = lc_file.read_text(encoding="utf-8") if lc_file.exists() else ""
-            needs_update = _MARKER_START not in existing or _MARKER_END not in existing
+            needs_update = not _lifecycle_block_up_to_date(
+                existing, _lifecycle_block(spec.lifecycle_agent)
+            )
             summary.add_change(
                 Change(
                     change_type=ChangeType.LIFECYCLE_BLOCK,
@@ -1695,21 +1795,12 @@ def setup_cmd(
 
     # Quick detection pass — show which clients were found
     _section("2. Detecting clients")
-    detected: list[str] = []
-    skipped: list[str] = []
-    for spec in _clients_for(client):
-        mcp_file = spec.mcp_path()
-        if spec.require_dir_exists and not mcp_file.parent.exists():
-            skipped.append(spec.label)
-        else:
-            detected.append(spec.label)
-    if detected:
-        _ok(f"Found: {', '.join(detected)}")
-    if skipped:
-        _warn(f"Not installed — skipping: {', '.join(skipped)}")
+    detected_specs = _detected_clients(client)
+    if detected_specs:
+        _ok(f"Found: {', '.join(spec.label for spec in detected_specs)}")
 
     # Build and display summary
-    summary = _build_summary(client, worker, install_hooks, slowave_bin)
+    summary = _build_summary(client, worker, install_hooks, slowave_bin, detected_specs)
     click.echo(summary.format())
 
     # Confirm unless dry-run — skip if nothing to do
@@ -1726,15 +1817,12 @@ def setup_cmd(
             sys.exit(0)
 
     # 3-N. Clients (data-driven — add new clients in _clients() only)
-    for i, spec in enumerate(_clients_for(client), start=3):
+    for i, spec in enumerate(detected_specs, start=3):
         _section(f"{i}. {spec.label}")
         mcp_file = spec.mcp_path()
 
         # Skip if the config directory doesn't exist and client marks require_dir_exists
-        if spec.require_dir_exists and not mcp_file.parent.exists():
-            _warn(
-                f"{spec.label} config dir not found: {mcp_file.parent}  ({spec.label} installed?)"
-            )
+        if not _is_client_detected(spec):
             continue
 
         if spec.key == "codex":
@@ -1787,7 +1875,9 @@ def setup_cmd(
                 changed = mcp_changed or instructions_changed
             else:
                 cfg, changed = _patch_mcp_servers(
-                    cfg, include_type=spec.key == "claude-code", use_sse=spec.key == "cline"
+                    cfg,
+                    include_type=spec.key == "claude-code",
+                    use_sse=spec.key == "cline",
                 )
                 transport_label = "HTTP"
             if changed:
@@ -1820,7 +1910,14 @@ def setup_cmd(
         if spec.lifecycle_path is not None:
             lc_file = spec.lifecycle_path()
             if dry_run:
-                _ok(f"Would inject lifecycle block → {lc_file}")
+                existing = (
+                    lc_file.read_text(encoding="utf-8", errors="ignore") if lc_file.exists() else ""
+                )
+                block = _lifecycle_block(spec.lifecycle_agent)
+                if _lifecycle_block_up_to_date(existing, block):
+                    _skip(f"Lifecycle block already up-to-date in {lc_file}")
+                else:
+                    _ok(f"Would inject lifecycle block → {lc_file}")
             else:
                 changed = _inject_block(lc_file, _lifecycle_block(spec.lifecycle_agent))
                 if changed:
@@ -2123,7 +2220,9 @@ def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
     )
     try:
         subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, check=False
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            check=False,
         )
     except FileNotFoundError:
         pass

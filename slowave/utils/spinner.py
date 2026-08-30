@@ -16,12 +16,15 @@ Both are no-ops when stderr is not a TTY (CI, pipes, --json mode).
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
 
 
 def _is_tty() -> bool:
+    if os.environ.get("SLOWAVE_ACCEPTANCE_QUIET") == "1":
+        return False
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 

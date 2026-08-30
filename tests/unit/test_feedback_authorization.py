@@ -151,7 +151,8 @@ class TestForgottenSchemaIsProtectedFromFeedback:
                 wrong_memory_ids=[f"sch_{sid}"],
             )
 
-            assert eng.schemas.get(sid).status == "superseded"
+            assert eng.schemas.get(sid).status == "stale"
+            assert eng.schemas.get(sid).stale_reason == "superseded"
         finally:
             eng.close()
             _cleanup(path)
@@ -174,7 +175,8 @@ class TestForgottenSchemaIsProtectedFromFeedback:
                 outcome="failure",
                 wrong_memory_ids=[f"sch_{sid}"],
             )
-            assert eng.schemas.get(sid).status == "needs_review"
+            assert eng.schemas.get(sid).status == "stale"
+            assert eng.schemas.get(sid).stale_reason == "contradicted"
         finally:
             eng.close()
             _cleanup(path)

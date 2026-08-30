@@ -1,13 +1,7 @@
-"""Regression tests for the 2026-07-14 dead-relation cleanup, plus the
-2026-07-15 taxonomy update that reintroduces "relates_to" as a distinct,
-actively-used relation (not a revival of the old "related_to" fallback --
-that spelling stays dead).
+"""Regression tests for the schema relation taxonomy.
 
-"contradicts" and "related_to" were removed from VALID_RELATIONS: both sat at
-0 edges in production (contradicts required an exact time_delta_s<=0 tie that
-every call site now records as "supersedes" too; related_to was only ever
-add_relation()'s own silent fallback for an invalid relation string, never
-triggered by a real caller). See schema_store.py's VALID_RELATIONS comment.
+Only ``relates_to`` is written by geometry. Contradiction and supersession are
+client-feedback statuses, not geometric relation edges.
 """
 
 from __future__ import annotations
@@ -86,14 +80,8 @@ def test_add_relation_still_accepts_valid_relations(store):
 
 
 # ---------------------------------------------------------------------------
-# _link_schemas_via_prototype_centroid: regression tests for the confirmed
-# production false positive (schema 153 linked to unrelated schema 154 at
-# confidence 1.00). The centroid-proximity linker used to write an
-# unconditional "reinforces" edge from each pair's similarity to the shared
-# prototype centroid alone, without ever comparing the two schemas to EACH
-# OTHER -- "both near the same reference point" does not imply "near each
-# other". The fix makes it call the real geometric judge on the pair
-# directly and dispatch on the judge's actual verdict.
+# _link_schemas_via_prototype_centroid: regression tests ensuring topical
+# association is based on the pair, not only shared prototype proximity.
 # ---------------------------------------------------------------------------
 
 
@@ -103,8 +91,6 @@ def _consolidator_with_mocked_judge(store: SchemaStore, verdict: str) -> Consoli
         verdict=verdict,
         reasoning="test",
         similarity=0.9,
-        facet_distance=0.0,
-        time_delta_s=0,
     )
     return Consolidator(
         db=store.db,
@@ -113,7 +99,7 @@ def _consolidator_with_mocked_judge(store: SchemaStore, verdict: str) -> Consoli
         schemas=store,
         encoder=None,
         latent_builder=MagicMock(),
-        geometric_judge=judge,
+        relation_judge=judge,
     )
 
 

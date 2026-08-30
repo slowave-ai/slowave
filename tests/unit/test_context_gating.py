@@ -58,7 +58,6 @@ def _stub_schema(
         confidence=1.0,
         salience=salience,
         supporting_episode_ids=[],
-        contradicting_episode_ids=[],
         is_labile=False,
         first_formed_ts=1000000 + sid,
         last_updated_ts=1000 + sid,
@@ -85,6 +84,41 @@ def test_default_mode_only_admits_active() -> None:
     admitted_ids = {item.schema.id for item in state.items}
     assert admitted_ids == {1}, f"Expected only active, got {admitted_ids}"
     assert state.suppressed.get("inactive", 0) == 2
+
+
+def test_compact_two_item_context_keeps_one_answer_for_a_singular_question() -> None:
+    """A second same-topic facet must not pad a one-answer activation brief."""
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(query="Which database stores the billing ledger?", scope="project:alpha")
+    database = _stub_schema(1, "The billing ledger database is PostgreSQL.")
+    export = _stub_schema(2, "The billing ledger export format is CSV.")
+
+    state = gate.select(
+        [database, export],
+        cue=cue,
+        policy=GatePolicy(max_items=2, min_activation=0.01, require_explicit_multi_answer=True),
+    )
+
+    assert [item.schema.id for item in state.items] == [1]
+
+
+def test_compact_two_item_context_keeps_two_answers_for_a_multifacet_question() -> None:
+    """The singular guard must retain explicit multi-part requests."""
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(
+        query="Which database stores the billing ledger and which export format does it use?",
+        scope="project:alpha",
+    )
+    database = _stub_schema(1, "The billing ledger database is PostgreSQL.")
+    export = _stub_schema(2, "The billing ledger export format is CSV.")
+
+    state = gate.select(
+        [database, export],
+        cue=cue,
+        policy=GatePolicy(max_items=2, min_activation=0.01, require_explicit_multi_answer=True),
+    )
+
+    assert {item.schema.id for item in state.items} == {1, 2}
 
 
 def test_broad_mode_admits_active_and_needs_review() -> None:

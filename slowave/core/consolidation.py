@@ -51,19 +51,15 @@ class ConsolidationStats:
     prototypes_processed: int
     schemas_created: int
     schemas_reinforced: int
-    schemas_contradicted: int
     schemas_skipped: int
     # Diagnostics. verdict_counts keys:
     # "no_candidate" (nothing to compare against), "missing_embedding"
     # (related schema found but its stored embedding is unreadable), and the
-    # GeometricContradictionJudge verdicts ("unrelated", "relates_to" --
+    # GeometricRelationJudge verdicts ("unrelated", "relates_to" --
     # "relates_to" counts every judge call that cleared the same-topic floor).
     verdict_counts: dict[str, int] = field(default_factory=dict)
     # Prototypes absorbed by the >=0.92 near-duplicate guard.
     near_dup_intercepts: int = 0
-    # Of judge verdicts "relates_to", how many triggered metadata-gated
-    # supersession vs stayed as plain reinforcement.
-    gate_downgrades: dict[str, int] = field(default_factory=dict)
     # Per-prototype LatentSchemaBuilder confidence values, for calibration checks
     # against variance_floor (Q5).
     confidence_histogram: list[float] = field(default_factory=list)
@@ -84,7 +80,7 @@ class Consolidator:
         # Brain-only path. Schemas are built from prototype geometry and
         # lexical signatures. Zero LLM calls.
         latent_builder=None,
-        geometric_judge=None,
+        relation_judge=None,
         episodic_store=None,
         logic_version: str = "0",
     ):
@@ -95,11 +91,11 @@ class Consolidator:
         self.encoder = encoder
         self.max_episodes_per_prototype = max_episodes_per_prototype
         self.latent_builder = latent_builder
-        self.geometric_judge = geometric_judge
+        self.relation_judge = relation_judge
         self._episodic_store_ref = episodic_store
         self._latent_mode = latent_builder is not None
-        if self._latent_mode and geometric_judge is None:
-            raise ValueError("Consolidator: latent_builder given but no geometric_judge")
+        if self._latent_mode and relation_judge is None:
+            raise ValueError("Consolidator: latent_builder given but no relation_judge")
         # Stamped onto every schema this consolidator creates (see schema.sql
         # comment on schemas.logic_version and
         # private/docs/iterations/20260716_event-store-replay.md point 2).
@@ -136,7 +132,6 @@ class Consolidator:
         """
         created = 0
         reinforced = 0
-        contradicted = 0
         skipped = 0
         diag: dict = {
             "verdict_counts": {
@@ -146,7 +141,6 @@ class Consolidator:
                 "relates_to": 0,
             },
             "near_dup_intercepts": 0,
-            "gate_downgrades": {"support_gate": 0, "recency_gate": 0},
             "confidence_histogram": [],
         }
 
@@ -242,8 +236,6 @@ class Consolidator:
                 created += 1
             elif outcome == "reinforced":
                 reinforced += 1
-            elif outcome == "contradicted":
-                contradicted += 1
             else:
                 skipped += 1
 
@@ -257,11 +249,9 @@ class Consolidator:
             prototypes_processed=len(prototype_ids),
             schemas_created=created,
             schemas_reinforced=reinforced,
-            schemas_contradicted=contradicted,
             schemas_skipped=skipped,
             verdict_counts=diag["verdict_counts"],
             near_dup_intercepts=diag["near_dup_intercepts"],
-            gate_downgrades=diag["gate_downgrades"],
             confidence_histogram=diag["confidence_histogram"],
         )
 
@@ -285,12 +275,38 @@ class Consolidator:
 
         scope_id = self._scope_for_episodes(schema.member_episode_ids)
 
+        # One-schema-per-primary-prototype (dedup fix #1): schema identity is
+        # its primary prototype. Re-consolidating the SAME prototype
+        # reactivates and updates that single engram in place instead of
+        # writing a fresh duplicate. The lookup is status-agnostic: a copy
+        # that was retired by explicit client feedback is the same engram and
+        # must not be recreated as a duplicate. Replay may reinforce active
+        # schemas but must never undo a client-owned lifecycle decision.
+        existing_proto = self.schemas.find_by_primary_prototype(prototype_id)
+        if existing_proto is not None:
+            if existing_proto.status == "forgotten":
+                # Respect an explicit human forget: do not resurrect it, do
+                # not recreate a duplicate of it.
+                if diag is not None:
+                    diag["near_dup_intercepts"] += 1
+                return "skipped", existing_proto.id
+            self.schemas.reinforce_schema(
+                existing_proto.id,
+                prototype_ids=[prototype_id],
+                supporting_episode_ids=schema.member_episode_ids,
+                evidence=evidence_rows,
+                confidence=schema.confidence,
+            )
+            if diag is not None:
+                diag["near_dup_intercepts"] += 1
+            return "reinforced", existing_proto.id
+
         # Near-duplicate guard: if an existing active schema is geometrically
         # almost identical (>= near_dup_guard_cosine, same threshold as
         # working-memory MMR dedup by default), strengthen it instead of
         # creating another copy. Without this, every consolidation pass
         # re-encoded each explicit remember into a duplicate summary schema.
-        near_dup_cosine = getattr(self.geometric_judge.cfg, "near_dup_guard_cosine", 0.92)
+        near_dup_cosine = getattr(self.relation_judge.cfg, "near_dup_guard_cosine", 0.92)
         if claim_embedding is not None:
             near = self.schemas.search_embedding(claim_embedding, limit=1)
             if near and near[0][1] >= near_dup_cosine:
@@ -308,7 +324,9 @@ class Consolidator:
                     )
                     if scope_id and existing.scope_id and scope_id != existing.scope_id:
                         try:
-                            self.schemas.increment_cross_scope_reinforcement(existing.id)
+                            self.schemas.increment_cross_scope_reinforcement(
+                                existing.id, source_scope_id=scope_id
+                            )
                         except Exception:
                             pass
                     if diag is not None:
@@ -376,8 +394,8 @@ class Consolidator:
 
         # Re-fetch the related schema's stored embedding from the DB. We
         # need it as a numpy array to compare centroids with the geometric
-        # judge. A missing embedding is not evidence for contradiction or
-        # supersession — fall back to creation without a geometric verdict.
+        # relation judge. A missing embedding means no association edge can
+        # be justified; the newly consolidated schema remains independent.
         related_emb = self._fetch_schema_embedding(related.id)
         if related_emb is None:
             log.warning(
@@ -390,17 +408,8 @@ class Consolidator:
                 diag["verdict_counts"]["missing_embedding"] += 1
             return "created", new_schema_id
 
-        # Real facet axes/strengths for the old schema, unpacked by
-        # SchemaStore._row_to_schema from the persisted blobs (see
-        # schema.sql). Falls back to an empty placeholder only when the
-        # related schema genuinely has none (legacy row created before
-        # this persistence was added, or it had too few members) — this
-        # used to be an unconditional placeholder regardless of the old
-        # schema's real facet data, which made the facet-distance-driven
-        # verdict (then named "contradicts", since renamed -- see
-        # GeometricContradictionJudge.judge()) provably unreachable
-        # (fixed 2026-07-09, see PROGRESS.md and
-        # tests/unit/test_contradicts_verdict_unreachable.py).
+        # Retain the persisted latent shape in the view even though topical
+        # association currently uses centroid cosine only.
         related_facet_axes = related.facet_axes
         if not isinstance(related_facet_axes, np.ndarray) or related_facet_axes.ndim != 2:
             related_facet_axes = np.zeros((0, claim_embedding.shape[0]), dtype=np.float32)
@@ -424,7 +433,7 @@ class Consolidator:
             confidence=float(related.confidence),
             support_count=1,
         )
-        verdict = self.geometric_judge.judge(old=old_view, new=schema)
+        verdict = self.relation_judge.judge(old=old_view, new=schema)
 
         if verdict.verdict == "relates_to":
             # Cleared the same-topic floor. Cosine alone cannot distinguish
@@ -439,7 +448,7 @@ class Consolidator:
                 dst_schema_id=related.id,
                 relation="relates_to",
                 confidence=schema.confidence,
-                reason=f"geometric judge: cos={verdict.similarity:.3f} facet_dist={verdict.facet_distance:.3f}",
+                reason=f"topical relation: cos={verdict.similarity:.3f}",
             )
             # Cross-scope offline reinforcement: when consolidation finds that a
             # newly-formed schema relates to an existing schema from a different
@@ -454,23 +463,11 @@ class Consolidator:
                 and scope_id != related.scope_id
             ):
                 try:
-                    self.schemas.increment_cross_scope_reinforcement(related.id)
+                    self.schemas.increment_cross_scope_reinforcement(
+                        related.id, source_scope_id=scope_id
+                    )
                 except Exception:
                     pass
-            # Status transition: when cosine is very high and metadata
-            # confirms this is a genuine update (enough support, meaningful
-            # time gap), mark the older schema superseded/contradicted.
-            # Previously this was gated on a `supersedes` verdict from
-            # direction_score; now it's gated on the same non-geometric
-            # signals (support + recency) that the old code already checked
-            # AFTER the verdict, just triggered from relates_to instead.
-            if verdict.similarity >= 0.90:
-                min_support = getattr(self.geometric_judge.cfg, "min_support_to_supersede", 2)
-                min_dt = getattr(self.geometric_judge.cfg, "min_time_delta_to_supersede_s", 3600.0)
-                if schema.support_count >= min_support and not (0 < verdict.time_delta_s < min_dt):
-                    old_status = "contradicted" if verdict.time_delta_s <= 0 else "superseded"
-                    self.schemas.update_status(related.id, status=old_status, salience=0.05)
-                    return "contradicted", new_schema_id
             return "reinforced", new_schema_id
         # unrelated
         if diag is not None:
@@ -505,7 +502,7 @@ class Consolidator:
 
     def _fetch_schema_embedding(self, schema_id: int) -> np.ndarray | None:
         """Read a schema's stored embedding directly from the DB. Used by
-        the latent path's geometric judge."""
+        the latent path's topical relation judge."""
         from slowave.utils.vec import unpack_f32
 
         conn = self.db.connect()
@@ -517,7 +514,7 @@ class Consolidator:
         return unpack_f32(row["embedding"], int(row["dim"]))
 
     def _best_related_schema(self, *, claim: str, embedding: np.ndarray | None) -> Schema | None:
-        related_cosine = getattr(self.geometric_judge.cfg, "related_schema_cosine", 0.72)
+        related_cosine = getattr(self.relation_judge.cfg, "related_schema_cosine", 0.72)
         if embedding is not None:
             scored = self.schemas.search_embedding(embedding, limit=5, include_inactive=False)
             if scored and scored[0][1] >= related_cosine:
@@ -533,11 +530,7 @@ class Consolidator:
         return None
 
     def _schema_to_latent_view(self, schema: Schema):
-        """Wrap a persisted Schema row as a LatentSchema so the geometric
-        judge (built to compare a fresh replay candidate against an existing
-        schema) can also compare two existing schemas against each other.
-        Used by reconsolidate_labile_schemas(); mirrors the ad-hoc `old_view`
-        construction in _write_latent_schema, generalized to either side."""
+        """Wrap a persisted Schema row for topical relation comparison."""
         from slowave.latent.schema import LatentSchema as _LS
 
         dim = schema.embedding.shape[0] if schema.embedding is not None else 0
@@ -561,160 +554,6 @@ class Consolidator:
             confidence=float(schema.confidence),
             support_count=max(1, support),
         )
-
-    def reconsolidate_labile_schemas(self, *, limit: int = 20) -> dict[str, int]:
-        """Re-examine labile schemas (is_labile=True) by replaying each
-        against its nearest active neighbor, reusing the same geometric
-        judge and gates the fresh-schema consolidation path already uses.
-
-        Terminology (see core/08-feedback.md's "Labile State & Reconsolidation"
-        section for the full writeup): "labile" is the *state* — a reactivated
-        memory trace that is temporarily uncertain and open to revision, the
-        standard term in the reconsolidation literature. "Reconsolidation" is
-        the *process* a labile trace goes through to resolve — restabilizing
-        back to what it was, or being updated/replaced by better evidence.
-        This method is this codebase's implementation of that process; the
-        boolean flag it operates on marks the state. `decay_unused()`,
-        `remember()`'s ambiguous-update case, and the feedback noise-demotion
-        rule all flag schemas as labile; this method is what resolves them.
-
-        Brain analogue: hippocampal replay reactivates a labile trace
-        alongside related memories; if nothing challenges it, it
-        restabilizes, and if it's contradicted or cleanly superseded by
-        better-supported/more-recent evidence, it resolves that way instead.
-
-        Only considers schemas that are still status="active" (already
-        superseded/contradicted/archived/needs_review-string schemas are
-        already resolved). Bounded by `limit` so one consolidation pass
-        can't spend unbounded time on a backlog; any remainder is picked up
-        on a later pass since the flag persists until resolved.
-
-        Direction note: GeometricContradictionJudge.judge()'s `old`/`new`
-        argument slots are NOT symmetric — which schema goes in which slot
-        must be decided by actual chronology (last_updated_ts) before calling
-        the judge. Always passing the labile schema as `new` would silently
-        bias supersession in its favor purely because of which slot it
-        occupies, regardless of which side the evidence actually favors.
-        With the 2026-07-22 taxonomy collapse, the judge no longer returns
-        "supersedes" — supersession is metadata-gated at the relates_to
-        block below. The slot assignment still matters: it determines which
-        schema's support/time_delta are checked against the gate thresholds.
-        """
-        related_cosine = getattr(self.geometric_judge.cfg, "related_schema_cosine", 0.72)
-        min_support = getattr(self.geometric_judge.cfg, "min_support_to_supersede", 2)
-        min_dt = getattr(self.geometric_judge.cfg, "min_time_delta_to_supersede_s", 3600.0)
-
-        labile = self.schemas.list(is_labile=True, status="active", limit=limit)
-        stats = {
-            "examined": 0,
-            "restabilized": 0,
-            "superseded": 0,
-            "contradicted": 0,
-            "inconclusive": 0,
-        }
-
-        for schema in labile:
-            stats["examined"] += 1
-            if schema.embedding is None:
-                stats["inconclusive"] += 1
-                continue
-
-            neighbors = self.schemas.search_embedding(
-                schema.embedding, limit=5, include_inactive=False
-            )
-            neighbor = None
-            for sid, cos in neighbors:
-                if sid == schema.id:
-                    continue
-                if cos < related_cosine:
-                    break
-                try:
-                    neighbor = self.schemas.get(sid)
-                except KeyError:
-                    continue
-                break
-
-            if neighbor is None:
-                # No sufficiently related neighbor to replay against — the
-                # brain analogue is passive extinction (a trace nothing ever
-                # challenges or corroborates just fades), not resolution.
-                # Left labile; decay_unused continues lowering its salience
-                # each pass, and it will be picked up again if a related
-                # memory ever does show up.
-                stats["inconclusive"] += 1
-                continue
-
-            if schema.last_updated_ts >= neighbor.last_updated_ts:
-                new_side, old_side = schema, neighbor
-            else:
-                new_side, old_side = neighbor, schema
-            new_view = self._schema_to_latent_view(new_side)
-            old_view = self._schema_to_latent_view(old_side)
-            verdict = self.geometric_judge.judge(old=old_view, new=new_view)
-
-            if verdict.verdict == "unrelated":
-                # The nearest neighbor doesn't clear the same-topic floor --
-                # no genuine conflict to resolve. Restabilize (the labile
-                # flag was a false alarm).
-                self.schemas.adjust_feedback_state(schema.id, is_labile=False)
-                stats["restabilized"] += 1
-                continue
-
-            # Non-unrelated: the pair is about the same topic. Check if
-            # this should trigger a status transition (supersession).
-            # Previously gated on a `supersedes` verdict from direction_score;
-            # now gated on cosine similarity + metadata (support + recency),
-            # the same non-geometric signals the old code already checked
-            # AFTER the verdict.
-            if verdict.similarity >= 0.90:
-                new_support = len(new_side.supporting_episode_ids or [])
-                if new_support >= min_support and not (0 < verdict.time_delta_s < min_dt):
-                    is_tie = verdict.time_delta_s <= 0
-                    loser_status = "contradicted" if is_tie else "superseded"
-                    self.schemas.update_status(old_side.id, status=loser_status, salience=0.05)
-                    try:
-                        self.schemas.add_relation(
-                            src_schema_id=new_side.id,
-                            dst_schema_id=old_side.id,
-                            relation="relates_to",
-                            confidence=max(new_side.confidence, 0.5),
-                            reason=(
-                                f"reconsolidation: cos={verdict.similarity:.3f} "
-                                f"facet_dist={verdict.facet_distance:.3f} dt={verdict.time_delta_s}s"
-                            ),
-                        )
-                    except ValueError as e:
-                        log.warning("reconsolidation: refusing inconsistent relates_to edge: %s", e)
-                    self.schemas.adjust_feedback_state(schema.id, is_labile=False)
-                    if is_tie:
-                        stats["contradicted"] += 1
-                    else:
-                        stats["superseded"] += 1
-                    continue
-
-            # Same topic but below the supersession cosine bar,
-            # or gates didn't clear -- no status change needed.
-            self.schemas.adjust_feedback_state(schema.id, is_labile=False)
-            stats["restabilized"] += 1
-
-        return stats
-
-    def _looks_like_update(self, claim: str) -> bool:
-        text = claim.lower()
-        markers = (
-            "now",
-            "updated",
-            "changed",
-            "instead",
-            "actually",
-            "no longer",
-            "rather than",
-            "switched",
-            "moved",
-            "current",
-            "latest",
-        )
-        return any(m in text for m in markers)
 
     def _episodes_for_prototype(self, prototype_id: int) -> list[int]:
         conn = self.db.connect()
@@ -741,10 +580,8 @@ class Consolidator:
         return int(row["n"] or 0) == 0
 
     def _link_schemas_via_prototype_centroid(self, prototype_id: int, centroid: np.ndarray) -> None:
-        """Link the two schemas closest to this prototype's centroid, using
-        the real geometric judge to decide what relation (if any) actually
-        holds between THEM -- not just each one's similarity to the shared
-        centroid.
+        """Link the two schemas closest to this prototype's centroid when
+        the topical relation judge finds an association.
 
         Called when all episodes are explicit-remember so no new schema should
         be created, but the prototype cluster still signals that the two nearest
@@ -787,7 +624,7 @@ class Consolidator:
         # uses closes that gap.
         old_view = self._schema_to_latent_view(old_schema)
         new_view = self._schema_to_latent_view(new_schema)
-        verdict = self.geometric_judge.judge(old=old_view, new=new_view)
+        verdict = self.relation_judge.judge(old=old_view, new=new_view)
 
         if verdict.verdict == "unrelated":
             return

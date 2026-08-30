@@ -1,4 +1,4 @@
-"""Unit tests for LatentSchemaBuilder and GeometricContradictionJudge.
+"""Unit tests for LatentSchemaBuilder and GeometricRelationJudge.
 
 Covers:
   - unrelated schemas (different topic)
@@ -18,8 +18,8 @@ import time
 import numpy as np
 
 from slowave.latent.schema import (
-    GeometricContradictionJudge,
-    GeometricJudgeConfig,
+    GeometricRelationConfig,
+    GeometricRelationJudge,
     LatentSchema,
     LatentSchemaBuilder,
     _build_lexical_signature,
@@ -60,13 +60,13 @@ def _make_schema(
 
 
 # ---------------------------------------------------------------------------
-# GeometricContradictionJudge
+# GeometricRelationJudge
 # ---------------------------------------------------------------------------
 
 
-class TestGeometricContradictionJudge:
+class TestGeometricRelationJudge:
     def setup_method(self):
-        self.judge = GeometricContradictionJudge()
+        self.judge = GeometricRelationJudge()
 
     def test_unrelated_schemas(self):
         """Orthogonal centroids → unrelated."""
@@ -86,105 +86,27 @@ class TestGeometricContradictionJudge:
         assert result.verdict == "relates_to"
         assert result.similarity >= 0.90
 
-    def test_same_topic_identical_facets_no_direction(self):
-        """Same topic (cos ~0.80), identical facet axes, no direction signal
-        -> relates_to (facets agree but nothing more specific applies)."""
-        # cos([1,0,0,0,0], [0.8,0.6,0,0,0]) = 0.80: in same-topic zone
-        c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))
-        # Identical axis -> facet_dist = 0 < contradicts_facet_dist
-        axis = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
-        a = _make_schema(c_old, facet_axes=axis)
-        b = _make_schema(c_new, facet_axes=axis)
-        result = self.judge.judge(old=a, new=b)
-        assert result.verdict == "relates_to", (
-            f"expected relates_to, got {result.verdict}; "
-            f"sim={result.similarity:.3f} facet_dist={result.facet_distance:.3f}"
-        )
-        assert result.facet_distance < self.judge.cfg.contradicts_facet_dist
-
-    def test_high_facet_distance_no_longer_refines(self):
-        """Same topic, orthogonal facet axes -- previously expected 'refines',
-        now expects 'relates_to' per 2026-07-22 taxonomy collapse: no geometric
-        signal (direction_score, facet_distance) generalizes beyond synthetic
-        seed sets, so the honest verdict for all same-topic pairs is relates_to."""
-        c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-        c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0, 0.0]))
-        axis_old = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
-        axis_new = np.array([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
-        a = _make_schema(c_old, facet_axes=axis_old, support_count=3)
-        b = _make_schema(c_new, facet_axes=axis_new, support_count=4, mean_ts=2_000_000)
-        result = self.judge.judge(old=a, new=b)
-        assert result.verdict == "relates_to"
-
-    def test_high_facet_distance_no_manifold_relates_to(self):
-        """High facet_distance with no manifold -- previously expected 'refines',
-        now expects 'relates_to' per 2026-07-22 taxonomy collapse."""
-        c = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c2 = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))  # cos ~0.80
-        axis_a = np.array([[1.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
-        axis_b = np.array([[0.0, 0.0, 0.0, 1.0, 0.0]], dtype=np.float32)
-        old = _make_schema(c, facet_axes=axis_a, support_count=2, mean_ts=1_000_000)
-        new = _make_schema(c2, facet_axes=axis_b, support_count=5, mean_ts=2_000_000)
-        result = self.judge.judge(old=old, new=new)
-        assert result.verdict == "relates_to"
-        assert result.time_delta_s > 0
-
-    def test_newer_with_higher_support_relates_to(self):
-        """Same geometry as above (newer, better-supported, divergent
-        facets) -- per 2026-07-22 taxonomy collapse, all same-topic pairs
-        are relates_to regardless of facet distance or support/recency.
-        Supersession (status changes) is now gated at the consolidation
-        call site (cos >= 0.90 + support + recency), not by the judge."""
-        c = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c2 = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))  # cos ~0.80
-        axis_a = np.array([[1.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
-        axis_b = np.array([[0.0, 0.0, 0.0, 1.0, 0.0]], dtype=np.float32)
-        old = _make_schema(c, facet_axes=axis_a, support_count=2, mean_ts=1_000_000)
-        new = _make_schema(c2, facet_axes=axis_b, support_count=5, mean_ts=2_000_000)
-        result = self.judge.judge(old=old, new=new)
-        assert result.verdict == "relates_to"
-
-    def test_no_facet_axes_falls_back_to_relates_to(self):
-        """Same-topic schemas with no facet axes on either side -> relates_to
-        (facet_dist=0 here means "no data", not "these confirm each other" --
-        "refines"/"reinforces" are both specific claims unwarranted without
-        any facet signal at all)."""
-        # cos([1,0,0,0,0], [0.8,0.6,0,0,0]) = 0.80: same-topic, below reinforce
-        c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
-        c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))
-        a = _make_schema(c_old)  # no facet axes
-        b = _make_schema(c_new)
-        result = self.judge.judge(old=a, new=b)
-        assert result.verdict == "relates_to"
-        assert result.facet_distance == 0.0
-
-    def test_relates_to_catch_all(self):
-        """Same-topic cosine below reinforce_cosine, but facet axes present
-        on only one side (so there's no pairwise facet comparison to make)
-        -> relates_to, not reinforces or refines."""
+    def test_same_topic_is_only_a_non_authoritative_relation(self):
         c_old = _unit(np.array([1.0, 0.0, 0.0, 0.0, 0.0]))
         c_new = _unit(np.array([0.8, 0.6, 0.0, 0.0, 0.0]))  # cos ~0.80
-        axis = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
-        a = _make_schema(c_old, facet_axes=axis)
-        b = _make_schema(c_new)  # no facet axes on this side
+        a = _make_schema(c_old, support_count=1, mean_ts=1)
+        b = _make_schema(c_new, support_count=50, mean_ts=2_000_000)
         result = self.judge.judge(old=a, new=b)
         assert result.verdict == "relates_to"
+        assert not hasattr(result, "facet_distance")
+        assert not hasattr(result, "time_delta_s")
 
     def test_custom_config_thresholds_respected(self):
         """Custom config thresholds gate all verdicts correctly."""
-        cfg = GeometricJudgeConfig(
-            same_topic_cosine=0.5,
-            contradicts_facet_dist=0.1,
-        )
-        judge = GeometricContradictionJudge(cfg)
+        cfg = GeometricRelationConfig(same_topic_cosine=0.5)
+        judge = GeometricRelationJudge(cfg)
         c_a = _unit(np.array([1.0, 0.3, 0.0]))
         c_b = _unit(np.array([1.0, 0.0, 0.3]))
         axis = np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
         a = _make_schema(c_a, facet_axes=axis)
         b = _make_schema(c_b, facet_axes=axis)
         result = judge.judge(old=a, new=b)
-        assert result.verdict in ("refines", "relates_to")
+        assert result.verdict == "relates_to"
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
-"""Tests for missing-embedding guard in the consolidation supersession path.
+"""Tests for missing-embedding guard in the consolidation relation path.
 
 Covers: _write_latent_schema must not supersede when
 _fetch_schema_embedding returns None (was zero-vector fallback).
 
 (remember() used to have an equivalent engine-path guard, but remember() no
 longer runs any geometric classification itself — see
-test_geometry_supersession.py — so that guard and its test were removed
+the old geometry-supersession path — so that obsolete authority was removed
 along with the code they protected.)
 """
 
@@ -32,10 +32,12 @@ def mock_deps():
         "schemas": MagicMock(),
         "encoder": None,
         "latent_builder": MagicMock(),
-        "geometric_judge": MagicMock(),
+        "relation_judge": MagicMock(),
     }
     # No geometric near-duplicate — let the write path reach the judge.
     deps["schemas"].search_embedding.return_value = []
+    # Fix #1: prototype has no pre-existing schema -> cross-prototype path.
+    deps["schemas"].find_by_primary_prototype.return_value = None
     return deps
 
 
@@ -85,9 +87,9 @@ def test_write_latent_schema_falls_back_to_created_on_none_embedding(mock_deps):
 
     assert outcome == "created"
     assert new_id == 42
-    # The geometric judge must NOT have been called — a missing embedding
+    # The relation judge must NOT have been called — a missing embedding
     # should short-circuit before any verdict is formed.
-    mock_deps["geometric_judge"].judge.assert_not_called()
+    mock_deps["relation_judge"].judge.assert_not_called()
 
 
 def test_write_latent_schema_judge_called_when_embedding_present(mock_deps):
@@ -95,9 +97,8 @@ def test_write_latent_schema_judge_called_when_embedding_present(mock_deps):
     judge is still invoked as normal (regression check)."""
     mock_deps["schemas"].create.return_value = 99
     mock_deps["schemas"].last_create_reinforced_existing_id = None
-    mock_deps["geometric_judge"].judge.return_value = MagicMock(
+    mock_deps["relation_judge"].judge.return_value = MagicMock(
         verdict="unrelated",
-        time_delta_s=0,
     )
 
     related = MagicMock(id=7, content_text="old fact", confidence=1.0, facets={}, scope_id="p:test")
@@ -113,5 +114,5 @@ def test_write_latent_schema_judge_called_when_embedding_present(mock_deps):
                     schema=make_latent_schema(),
                 )
 
-    # The geometric judge MUST have been called with valid embeddings.
-    mock_deps["geometric_judge"].judge.assert_called_once()
+    # The relation judge MUST have been called with valid embeddings.
+    mock_deps["relation_judge"].judge.assert_called_once()

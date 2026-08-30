@@ -157,16 +157,18 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             )
 
         cursor_mcp = _cursor_mcp_config_path()
-        statuses["cursor"] = ClientStatus(
-            name="Cursor",
-            mcp_configured=_json_has_slowave_mcp(cursor_mcp),
-        )
+        if cursor_mcp.parent.exists():
+            statuses["cursor"] = ClientStatus(
+                name="Cursor",
+                mcp_configured=_json_has_slowave_mcp(cursor_mcp),
+            )
 
         windsurf_mcp_paths = _windsurf_mcp_config_paths()
-        statuses["windsurf"] = ClientStatus(
-            name="Windsurf",
-            mcp_configured=_any_json_has_slowave_mcp(windsurf_mcp_paths),
-        )
+        if any(path.parent.exists() for path in windsurf_mcp_paths):
+            statuses["windsurf"] = ClientStatus(
+                name="Windsurf",
+                mcp_configured=_any_json_has_slowave_mcp(windsurf_mcp_paths),
+            )
 
         # OpenCode detection — uses `mcp` key (not `mcpServers`) and `instructions` array
         from slowave.cli.setup import _opencode_config_path, _opencode_instructions_path
