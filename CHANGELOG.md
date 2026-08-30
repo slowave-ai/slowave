@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.0...slowave-v0.17.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* correct release workflow step indentation ([24c10e0](https://github.com/slowave-ai/slowave/commit/24c10e09253527066a5a22fda4f7f7ffc1817c1e))
+* include missing dashboard assets ([#129](https://github.com/slowave-ai/slowave/issues/129)) ([91c3afc](https://github.com/slowave-ai/slowave/commit/91c3afc63c0dc811046651e668de64b4290e3410))
+* recover missing release tag before release-please ([#127](https://github.com/slowave-ai/slowave/issues/127)) ([4352ceb](https://github.com/slowave-ai/slowave/commit/4352ceb35c87518d31ab815c8db05053eeb2e173))
+* recover release with built-in GitHub token ([#128](https://github.com/slowave-ai/slowave/issues/128)) ([fa4837a](https://github.com/slowave-ai/slowave/commit/fa4837a1046d0b4f6228eb0d31f53c73ef482e89))
+* restore github token for release ([091eeed](https://github.com/slowave-ai/slowave/commit/091eeedd085e8fb4f683868237ba69a69498857a))
+* use bypassed token for release please ([103739a](https://github.com/slowave-ai/slowave/commit/103739a6b5e4eac38855903dbfb9da7251b3d5ce))
+
 ## [0.17.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.16.4...slowave-v0.17.0) (2026-08-30)
 
 
