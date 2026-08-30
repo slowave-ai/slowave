@@ -77,13 +77,13 @@ jobs:
           echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Run Release Please
-          id: release
-          if: ${{ github.event_name == 'push' && steps.recovery.outputs.recovered != 'true' }}
-          uses: googleapis/release-please-action@v4
-          with:
-            token: ${{ github.token }}
-            config-file: release-please-config.json
-            manifest-file: .release-please-manifest.json
+        id: release
+        if: ${{ github.event_name == 'push' && steps.recovery.outputs.recovered != 'true' }}
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
       # When a Release Please PR is merged, the action creates the tag and
       # GitHub release. Build artifacts here and attach them to that release.
