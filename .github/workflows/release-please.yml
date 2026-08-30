@@ -30,20 +30,21 @@ jobs:
     steps:
       # Recovery guard: if a release PR/version bump reached main but the
       # matching tag/release was never created, finalize that release before
-      # running Release Please. This covers interrupted/manual recovery flows
-      # without making Release Please rescan the entire repository history.
+      # running Release Please. Use the built-in GITHUB_TOKEN here: recovery
+      # only needs contents:write and must not depend on the admin PAT used
+      # for protected-main writes later in the normal release flow.
       - name: Checkout for release recovery
         if: ${{ github.event_name == 'push' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Recover missing release tag
         id: recovery
         if: ${{ github.event_name == 'push' }}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(python -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")
           TAG="slowave-v${VERSION}"
@@ -55,14 +56,17 @@ jobs:
 
           echo "No GitHub release exists for manifest version ${VERSION}; recovering ${TAG}."
 
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            TAG_SHA=$(git rev-list -n 1 "$TAG")
-          else
-            git tag "$TAG" "$GITHUB_SHA"
-            git push origin "$TAG"
-            TAG_SHA="$GITHUB_SHA"
+          # Tag the commit that last changed the manifest, not the current
+          # workflow-fix commit. In a stranded release this is the release PR
+          # merge commit that actually introduced VERSION.
+          TAG_SHA=$(git log -n 1 --format=%H -- .release-please-manifest.json)
+          if [ -z "$TAG_SHA" ]; then
+            echo "Unable to determine release commit from manifest history"
+            exit 1
           fi
 
+          # gh release create creates the missing tag as well when TAG does
+          # not exist, so no git push/PAT is required for recovery.
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
@@ -74,7 +78,7 @@ jobs:
 
       - name: Run Release Please
         id: release
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && steps.recovery.outputs.recovered != 'true' }}
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PUSH_TOKEN }}
@@ -90,7 +94,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || steps.recovery.outputs.recovered == 'true' && steps.recovery.outputs.sha || steps.release.outputs.sha }}
-          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          token: ${{ steps.recovery.outputs.recovered == 'true' && github.token || secrets.RELEASE_PUSH_TOKEN }}
 
       - name: Set up Python
         if: ${{ steps.release.outputs.release_created == 'true' || steps.recovery.outputs.recovered == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -131,11 +135,16 @@ jobs:
       - name: Upload artifacts to GitHub release
         if: ${{ steps.release.outputs.release_created == 'true' || steps.recovery.outputs.recovered == 'true' || github.event_name == 'workflow_dispatch' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: gh release upload "${{ steps.verify.outputs.tag }}" dist/* --clobber
 
+      # Emergency recovery intentionally stops after publishing the release.
+      # The admin PAT is currently not authorized for Git pushes to the org
+      # repository, so trying the protected-main Homebrew push would turn a
+      # successfully recovered release red. Normal/manual release flows keep
+      # the existing Homebrew update behavior.
       - name: Update Homebrew formula
-        if: ${{ steps.release.outputs.release_created == 'true' || steps.recovery.outputs.recovered == 'true' || github.event_name == 'workflow_dispatch' }}
+        if: ${{ steps.recovery.outputs.recovered != 'true' && (steps.release.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
         run: |
           VERSION="${{ steps.verify.outputs.version }}"
           URL="https://files.pythonhosted.org/packages/source/s/slowave/slowave-${VERSION}.tar.gz"
