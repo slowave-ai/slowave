@@ -76,6 +76,16 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$TAG_SHA" >> "$GITHUB_OUTPUT"
 
+      - name: Diagnose release token
+        if: ${{ github.event_name == 'push' && steps.recovery.outputs.recovered != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
+        run: |
+          echo "Release token identity:"
+          gh api user --jq .login
+          echo "Repository permissions for token:"
+          gh api "repos/${{ github.repository }}" --jq '.permissions'
+
       - name: Run Release Please
         id: release
         if: ${{ github.event_name == 'push' && steps.recovery.outputs.recovered != 'true' }}
