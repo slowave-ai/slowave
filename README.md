@@ -3,7 +3,7 @@
 [![PyPI Status](https://img.shields.io/pypi/status/slowave?color=orange)](https://pypi.org/project/slowave/)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-<img src="img/slowave-logo-text.jpeg" alt="Slowave" width="400"/>
+<img src="img/slowave-logo-text.jpeg" alt="Slowave" width="350"/>
 
 **A living local memory layer across your AI tools.**
 
