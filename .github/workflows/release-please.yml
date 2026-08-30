@@ -22,10 +22,10 @@ jobs:
     uses: ./.github/workflows/tests.yml
     secrets: inherit
 
-  # ── Release Please only after tests pass ─────────────────────────────
+  # ── Release Please only after tests pass ──────────────────────────────
   release-please:
     needs: test
-    if: github.repository == 'mrsalty/slowave'
+    if: github.repository == 'slowave-ai/slowave'
     runs-on: ubuntu-latest
     steps:
       - name: Run Release Please
