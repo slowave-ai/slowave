@@ -66,7 +66,7 @@ exclude = ["tests*", "migrations*", "scripts*"]
 license-files = ["LICENSE"]
 
 [tool.setuptools.package-data]
-slowave = ["storage/schema.sql"]
+slowave = ["storage/schema.sql", "dashboard/static/**/*"]
 
 [tool.black]
 line-length = 100
