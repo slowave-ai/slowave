@@ -7,9 +7,10 @@
 
 **A living local memory layer across your AI tools.**
 
-- Slowave keeps useful decisions, preferences, context, procedures, while lets stale memories fade.
-- Slowave evolves over time, following your experience and decisions.
-- Slowave is 100% local. Inspectable through a local dashboard.
+- Slowave keeps useful decisions, context, procedures, while lets stale memories fade.
+- Memory evolves over time, following your work.
+- Fully local, no data leaves your machine. 
+- Inspectable through a local dashboard.
 - No LLM API key required.
 
 ---
@@ -23,9 +24,9 @@ You work daily with your AI tools:
 - **Month 1** — context consolidates: frequently reinforced information becomes consistently retrievable, low-signal data fades.
 
 Multiple AI clients continuously build and reuse the same evolving memory over time:
-- no markdown management
-- no static RAG
-- no LLM extra calls
+- not a markdown manager
+- not static RAG retrieval system
+- not an extra LLM layer over your agent
 
 ---
 
@@ -66,7 +67,7 @@ slowave doctor            # verify: daemon health, client detection
 `slowave setup` is idempotent and safe to run multiple times. The HTTP MCP daemon and background consolidation worker start automatically as system services.
 
 > [!IMPORTANT]
-> **Public beta.** APIs and the storage schema may change, and migrations are not guaranteed before a stable release. Your memory lives in a local plaintext SQLite database by default; protect it with OS permissions or full-disk encryption.
+> **Public beta.** APIs and the storage schema may change. Your memory lives in a local plaintext SQLite database by default; protect it with OS permissions or full-disk encryption.
 
 
 ### Per-client setup
@@ -116,11 +117,14 @@ The architecture draws inspiration from episodic memory, offline consolidation, 
 Monitor Slowave’s memory health, incoming events and memory consolidation in real time.
 
 <p align="center">
-    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Dashboard overview" width="23%"></a>
-    <a href="img/schemas.jpg"><img src="img/schemas.jpg" alt="Memory detail" width="23%"></a>
-    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="23%"></a>
-    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="23%"></a>
+    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Dashboard overview" width="33%"></a>
+    <a href="img/schemas.jpg"><img src="img/schemas.jpg" alt="Memory detail" width="33%"></a>
+    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="33%"></a><br>
+    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="33%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Activity" width="33%"></a>
+    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="33%"></a>
 </p>
+
 
 ---
 
