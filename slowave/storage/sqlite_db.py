@@ -102,6 +102,23 @@ class SQLiteDB:
             if "needs_review" in cols and "is_labile" not in cols:
                 conn.execute("ALTER TABLE schemas RENAME COLUMN needs_review TO is_labile")
                 conn.commit()
+            if "contradicting_episode_ids" in cols:
+                conn.execute("ALTER TABLE schemas DROP COLUMN contradicting_episode_ids")
+                conn.commit()
+
+        # Point 3 (2026-08-26): consolidation no longer owns contradiction or
+        # supersession. Remove its obsolete per-run counter from legacy DBs;
+        # client-owned truth transitions are auditable in feedback_events.
+        worker = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='worker_runs'"
+        ).fetchone()
+        if worker is not None:
+            worker_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(worker_runs)").fetchall()
+            }
+            if "schemas_contradicted" in worker_cols:
+                conn.execute("ALTER TABLE worker_runs DROP COLUMN schemas_contradicted")
+                conn.commit()
 
         missing_columns = [
             # Stage 9 (commit 777ea1d)
@@ -127,38 +144,83 @@ class SQLiteDB:
             ("schemas", "is_labile", "INTEGER NOT NULL DEFAULT 0"),
             ("sessions", "scope_id", "TEXT"),
             ("sessions", "scope_kind", "TEXT"),
-            ("context_recall_events", "retrieval_type", "TEXT NOT NULL DEFAULT 'context'"),
+            (
+                "context_recall_events",
+                "retrieval_type",
+                "TEXT NOT NULL DEFAULT 'context'",
+            ),
             ("context_recall_events", "scope_id", "TEXT"),
             ("context_recall_events", "scope_kind", "TEXT"),
             ("context_recall_events", "goal", "TEXT"),
             ("context_recall_events", "task_type", "TEXT"),
             ("context_recall_events", "situation_json", "TEXT NOT NULL DEFAULT '{}'"),
-            ("context_recall_events", "requirements_json", "TEXT NOT NULL DEFAULT '[]'"),
-            ("context_recall_items", "retrieval_type", "TEXT NOT NULL DEFAULT 'context'"),
+            (
+                "context_recall_events",
+                "requirements_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "context_recall_items",
+                "retrieval_type",
+                "TEXT NOT NULL DEFAULT 'context'",
+            ),
             ("context_recall_items", "admitted", "INTEGER NOT NULL DEFAULT 1"),
-            ("context_feedback_events", "retrieval_type", "TEXT NOT NULL DEFAULT 'context'"),
+            (
+                "context_feedback_events",
+                "retrieval_type",
+                "TEXT NOT NULL DEFAULT 'context'",
+            ),
             ("context_feedback_events", "scope_id", "TEXT"),
             ("context_feedback_events", "scope_kind", "TEXT"),
             ("context_feedback_events", "situation_json", "TEXT NOT NULL DEFAULT '{}'"),
-            ("context_feedback_events", "requirements_json", "TEXT NOT NULL DEFAULT '[]'"),
-            ("context_feedback_events", "used_procedure_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+            (
+                "context_feedback_events",
+                "requirements_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "context_feedback_events",
+                "used_procedure_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
             (
                 "context_feedback_events",
                 "irrelevant_procedure_ids_json",
                 "TEXT NOT NULL DEFAULT '[]'",
             ),
-            ("context_feedback_events", "stale_procedure_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
-            ("context_feedback_events", "wrong_procedure_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+            (
+                "context_feedback_events",
+                "stale_procedure_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "context_feedback_events",
+                "wrong_procedure_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
             # source_content: raw event content joined without role prefix; used as schema claim
             ("episode_text", "source_content", "TEXT"),
             # generalization_stage: cross-scope generalization level (Stage 11)
             # Procedural memory Tier 1 (v4 §7: schema migrations for enforcement)
             ("sessions", "goal", "TEXT"),
+            ("sessions", "initial_goal", "TEXT"),
+            ("sessions", "final_goal", "TEXT"),
             ("sessions", "outcome", "TEXT"),
+            ("sessions", "outcome_summary", "TEXT"),
+            ("sessions", "retrieval_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("sessions", "task_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("sessions", "continuity_id", "TEXT"),
+            ("sessions", "verification_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("sessions", "feedback_status", "TEXT NOT NULL DEFAULT 'pending'"),
             ("procedural_memories", "source", "TEXT NOT NULL DEFAULT 'implicit'"),
             ("procedural_memories", "superseded_by_id", "INTEGER"),
-            ("procedural_memories", "generalization_stage", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "procedural_memories",
+                "generalization_stage",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
             ("schemas", "generalization_stage", "INTEGER NOT NULL DEFAULT 0"),
+            ("schemas", "stale_reason", "TEXT"),
             # Worker run log: additional tracking columns
             ("worker_runs", "procedures_promoted", "INTEGER NOT NULL DEFAULT 0"),
             ("worker_runs", "procedures_generalized", "INTEGER NOT NULL DEFAULT 0"),
@@ -167,6 +229,9 @@ class SQLiteDB:
             ("raw_events", "logic_version", "TEXT NOT NULL DEFAULT '0'"),
             ("schemas", "logic_version", "TEXT NOT NULL DEFAULT '0'"),
             ("semantic_prototypes", "logic_version", "TEXT NOT NULL DEFAULT '0'"),
+            ("feedback_events", "replacement_target_id", "TEXT"),
+            ("feedback_events", "stale_reason", "TEXT"),
+            ("graph_health_snapshots", "stale_pct", "REAL"),
             # Auto-migration lock fields (2026-07-16): RebuildService.try_claim.
             ("logic_versions", "claimed_ts", "INTEGER"),
             ("logic_versions", "claim_attempts", "INTEGER NOT NULL DEFAULT 0"),
@@ -185,6 +250,15 @@ class SQLiteDB:
             # version -- the reliable attribution point for activate/recall
             # telemetry, since recall() never sets session_id.
             ("context_recall_events", "lifecycle_version", "TEXT"),
+            ("context_recall_events", "cue_embedding", "BLOB"),
+            ("context_recall_events", "cue_dim", "INTEGER"),
+            ("context_recall_events", "retrieval_policy_version", "TEXT"),
+            ("context_recall_events", "continuity_state", "TEXT"),
+            ("context_recall_events", "response_chars", "INTEGER"),
+            ("context_recall_events", "estimated_tokens", "INTEGER"),
+            ("context_recall_items", "topical_relevance", "REAL"),
+            ("context_recall_items", "final_rank_score", "REAL"),
+            ("context_recall_items", "score_margin", "REAL"),
         ]
 
         for table, column, type_spec in missing_columns:
@@ -202,7 +276,46 @@ class SQLiteDB:
             except _sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     raise
+        snapshot_cols = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(graph_health_snapshots)").fetchall()
+        }
+        if "superseded_pct" in snapshot_cols and "stale_pct" in snapshot_cols:
+            conn.execute(
+                "UPDATE graph_health_snapshots SET stale_pct = superseded_pct "
+                "WHERE stale_pct IS NULL"
+            )
+        # Canonicalize legacy terminal statuses into the unified stale state.
+        # Keep the reason so historical meaning is not lost.
+        if conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schemas'"
+        ).fetchone():
+            conn.execute(
+                "UPDATE schemas SET status='stale', stale_reason='superseded' "
+                "WHERE status='superseded' AND (stale_reason IS NULL OR stale_reason='')"
+            )
+            conn.execute(
+                "UPDATE schemas SET status='stale', stale_reason='contradicted' "
+                "WHERE status='contradicted' AND (stale_reason IS NULL OR stale_reason='')"
+            )
         conn.commit()
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchone():
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_scope_continuity "
+                "ON sessions(scope_id, continuity_id) WHERE continuity_id IS NOT NULL"
+            )
+            conn.commit()
+
+        # `goal` remains as a compatibility alias. Existing databases acquire
+        # the explicit lifecycle anchors without losing their original cue.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+        ).fetchone():
+            conn.execute("UPDATE sessions SET initial_goal = goal WHERE initial_goal IS NULL")
+            conn.commit()
 
     def _apply_post_migrations(self) -> None:
         """Idempotent forward migrations that need the schema script to

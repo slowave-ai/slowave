@@ -182,12 +182,18 @@ class RawLog:
         scope_kind: str | None = None,
         ts: int | None = None,
         goal: str | None = None,
+        initial_goal: str | None = None,
+        retrieval_context: dict[str, Any] | None = None,
+        task_context: dict[str, Any] | None = None,
+        continuity_id: str | None = None,
         lifecycle_version: str | None = None,
     ) -> None:
         conn = self.db.connect()
         conn.execute(
-            "INSERT INTO sessions (id, agent, scope_id, scope_kind, started_ts, goal, lifecycle_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions "
+            "(id, agent, scope_id, scope_kind, started_ts, goal, initial_goal, "
+            "retrieval_context_json, task_context_json, continuity_id, lifecycle_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(session_id),
                 str(agent),
@@ -195,18 +201,39 @@ class RawLog:
                 scope_kind,
                 int(ts) if ts is not None else int(time.time()),
                 goal,
+                initial_goal if initial_goal is not None else goal,
+                dumps_json(retrieval_context or {}),
+                dumps_json(task_context or retrieval_context or {}),
+                continuity_id,
                 lifecycle_version,
             ),
         )
         conn.commit()
 
     def end_session(
-        self, session_id: str, ts: int | None = None, outcome: str | None = None
+        self,
+        session_id: str,
+        ts: int | None = None,
+        outcome: str | None = None,
+        final_goal: str | None = None,
+        outcome_summary: str | None = None,
+        verification: dict[str, Any] | None = None,
+        feedback_status: str | None = None,
     ) -> None:
         conn = self.db.connect()
         conn.execute(
-            "UPDATE sessions SET ended_ts = ?, outcome = ? WHERE id = ?",
-            (int(ts) if ts is not None else int(time.time()), outcome, str(session_id)),
+            "UPDATE sessions SET ended_ts = ?, outcome = ?, "
+            "final_goal = COALESCE(?, initial_goal, goal), outcome_summary = ?, "
+            "verification_json = ?, feedback_status = COALESCE(?, feedback_status) WHERE id = ?",
+            (
+                int(ts) if ts is not None else int(time.time()),
+                outcome,
+                final_goal,
+                outcome_summary,
+                dumps_json(verification or {}),
+                feedback_status,
+                str(session_id),
+            ),
         )
         conn.commit()
 

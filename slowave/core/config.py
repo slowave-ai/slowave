@@ -14,7 +14,7 @@ from slowave.latent.graph_manager import GraphConfig
 from slowave.latent.replay_engine import ReplayConfig
 from slowave.latent.retrieval import RetrievalConfig
 from slowave.latent.salience import SalienceConfig
-from slowave.latent.schema import GeometricJudgeConfig
+from slowave.latent.schema import GeometricRelationConfig
 from slowave.latent.transition_model import TransitionModelConfig
 from slowave.symbolic.encoder import EncoderConfig
 
@@ -45,7 +45,7 @@ class SlowaveConfig:
     graph: GraphConfig = field(default_factory=GraphConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     transition: TransitionModelConfig | None = None
-    judge: GeometricJudgeConfig = field(default_factory=GeometricJudgeConfig)
+    relation: GeometricRelationConfig = field(default_factory=GeometricRelationConfig)
 
     # Convenience shorthand for the most-tuned parameter: prototype
     # assignment threshold. When set, overrides replay.assignment_threshold
@@ -75,11 +75,31 @@ class SlowaveConfig:
     # no-op for most upgrades. When you do bump it, also set
     # current_logic_version_description below so the change is
     # self-documenting. See private/docs/iterations/20260716_event-store-replay.md.
-    current_logic_version: str = "0"
+    current_logic_version: str = "3"
     # Human-readable note on *why* current_logic_version was last bumped.
     # Written into the logic_versions.description column by
     # RebuildService.try_claim() at rebuild time.
-    current_logic_version_description: str = ""
+    #
+    # "1" (2026-08-18): episode-formation eligibility now excludes Slowave's
+    # own lifecycle bookkeeping (recall-cue logs, activate context_query, and
+    # canonical lifecycle trajectory narration) regardless of stored
+    # memory_role, via slowave/core/lifecycle.py; offline cross-scope
+    # reinforcement no longer feeds scope-breadth/stage promotion in
+    # SchemaStore._update_utility_scores. Existing DBs rebuild so contaminated
+    # derived episodes/schemas do not reappear. See
+    # private/docs/iterations/20260818_lifecycle_invocation_schema_contamination_handoff.md.
+    #
+    # "2" (2026-08-18): lifecycle classification additionally excludes the
+    # ``task_complete`` event type (Slowave's own commit marker). Legacy
+    # ``task_complete`` events from the encoder-enabled-commit bug carry a
+    # stored embedding and no ``memory_role`` (default ``experience``), so the
+    # v1 eligibility gate let them re-derive ``outcome=...`` schemas on rebuild.
+    # Excluding the type keeps them out of episode formation regardless of
+    # stored role/embedding.
+    current_logic_version_description: str = (
+        "Delegate contradiction and supersession exclusively to explicit client "
+        "feedback; geometry may create topical associations but cannot retire schemas."
+    )
 
     # feedback system
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)

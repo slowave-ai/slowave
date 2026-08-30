@@ -265,7 +265,7 @@ class RebuildService:
             db=db,
         )
 
-        from slowave.latent.schema import GeometricContradictionJudge, LatentSchemaBuilder
+        from slowave.latent.schema import GeometricRelationJudge, LatentSchemaBuilder
 
         consolidator = Consolidator(
             db=db,
@@ -274,7 +274,7 @@ class RebuildService:
             schemas=schemas,
             encoder=encoder,
             latent_builder=LatentSchemaBuilder(),
-            geometric_judge=GeometricContradictionJudge(cfg.judge),
+            relation_judge=GeometricRelationJudge(cfg.relation),
             episodic_store=episodic,
             logic_version=cfg.current_logic_version,
         )

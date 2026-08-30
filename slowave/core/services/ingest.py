@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from slowave.core.lifecycle import is_slowave_lifecycle
 from slowave.latent.episodic_store import EpisodicStore
 from slowave.latent.salience import SalienceEngine
 from slowave.latent.transition_model import TransitionModel
@@ -60,12 +61,27 @@ class IngestService:
         so customer DBs auto-rebuild via RebuildService.
         """
         events = self.raw_log.list_session(session_id)
-        # Exclude context_query events (activate calls) from episode formation.
-        # Retrieval queries are cues, not memories — encoding them as episodes
-        # causes consolidation to produce episodic summaries whose central text
-        # is the query itself ("remember Karpathy Guidelines...") blended with
-        # project-specific content from the same session.
-        embeddable = [e for e in events if e.embedding is not None and e.type != "context_query"]
+        # Eligibility gate: only genuinely embedded events with a semantic
+        # memory role may form episodes. Three exclusions, defense in depth:
+        #   1. memory_role — control/procedural_evidence are raw audit history
+        #      (producer-declared).
+        #   2. lifecycle classification — Slowave's own operations (the
+        #      activate context_query, synthetic recall-cue logs, and canonical
+        #      lifecycle trajectory narration) are NEVER episodic content,
+        #      regardless of any stored role. This is what lets a logic-version
+        #      rebuild decontaminate historical events persisted before the
+        #      writer-side fix. Retrieval queries are cues, not memories —
+        #      encoding them as episodes causes consolidation to produce
+        #      episodic summaries whose central text is the query itself
+        #      ("remember Karpathy Guidelines...") blended with project-specific
+        #      content from the same session.
+        embeddable = [
+            e
+            for e in events
+            if e.embedding is not None
+            and e.metadata.get("memory_role", "experience") in {"experience", "explicit_memory"}
+            and not is_slowave_lifecycle(e.type, e.content)
+        ]
         if not embeddable:
             return []
 
@@ -84,17 +100,21 @@ class IngestService:
             salience, surprise = self._episode_salience(emb)
             if any(e.type.startswith("remember:") for e in chunk):
                 salience = min(1.5, salience + 0.6)
+            episode_metadata = {
+                "session_id": session_id,
+                "kind": "micro",
+                "n_events": len(chunk),
+                "prediction_error": surprise,
+            }
+            occurred_at = self._shared_occurred_at(chunk)
+            if occurred_at is not None:
+                episode_metadata["occurred_at"] = occurred_at
             ep_id = self.episodic.add(
                 event_id=f"micro_{session_id}_{start}",
                 ts=chunk[len(chunk) // 2].ts,
                 embedding=emb,
                 salience=salience,
-                metadata={
-                    "session_id": session_id,
-                    "kind": "micro",
-                    "n_events": len(chunk),
-                    "prediction_error": surprise,
-                },
+                metadata=episode_metadata,
             )
             self.episode_text.put(
                 episode_id=ep_id,
@@ -125,17 +145,21 @@ class IngestService:
             salience = max(salience * 0.8, 0.05)  # macro useful but less atomic
             if any(e.type.startswith("remember:") for e in events):
                 salience = min(1.5, salience + 0.6)
+            episode_metadata = {
+                "session_id": session_id,
+                "kind": "macro",
+                "n_events": len(embeddable),
+                "prediction_error": surprise,
+            }
+            occurred_at = self._shared_occurred_at(embeddable)
+            if occurred_at is not None:
+                episode_metadata["occurred_at"] = occurred_at
             ep_id = self.episodic.add(
                 event_id=f"macro_{session_id}",
                 ts=embeddable[len(embeddable) // 2].ts,
                 embedding=macro_emb,
                 salience=salience,
-                metadata={
-                    "session_id": session_id,
-                    "kind": "macro",
-                    "n_events": len(embeddable),
-                    "prediction_error": surprise,
-                },
+                metadata=episode_metadata,
             )
             self.episode_text.put(
                 episode_id=ep_id,
@@ -147,6 +171,22 @@ class IngestService:
             made.append(ep_id)
 
         return made
+
+    @staticmethod
+    def _shared_occurred_at(events: list[Any]) -> int | None:
+        """Return source time only when every event in an episode agrees.
+
+        Raw event `ts` always remains the write-time ordering key. A mixed
+        episode has no single honest source occurrence time, so temporal
+        retrieval falls back to its recorded timestamp instead of inventing
+        one from its members.
+        """
+        values = {
+            int(event.metadata["occurred_at"])
+            for event in events
+            if event.metadata.get("occurred_at") is not None
+        }
+        return values.pop() if len(values) == 1 and len(events) == 1 else None
 
     def prototypes_for_episodes(self, episode_ids: list[int]) -> list[int]:
         """Return prototype IDs that have any of the given episodes mapped to them."""

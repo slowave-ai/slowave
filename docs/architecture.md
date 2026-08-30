@@ -1,134 +1,146 @@
 # Architecture
 
-This document describes the cognitive architecture of Slowave — the memory layers, their lifecycle, and the brain model they are built on. It explains *what* the layers are, *why* they exist, and *how* they interact. Implementation details (algorithms, ranking formulas, data structures) are intentionally out of scope.
+This document describes the current Slowave memory system and its five-verb MCP lifecycle. It explains the public behavior and the major local components; it is not a specification for internal ranking constants or database schema.
 
-For the product rationale — why Slowave exists, what problems it solves, and where its boundaries are — see [design.md](design.md).
-
----
-
-## The premise
-
-The brain does not store memories the way a database stores rows.
-
-It encodes experiences, replays them offline, abstracts recurring patterns into knowledge, strengthens what keeps proving useful, and lets the rest fade. Recalling a memory is itself an act that changes it.
-
-Slowave takes this seriously as an architecture, not as a metaphor. Every mechanism in the system exists because it has a counterpart in how biological memory works. When a design decision must be made, the guiding question is: *what does the brain do here?*
-
-The name comes from **slow-wave sleep** — the deep-sleep phase in which the brain replays the day's experiences and consolidates them into long-term knowledge. Consolidation in Slowave happens the same way: offline, in the background, without the "conscious" reasoning layer (the LLM) being involved.
+For product rationale, boundaries, and trade-offs, see [design.md](design.md).
 
 ---
 
-## Two memory systems working together
+## Overview
 
-Neuroscience describes human memory as two complementary learning systems:
-
-- the **hippocampus** learns fast — it captures individual experiences in one shot, keeping them distinct;
-- the **neocortex** learns slowly — it extracts the statistical regularities across many experiences into stable, general knowledge.
-
-Neither system alone is enough. Fast learning without abstraction produces a pile of anecdotes; slow learning without an episodic buffer forgets everything that happened only once.
-
-Slowave mirrors this division:
-
-| Brain | Slowave | Role |
-|---|---|---|
-| Hippocampus | Episodic layer | Captures individual experiences (episodes) as they happen, with time, context, and salience |
-| Sleep replay | Offline consolidation | Periodically replays episodes, groups related ones into prototypes, and builds a graph of associations between them |
-| Neocortex | Schema layer | Holds stable, abstracted knowledge as typed claims: decisions, preferences, constraints, conventions — the layer the LLM reads |
-
-New information enters fast at the episodic level and earns its way into the schema level through repetition and use. Nothing is promoted by a language model deciding what matters — promotion is a consequence of observed experience.
-
----
-
-## The memory lifecycle
+Slowave keeps durable memory in a local SQLite database. An MCP client opens a task session, retrieves relevant memory, records durable claims when needed, assesses retrieved evidence, and closes the task with an outcome. Background consolidation turns eligible session activity into longer-lived memory structures without calling an LLM.
 
 ```mermaid
 flowchart LR
-    U[User] -->|interacts with| AG[Agent]
-    AG -->|generates| EXP[Experiences]
-    EXP -->|encode| E[(Episodic)]
-    E -->|consolidate| S[(Schema)]
-    S -->|recall| AG
-    AG -->|feedback| FB{{Reinforce / Revise}}
-    FB -.->|strengthen| E
-    FB -.->|supersede| S
+    A[Agent task] --> B[activate]
+    B --> C[Scoped retrieval and session]
+    C --> D[Agent reasoning]
+    D --> E[remember durable claims]
+    D --> F[recall mid-task lookup]
+    C --> G[feedback target assessments]
+    F --> G
+    E --> H[commit outcome and verification]
+    G --> H
+    H --> I[(Local SQLite raw events and evidence)]
+    I --> J[Offline consolidation]
+    J --> K[(Episodes, prototypes, schemas, relations)]
+    K --> C
 ```
 
-The lifecycle is a continuous loop through two memory stores — episodic (fast capture) and schema (stable knowledge) — with consolidation bridging them, recall feeding the agent, and feedback reshaping both.
+The agent remains the reasoning layer. Slowave returns memory and evidence; it does not independently decide what the final answer or action should be.
 
-### Encode
+---
 
-Experiences are captured as they happen, stamped with time, context, and an estimate of salience. Like the brain, Slowave does not record everything with equal weight — novelty and importance gate what is worth keeping. Each experience becomes an episode: an embedding vector carrying its temporal coordinate, scope, and initial salience.
+## The public cognitive cycle
 
-### Consolidate
+The MCP interface intentionally exposes five task-level verbs.
 
-In the background, related episodes are replayed and compressed. Episodes cluster into **prototypes** — groups of related experiences represented as centroids. These prototypes form an **association graph** whose edges encode similarity, temporal transitions, and co-occurrence. The system also probes itself during consolidation — checking whether sibling memories are recoverable from their prototypes and learning from what it misses — a form of self-supervised rehearsal that needs no external signal.
+| Verb | Purpose | Important constraint |
+|---|---|---|
+| slowave_activate | Starts a task session and primes working memory with scoped memories and relevant procedures. | task, initial_goal, and scope are required. |
+| slowave_remember | Stores a durable typed claim. | It must use the active session and matching scope. |
+| slowave_recall | Performs a deliberate semantic lookup during the same task. | It is session-bound and scope-bound. |
+| slowave_feedback | Records target-specific assessments of retrieved memories and procedures. | Task outcome belongs in commit, not feedback. |
+| slowave_commit | Closes the task with its outcome, verification, and, when applicable, a procedure. | Complete feedback is required for every exposed retrieval target. |
 
-From repeated prototypes, the system promotes stable patterns into **schemas**: typed text claims (facts, decisions, preferences, constraints) that form the layer the LLM reads. This is the slow-wave sleep of the system: offline, on a schedule, without any language model in the loop.
+Activation returns an opaque continuity ID. A client omits it for a new conversation and reuses the returned value unchanged for later tasks in that same conversation. Continuity correlates related sessions; it does not relax the scope boundary.
+
+### Activate
+
+Activation receives the verbatim task, a concise initial goal, and a scope. It opens an implicit task session and returns a compact set of directly relevant or associated memories, relevant execution-backed procedures, warnings, and a retrieval ID for later feedback.
+
+On a cold start, the response signals that no memory exists yet for the scope. The client should read one stable context document, preserve only durable facts that are not already observable, and then continue normally.
+
+### Remember
+
+Remember is for durable, standalone claims such as facts, preferences, decisions, constraints, lessons, warnings, and durable tasks. It deliberately does not store transient work state or a narration of the current task.
+
+Claims may include occurred_at when they describe a specific past event. Slowave separately records the time it received the call, preserving the real ordering of session activity.
 
 ### Recall
 
-Retrieval works by **spreading activation**: a query activates directly matching prototypes, and activation spreads outward through graph edges to related knowledge. Episodes are harvested from the activated prototypes and ranked, with schemas biasing the ranking toward their supporting evidence. Partial cues are enough — like the brain, the system performs *pattern completion*, recovering a whole from a fragment. The top results are compacted into a **working-memory brief** and injected into the agent's context.
+Recall is a mid-task lookup when the question changes or activation did not surface enough context. It returns canonical memories and procedures plus bounded provenance references; full evidence includes bounded source evidence for inspection.
 
-### Reinforce and revise
+### Feedback
 
-Memory strength is earned, not assigned. Memories that are recalled and prove useful become easier to retrieve — the software analogue of "neurons that fire together, wire together." Memories that sit unused gradually lose influence. Forgetting is a feature: a memory system that never forgets drowns its own signal.
+Feedback records what actually happened after retrieval. A memory assessment is used, irrelevant, or stale. Stale feedback must name its reason; a superseded memory also names the active replacement. Procedure feedback records both whether the procedure was used and whether it helped, had no effect, caused harm, or remains unknown.
 
-Feedback is multi-dimensional. A simple label — useful, stale, wrong, irrelevant — maps to a richer learning signal that distinguishes between distinct kinds of failure: the memory was factually incorrect, the memory was right but outdated, the memory matched the cue but didn't help the task, or the recall missed something entirely. These separate error channels drive different learning dynamics.
+Feedback is append-only. A complete-coverage declaration assesses every target exposed by that retrieval; an incomplete declaration leaves unassessed targets unknown rather than treating silence as negative evidence.
 
-Recalling a memory reopens it. Feedback can strengthen the memory, suppress it, mark it stale, or let newer knowledge supersede it — the analogue of *reconsolidation* in biological memory. Supersession detects when a new fact replaces an old one (for example, "we use Python" → "we use Go") by recognizing the geometric direction of value substitution, without an LLM comparing the two statements. Memory is a living state, not an append-only log.
+### Commit
 
-### The cognitive cycle
-
-This lifecycle surfaces in the API as five verbs that structure every Slowave session: **activate** (prime working memory with a task cue), **remember** (encode a durable claim), **recall** (mid-task semantic lookup), **reinforce** (reward useful retrievals, penalize noise), and **commit** (close the session and trigger offline consolidation). Together they form a cognitive cycle — the same cycle an agent follows when it uses Slowave as its memory substrate.
+Commit stores the final goal, honest outcome, and structured verification. When the work produced a clear reusable method, it can also capture a procedure with context, steps, and caveats. The commit preflight rejects closure with a retryable error until required retrieval feedback is complete.
 
 ---
 
-## Context is part of memory
+## Local memory components
 
-Human memory is context-dependent: what you remember depends on where you are and what you are doing. A fact learned in one setting may not surface in another unless it has been reinforced across contexts.
+| Component | Role |
+|---|---|
+| Raw events and sessions | Preserve the ordered record of tool activity, task outcome, verification, and provenance. |
+| Episodic memory | Represents eligible individual experiences with scope, time, salience, and embeddings. |
+| Prototypes and associations | Group related episodes and retain local semantic, temporal, and co-occurrence structure. |
+| Schemas | Provide durable, searchable memory records with evidence and lifecycle state. |
+| Procedures | Store execution-backed methods captured when a task closes. |
+| Retrieval snapshots and feedback events | Preserve what was exposed, how it was reached, and what the client later reported. |
 
-Slowave models this with **scopes** — labels like `project:slowave`, `domain:cooking`, or `workflow:releases` that tag every memory with its context of origin. Memories form inside a scope and are preferentially recalled inside that scope — the analogue of *pattern separation*, which keeps similar-but-distinct experiences from interfering with each other. A decision made in one project won't contaminate recall in another.
-
-Context boundaries are soft, not hard walls. A memory that proves useful across many different scopes and scope kinds earns progressively broader visibility — but the bar is deliberate. The system requires evidence across separate sessions, not just repeated recall within one, so ephemeral patterns don't leak. Four stages govern this: **SCOPED** (default, within origin context), **PORTABLE** (across same scope kind), **CONTEXTUAL** (across all scopes with a recall penalty), and **GLOBAL** (everywhere, no penalty). At every stage, promotion is driven by observed evidence — never by a model classifying the memory as "general."
-
----
-
-## Temporal context
-
-Human memory does not store time as a separate metadata field. Every memory carries its temporal coordinate as an intrinsic part of the trace — recalling an event recalls *when* it happened as part of the same activation pattern.
-
-Slowave encodes time the same way. Each memory carries a temporal embedding derived from its timestamp, and recall naturally favors memories whose temporal context is close to the query's anchor point. A question about "last month" activates a different temporal neighborhood than one about "right now," without any regex, date parser, or LLM call — the temporal signal lives in the same embedding space as the semantic content.
-
-The brain analogue is hippocampal time cells and the lateral entorhinal cortex, which maintain a continuous temporal context vector. Slowave approximates this with a small, deterministic temporal encoding that requires zero training and zero external dependencies.
+SQLite is the source of durable state. The dashboard and CLI expose this state for inspection; they do not rely on a hosted control plane.
 
 ---
 
-## Working memory
+## From activity to durable memory
 
-The brain does not bring all of long-term memory into awareness at once; a small, relevant subset is loaded into working memory for the task at hand. The rest stays latent — accessible but inactive.
+Session activity is first recorded as raw events. Eligible events are encoded as episodes. Offline consolidation groups related episodes into prototypes and maintains associations, salience, and searchable schema records.
 
-Slowave does the same. At recall time it assembles a compact, ranked **working-memory brief** — only the most activated, highest-confidence schemas make the cut. A maximum item count and a total token budget prevent memory from crowding out the agent's reasoning space. Near-duplicates are collapsed; weakly activated memories are left out. The full store stays outside the prompt.
+The system uses local embeddings and deterministic operations in this path. It does not ask an LLM to summarize or rewrite memory. A readable memory record is kept at the boundary so agents and people can inspect what the system returned.
 
-This is the bridge between Slowave's internal memory model and the agent's working context: selective injection, not wholesale replay.
-
----
-
-## Architectural consequences
-
-Building memory this way — on embeddings, activation, associations, and time rather than on text rewritten by a language model — produces several properties that are unusual in AI memory systems:
-
-- **Pattern completion.** A partial cue is enough. Activate one related memory, and activation spreads through associations to recover the whole — the way a fragment of a song brings back the entire memory of where you heard it.
-- **Pattern separation.** Similar-but-distinct experiences stay distinct. Scopes keep project-A decisions from contaminating project-B recall, the way the brain keeps similar episodes from collapsing into each other.
-- **Reconsolidation.** Recalling a memory reopens it. Feedback after retrieval — useful, stale, wrong — changes the memory itself. Memory is a living state, not an append-only log.
-- **Use-driven strength.** Memories that keep proving useful become easier to retrieve. Memories that sit unused gradually lose influence. Forgetting is a feature: it keeps the signal-to-noise ratio high as the store grows.
-- **Homeostatic regulation.** As associations strengthen through repeated use, the graph would densify uncontrollably — the Hebbian runaway problem. A per-source normalization keeps total connection strength bounded, pruning the weakest edges. This is the direct analogue of synaptic scaling in biological networks.
+Geometry can establish topical association, but it is not authoritative for semantic truth. Contradiction and supersession are recorded through explicit client feedback with evidence, not inferred solely from embedding similarity.
 
 ---
 
-## Architectural identity
+## Retrieval and working memory
 
-Slowave is not a vector database with a mascot. Retrieval is one mechanism among several — the system is defined by how memories earn strength through use, how related experiences consolidate into stable knowledge, and how recall itself reshapes what is remembered.
+Retrieval begins with the current task or recall query. It considers semantic relevance, scope eligibility, temporal context, salience, and bounded associations. Direct matches and associated results are distinguished in the returned data.
 
-It is an adaptive memory system: a small, local model of how a brain keeps what matters.
+The result is intentionally bounded: Slowave returns a compact working-memory set rather than an ever-growing transcript. The client chooses whether and how to use that set in its own prompt and reasoning process.
 
-For a full statement of what Slowave is and is not at the product level, see the [Boundaries](design.md#boundaries) section of the design rationale.
+### Scopes and generalization
+
+Ordinary MCP retrieval uses strict scope matching. Some schemas can earn a broader generalization stage after use across distinct scopes and sessions:
+
+| Stage | Visibility |
+|---|---|
+| Scoped | Origin scope only. |
+| Portable | Related scopes of the same kind. |
+| Contextual | Other scopes with a retrieval penalty. |
+| Global | Broad visibility after strong cross-scope evidence. |
+
+This mechanism reduces accidental context leakage during ordinary work, but it is not an authorization system. Separate sensitive projects, users, or tenants into separate stores when hard isolation is required.
+
+### Time
+
+Each stored experience has a recording time and can retain an optional source time for an earlier real-world event. Temporal context is a ranking signal, not a promise of exact natural-language date interpretation. The client can inspect source evidence when date provenance matters.
+
+---
+
+## Memory lifecycle states and human control
+
+Active memory normally participates in retrieval. Feedback can mark memory stale or record a superseding replacement, while deduplication can archive an exact duplicate. A person can suppress a memory through the CLI or dashboard; suppression is reversible and does not delete its source evidence.
+
+There is intentionally no agent-facing MCP forget tool. Forgetting is a human decision made after inspecting a specific memory, not an inference from conversation text.
+
+---
+
+## Procedures
+
+Procedures are separate from ordinary remembered claims. They are explicit records captured at commit time, including a summary, durable context, ordered steps, and caveats. Retrieval may surface a procedure that matches the current task; later feedback records its observed usefulness.
+
+A procedure is evidence from past work, not an instruction that the agent must follow. Failed attempts remain available as warnings when relevant.
+
+---
+
+## Operational boundaries
+
+Slowave is public beta software. Its APIs, configuration, and storage schema may change; migrations are not guaranteed before stable release. The local database is plaintext by default and should be protected accordingly.
+
+The architecture is inspired by episodic memory, consolidation, and associative recall. These are design analogies, not claims that Slowave is a biological simulation or that the analogy establishes retrieval quality.

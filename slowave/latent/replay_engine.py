@@ -598,13 +598,9 @@ class ReplayEngine:
             probe_eid = members[-1]
             expected_siblings = set(members[:-1])
 
-            # Dentate gyrus gate: skip prototypes whose associated schemas
-            # carry contradiction evidence or are flagged labile (is_labile).
-            # Brain analogue: the dentate gyrus pattern-separates conflicting
-            # traces rather than reinforcing them; rehearsing a contradicted
-            # schema would strengthen the wrong association.
+            # Skip prototypes whose associated schemas are flagged labile.
             schema_rows = conn.execute(
-                "SELECT s.is_labile, s.contradicting_episode_ids "
+                "SELECT s.is_labile "
                 "FROM schemas s "
                 "JOIN schema_prototype_map m ON m.schema_id = s.id "
                 "WHERE m.prototype_id = ? AND s.status = 'active' LIMIT 5",
@@ -615,15 +611,6 @@ class ReplayEngine:
                 if int(sr["is_labile"]):
                     skip_proto = True
                     break
-                try:
-                    from slowave.utils.vec import loads_json as _lj
-
-                    contra = _lj(sr["contradicting_episode_ids"])
-                    if isinstance(contra, dict) and contra.get("ids"):
-                        skip_proto = True
-                        break
-                except Exception:
-                    pass
             if skip_proto:
                 continue
             try:

@@ -20,7 +20,9 @@ from slowave.core.context import (
     MemoryCue,
     WorkingMemoryGate,
     WorkingMemoryState,
+    _distinctive_terms,
     _render,
+    _schema_terms,
     spread_relation_activation,
 )
 from slowave.core.scope import normalize_scope
@@ -475,10 +477,11 @@ class RetrievalService:
                 schema_scores[_sid] = max(schema_scores.get(_sid, -1e9), _score)
 
         schemas_all = self.schemas.get_many(schema_scores.keys())
+        distinctive_terms = _distinctive_terms(query)
 
         # Mode-gated status filter; when strict_scope, also enforce scope.
         if mode == "debug":
-            recall_statuses = ("active", "needs_review", "superseded")
+            recall_statuses = ("active", "needs_review", "stale")
         elif mode == "broad":
             recall_statuses = ("active", "needs_review")
         else:  # default, strict_scope
@@ -488,6 +491,9 @@ class RetrievalService:
 
         for s in schemas_all:
             if s.status not in recall_statuses:
+                continue
+
+            if distinctive_terms and not (distinctive_terms & _schema_terms(s)):
                 continue
 
             if not self._cross_scope_gate(
@@ -606,9 +612,10 @@ class RetrievalService:
 
         episode_dicts = []
         # Deduplication: track normalised episode texts already emitted.
-        # Always dedup against active schema texts so episodes that merely
-        # repeat an already-surfaced schema are suppressed regardless of the
-        # evidence flag.
+        # The normal response avoids repeating a schema as an episode, but a
+        # caller who requested evidence must still receive the ranked episode
+        # and its source time. Otherwise temporal selection is invisible to
+        # the public v9 contract whenever a schema has the same text.
         seen_episodes: set[str] = set()
         schema_texts = {
             _normalize_episode_text(s.content_text or "") for s in schemas if s.content_text
@@ -617,7 +624,8 @@ class RetrievalService:
         for _score, m in scored_pairs[:top_k]:
             ep = ep_by_id.get(m.id)
             raw_text = ep.content_text if ep else ""
-            dated_text = _prefix_date(raw_text, int(m.ts))
+            occurred_at = int(m.metadata.get("occurred_at", m.ts))
+            dated_text = _prefix_date(raw_text, occurred_at)
 
             # Skip if this episode content was already emitted (normalised).
             normalized = _normalize_episode_text(raw_text)
@@ -625,7 +633,7 @@ class RetrievalService:
                 continue
 
             # Skip if episode duplicates a schema already surfaced in results.
-            if normalized and normalized in schema_texts:
+            if normalized and normalized in schema_texts and not evidence:
                 continue
 
             if normalized:
@@ -637,6 +645,8 @@ class RetrievalService:
                     "content_text": dated_text,
                     "salience": float(m.salience),
                     "ts": int(m.ts),
+                    "recorded_at": int(m.ts),
+                    "occurred_at": occurred_at,
                     "schema_prior_boost": round(float(prior_boost.get(int(m.id), 0.0)), 4),
                     "schema_silence_factor": round(float(silence_factor.get(int(m.id), 1.0)), 4),
                 }
@@ -665,7 +675,14 @@ class RetrievalService:
                 except KeyError:
                     continue
                 raw_events_out.append(
-                    {"id": e.id, "ts": e.ts, "type": e.type, "content": e.content}
+                    {
+                        "id": e.id,
+                        "ts": e.ts,
+                        "recorded_at": e.ts,
+                        "occurred_at": int(e.metadata.get("occurred_at", e.ts)),
+                        "type": e.type,
+                        "content": e.content,
+                    }
                 )
 
         return RecallResult(
@@ -838,9 +855,10 @@ class RetrievalService:
                 )
             if mode == "debug":
                 add_many(
-                    self.schemas.list(
-                        limit=scoped_fetch_limit, scope_id=scope_id, status="superseded"
-                    )
+                    self.schemas.list(limit=scoped_fetch_limit, scope_id=scope_id, status="stale")
+                )
+                add_many(
+                    self.schemas.list(limit=scoped_fetch_limit, scope_id=scope_id, status="stale")
                 )
             # Stage 11: also inject generalization-promoted schemas (Stage 2/3) as candidates.
             # Stage 1 (portable) is handled inside _eligible via scope_kind match.
@@ -863,7 +881,7 @@ class RetrievalService:
         if mode in ("broad", "debug"):
             add_many(self.schemas.list(limit=global_fetch_limit, status="needs_review"))
         if mode == "debug":
-            add_many(self.schemas.list(limit=global_fetch_limit, status="superseded"))
+            add_many(self.schemas.list(limit=global_fetch_limit, status="stale"))
 
         cue_embedding = None
         if cue_text:
@@ -901,6 +919,7 @@ class RetrievalService:
             min_activation=-999.0 if mode == "debug" else 0.20,
             min_relevance=0.0 if mode == "debug" else min_relevance,
             exploration_slots=0 if not include_peripheral else GatePolicy.exploration_slots,
+            require_explicit_multi_answer=limit == 2 and not include_peripheral,
         )
         state = self.working_memory_gate.select(
             candidates_by_id.values(), cue=cue, policy=policy, cue_embedding=cue_embedding
@@ -996,7 +1015,7 @@ class RetrievalService:
                     utility_mult = 1.0 + 0.5 * utility
                     boost = 0.08 * float(qsim) * float(conf) * utility_mult
                     prior_boost[eid] = max(prior_boost.get(eid, 0.0), boost)
-                elif status in ("superseded", "contradicted"):
+                elif status == "stale":
                     age = max(0.0, float(now_ts - int(last_ts)))
                     fresh = 0.5 ** (age / silence_halflife_s)
                     damp = 0.6 * fresh * float(conf)

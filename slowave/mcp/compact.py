@@ -2,7 +2,7 @@
 
 CompactSchema provides a minimal schema serialization (~150-200 tokens vs ~500
 for full schemas) while preserving all causal information and memory IDs needed
-for downstream slowave_reinforce() calls.
+for downstream slowave_feedback() calls.
 
 This supports the "brain-like memory" design: activation-based selection,
 lossy compression, and narrative coherence without metadata bloat.
@@ -33,7 +33,7 @@ class CompactSchema:
     """Minimal schema representation for working memory (~150-200 tokens).
 
     Preserves only the causal information needed for task solving:
-    - id: For feedback correlation (slowave_reinforce)
+    - id: For feedback correlation (slowave_feedback)
     - text: The memory content (truncated to 200 chars for efficiency)
     - activation: Why this memory was selected (0.0-1.0 score)
     - reason: Activation formula breakdown (e.g. "cue_overlap=0.80,salience=0.2")
@@ -84,7 +84,7 @@ class CompactSchema:
             activation = min(1.0, max(0.0, (2.0 / math.pi) * math.atan(salience / k)))
 
         return cls(
-            id=f"sch_{schema.id}",  # Required for slowave_reinforce
+            id=f"sch_{schema.id}",  # Required for slowave_feedback
             text=_compact(schema.content_text, max_chars),
             activation=round(min(1.0, max(0.0, activation)), 2),  # Clamp to [0,1]
             reason=facets.get("display_label", "general"),

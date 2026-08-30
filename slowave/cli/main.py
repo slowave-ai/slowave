@@ -100,6 +100,36 @@ def cli(ctx: click.Context, db: str, as_json: bool) -> None:
     ctx.obj["json"] = as_json
 
 
+@cli.group("hook", hidden=True)
+def hook_group() -> None:
+    """Internal client-hook adapters."""
+
+
+@hook_group.command("codex-stop")
+def codex_stop_hook() -> None:
+    """Emit Codex's structured, loop-safe Stop-hook decision."""
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        payload = {}
+    if payload.get("stop_hook_active") is True:
+        click.echo("{}")
+        return
+    click.echo(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": (
+                    "SLOWAVE MANDATORY: assess every retrieval with slowave_feedback, "
+                    "then call slowave_commit with the actual outcome and verification before "
+                    "finishing. If commit reports incomplete_feedback, assess every listed "
+                    "target with complete coverage and retry commit."
+                ),
+            }
+        )
+    )
+
+
 @cli.group()
 def session() -> None:
     """Session lifecycle."""
@@ -107,7 +137,11 @@ def session() -> None:
 
 @session.command("start")
 @click.option("--agent", default="cline-tui")
-@click.option("--scope", default=None, help="Scope id, e.g. 'project:my-repo' or 'domain:cooking'.")
+@click.option(
+    "--scope",
+    default=None,
+    help="Scope id, e.g. 'project:my-repo' or 'domain:cooking'.",
+)
 @click.pass_context
 def session_start(ctx: click.Context, agent: str, scope: str | None) -> None:
     eng = _build_engine(ctx.obj["db"])  # no LLM needed at start
@@ -152,8 +186,21 @@ def session_end(ctx: click.Context, session_id: str, consolidate: bool) -> None:
     multiple=True,
     help="What you did this session (repeatable, ordered).",
 )
+@click.option("--final-goal", default=None, help="Goal confirmed or refined at commit.")
+@click.option("--outcome-summary", default=None, help="One-sentence actual result.")
+@click.option("--procedure-json", default=None, help="Structured procedure JSON object.")
+@click.option("--procedure-uses-json", default=None, help="Procedure influence JSON array.")
 @click.pass_context
-def commit_cmd(ctx: click.Context, session_id: str, outcome: str, steps: tuple[str, ...]) -> None:
+def commit_cmd(
+    ctx: click.Context,
+    session_id: str,
+    outcome: str,
+    steps: tuple[str, ...],
+    final_goal: str | None,
+    outcome_summary: str | None,
+    procedure_json: str | None,
+    procedure_uses_json: str | None,
+) -> None:
     """Close a task session and encode events into episodic memories.
 
     MCP equivalent of slowave_commit.  Pass the session_id from 'slowave activate'.
@@ -165,7 +212,16 @@ def commit_cmd(ctx: click.Context, session_id: str, outcome: str, steps: tuple[s
     """
     eng = _build_engine(ctx.obj["db"], disable_encoder=True)
     step_list = list(steps) if steps else None
-    result = ops.commit(eng, session_id=session_id, outcome=outcome, steps=step_list)
+    result = ops.commit(
+        eng,
+        session_id=session_id,
+        outcome=outcome,
+        steps=step_list,
+        final_goal=final_goal,
+        outcome_summary=outcome_summary,
+        procedure=json.loads(procedure_json) if procedure_json else None,
+        procedure_uses=json.loads(procedure_uses_json) if procedure_uses_json else None,
+    )
     _print(result, ctx.obj["json"])
     eng.close()
 
@@ -195,7 +251,11 @@ def event_append(ctx: click.Context, session_id: str, type_: str, content: str) 
 @click.option("--session", "session_id", default=None, help="Session id to attach this memory to.")
 @click.pass_context
 def remember_cmd(
-    ctx: click.Context, content: str, memory_type: str, scope: str | None, session_id: str | None
+    ctx: click.Context,
+    content: str,
+    memory_type: str,
+    scope: str | None,
+    session_id: str | None,
 ) -> None:
     """Explicitly remember a typed claim.
 
@@ -203,7 +263,11 @@ def remember_cmd(
     """
     eng = _build_engine(ctx.obj["db"])
     result = ops.remember(
-        eng, content=content, memory_type=memory_type, scope=scope, session_id=session_id
+        eng,
+        content=content,
+        memory_type=memory_type,
+        scope=scope,
+        session_id=session_id,
     )
     _print(result, ctx.obj["json"])
     eng.close()
@@ -220,16 +284,31 @@ def remember_cmd(
 )
 @click.option("--top-k", default=DEFAULT_RECALL_TOP_K, show_default=True)
 @click.option("--evidence", is_flag=True, help="Include raw event citations.")
+@click.option("--retrieval-context", default=None, help="Client-defined JSON retrieval facets.")
 @click.pass_context
 def recall_cmd(
-    ctx: click.Context, query: str, scope: str | None, mode: str, top_k: int, evidence: bool
+    ctx: click.Context,
+    query: str,
+    scope: str | None,
+    mode: str,
+    top_k: int,
+    evidence: bool,
+    retrieval_context: str | None,
 ) -> None:
     """Recall memories relevant to a query.
 
     MCP equivalent of slowave_recall.
     """
     eng = _build_engine(ctx.obj["db"])
-    payload = ops.recall(eng, query=query, scope=scope, mode=mode, top_k=top_k, evidence=evidence)
+    payload = ops.recall(
+        eng,
+        query=query,
+        scope=scope,
+        mode=mode,
+        top_k=top_k,
+        evidence=evidence,
+        retrieval_context=json.loads(retrieval_context) if retrieval_context else {},
+    )
     if ctx.obj["json"]:
         _print(payload, True)
     else:
@@ -251,9 +330,11 @@ def _sal_bar(sal: float, width: int = 8, scale: float = 80.0) -> str:
 
 
 def _status_icon(status: str) -> str:
-    return {"active": "🟢", "needs_review": "🟡", "superseded": "⚫", "contradicted": "🔴"}.get(
-        status, "⚪"
-    )
+    return {
+        "active": "🟢",
+        "needs_review": "🟡",
+        "stale": "⚫",
+    }.get(status, "⚪")
 
 
 def _format_recall_human(payload: dict[str, Any]) -> None:
@@ -329,8 +410,12 @@ def _format_recall_human(payload: dict[str, Any]) -> None:
 @click.option("--query", required=True, help="Current task description.")
 @click.option("--scope", default=None, help="Scope id, e.g. 'project:my-repo'.")
 @click.option(
-    "--goal", default=None, help="3-6 word verb-noun phrase, e.g. 'fix session reaper race'."
+    "--goal",
+    default=None,
+    help="3-6 word verb-noun phrase, e.g. 'fix session reaper race'.",
 )
+@click.option("--initial-goal", default=None, help="Preferred name for the provisional goal.")
+@click.option("--retrieval-context", default=None, help="Client-defined JSON retrieval facets.")
 @click.option("--task-type", default=None, help="Category, e.g. 'coding' or 'debugging'.")
 @click.option("--situation", default=None, help="JSON object with situational metadata.")
 @click.option("--requirement", "requirements", multiple=True, help="Requirement cue; repeatable.")
@@ -349,6 +434,8 @@ def activate_cmd(
     query: str,
     scope: str | None,
     goal: str | None,
+    initial_goal: str | None,
+    retrieval_context: str | None,
     task_type: str | None,
     situation: str | None,
     requirements: tuple[str, ...],
@@ -364,11 +451,14 @@ def activate_cmd(
     """
     eng = _build_engine(ctx.obj["db"])
     situation_obj = json.loads(situation) if situation else {}
+    retrieval_context_obj = json.loads(retrieval_context) if retrieval_context else {}
     result = ops.activate(
         eng,
         query=query,
         scope=scope,
         goal=goal,
+        initial_goal=initial_goal,
+        retrieval_context=retrieval_context_obj,
         task_type=task_type,
         situation=situation_obj,
         requirements=list(requirements),
@@ -387,7 +477,9 @@ def activate_cmd(
 
 @cli.command("context")
 @click.option(
-    "--scope", default=None, help="Generic scope id, e.g. project:slowave or domain:cooking."
+    "--scope",
+    default=None,
+    help="Generic scope id, e.g. project:slowave or domain:cooking.",
 )
 @click.option(
     "--session",
@@ -398,7 +490,9 @@ def activate_cmd(
 @click.option("--query", default=None, help="Current task/chat cue for relevance gating.")
 @click.option("--goal", default=None, help="Goal-oriented cue for context/procedure recall.")
 @click.option(
-    "--task-type", default=None, help="Broad activity type, e.g. writing/planning/debugging."
+    "--task-type",
+    default=None,
+    help="Broad activity type, e.g. writing/planning/debugging.",
 )
 @click.option("--situation", default=None, help="JSON object with situational metadata.")
 @click.option(
@@ -864,7 +958,7 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     renderer.section("Schema Graph")
     renderer.item("Total", f"{s['total']:,}")
     renderer.item("Status", ", ".join(f"{k}={v}" for k, v in s["status"].items()))
-    renderer.item("Superseded", f"{s['superseded_pct']}%")
+    renderer.item("Stale", f"{s['stale_pct']}%")
     renderer.item(
         "Relations",
         f"{s['total_relations']} edges: "
@@ -883,7 +977,7 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     )
     cd = s.get("cosine_distribution")
     if cd:
-        renderer.item("Cosine distribution", f"N/A (numpy not available)" if cd is None else "")
+        renderer.item("Cosine distribution", "N/A (numpy not available)" if cd is None else "")
         renderer.item(
             "  Summary",
             f"mean={cd['mean']}, median={cd['median']}, std={cd['std']}, "
@@ -915,7 +1009,8 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
 
     renderer.section("Prototype Graph")
     renderer.item(
-        "Total", f"{p['total']:,} " + ", ".join(f"{k}={v}" for k, v in p["scales"].items())
+        "Total",
+        f"{p['total']:,} " + ", ".join(f"{k}={v}" for k, v in p["scales"].items()),
     )
     renderer.item("Edges", f"{p['edge_count']} (density={p['density_pct']}%)")
     ec = p["edge_composition"]
@@ -929,15 +1024,17 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     if "error" not in d:
         renderer.item(
             "Intra/Inter distances",
-            f"fine={d['fine_intra']}, coarse={d['coarse_intra']}, " f"inter={d['inter']}",
+            f"fine={d['fine_intra']}, coarse={d['coarse_intra']}, inter={d['inter']}",
         )
     renderer.item(
-        "Updated 24h / 7d", f"{p['age']['pct_updated_24h']}% / {p['age']['pct_updated_7d']}%"
+        "Updated 24h / 7d",
+        f"{p['age']['pct_updated_24h']}% / {p['age']['pct_updated_7d']}%",
     )
     renderer.item("Zero-variance fine", f"{p['zero_variance_fine_pct']}%")
     sm = p["schema_mapping"]
     renderer.item(
-        "Multi-prototype schemas", f"{sm['multi_prototype_schemas']} ({sm['multi_prototype_pct']}%)"
+        "Multi-prototype schemas",
+        f"{sm['multi_prototype_schemas']} ({sm['multi_prototype_pct']}%)",
     )
 
     renderer.section("Episode Graph")
@@ -954,7 +1051,7 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     renderer.item("Sessions", f"{sess['total']} ({sess['open']} open)")
     renderer.item(
         "Worker runs",
-        f"{wr['total']}, avg={wr['avg_duration_ms']}ms, " f"max={wr['max_duration_ms']}ms",
+        f"{wr['total']}, avg={wr['avg_duration_ms']}ms, max={wr['max_duration_ms']}ms",
     )
     renderer.item("Schemas decayed", f"{wr['schemas_decayed']}")
     renderer.item("Schema density", f"{x['schema_graph_density_pct']}%")
@@ -1068,7 +1165,15 @@ def _slowave_processes_windows() -> list[dict[str, Any]]:
             rss_kb = int(proc.get("WorkingSetSize", 0)) // 1024
         except (TypeError, ValueError):
             pid = ppid = rss_kb = 0
-        rows.append({"pid": pid, "ppid": ppid, "stat": "running", "rss_kb": rss_kb, "command": cmd})
+        rows.append(
+            {
+                "pid": pid,
+                "ppid": ppid,
+                "stat": "running",
+                "rss_kb": rss_kb,
+                "command": cmd,
+            }
+        )
     return rows
 
 
@@ -1207,6 +1312,8 @@ def _feedback_health(db_path: str) -> dict[str, Any]:
             "memory_feedback",
             "retrieval_feedback",
             "turn_feedbacks",
+            "context_feedback_events",
+            "feedback_events",
         ):
             if not _has_table(cur, table):
                 continue
@@ -1302,6 +1409,11 @@ def _session_lifecycle_health(db_path: str) -> dict[str, Any]:
                 result["sessions_committed"] = max(
                     result["sessions_committed"],
                     _count(cur, f"SELECT COUNT(*) FROM {table} WHERE ended_at IS NOT NULL"),
+                )
+            elif "ended_ts" in cols:
+                result["sessions_committed"] = max(
+                    result["sessions_committed"],
+                    _count(cur, f"SELECT COUNT(*) FROM {table} WHERE ended_ts IS NOT NULL"),
                 )
             elif "closed_at" in cols:
                 result["sessions_committed"] = max(
@@ -1473,7 +1585,6 @@ def status_cmd(ctx: click.Context) -> None:
         "worker_health": _worker_health(),
         "session_lifecycle_health": _session_lifecycle_health(db),
         "feedback_health": _feedback_health(db),
-        "lifecycle_version_health": _lifecycle_version_health(db),
     }
     eng.close()
     if ctx.obj["json"]:
@@ -1497,7 +1608,7 @@ def status_cmd(ctx: click.Context) -> None:
         )
 
     wh = payload["worker_health"]
-    click.echo("Worker health: " f"detected={wh['process_detected']} count={wh['process_count']}")
+    click.echo(f"Worker health: detected={wh['process_detected']} count={wh['process_count']}")
     sh = payload["session_lifecycle_health"]
     click.echo(
         "Session lifecycle health: "
@@ -1510,14 +1621,6 @@ def status_cmd(ctx: click.Context) -> None:
         f"remember={fh['remember_calls']} "
         f"feedback_or_reinforcement={fh['feedback_or_reinforcement_calls']}"
     )
-    lvh = payload["lifecycle_version_health"]
-    click.echo(f"Lifecycle version telemetry (current={lvh['current_version']}):")
-    for version, counts in lvh.get("by_version", {}).items():
-        click.echo(
-            f"  {version}: activate={counts['activate_calls']} recall={counts['recall_calls']} "
-            f"feedback={counts['feedback_calls']} "
-            f"recall/activate={counts['recall_activate_ratio']}"
-        )
 
 
 @cli.command("dashboard")
@@ -1530,6 +1633,14 @@ def status_cmd(ctx: click.Context) -> None:
     show_default=True,
     help="Enable the Forget/Unforget buttons. Disable for a strictly read-only dashboard.",
 )
+@click.option(
+    "--experimental/--no-experimental",
+    "experimental_dashboard",
+    default=False,
+    envvar="SLOWAVE_DASHBOARD_EXPERIMENTAL",
+    show_default=True,
+    help="Show unsupported exploratory metrics in the Labs tab.",
+)
 @click.option("--no-open", is_flag=True, help="Do not open the browser automatically.")
 @click.pass_context
 def dashboard_cmd(
@@ -1538,6 +1649,7 @@ def dashboard_cmd(
     port: int,
     refresh_ms: int,
     allow_actions: bool,
+    experimental_dashboard: bool,
     no_open: bool,
 ) -> None:
     """Run the local Slowave web dashboard."""
@@ -1549,8 +1661,47 @@ def dashboard_cmd(
         port=port,
         refresh_ms=refresh_ms,
         allow_actions=allow_actions,
+        experimental_dashboard=experimental_dashboard,
         open_browser=not no_open,
     )
+
+
+@cli.command("procedures-audit")
+@click.option("--output", type=click.Path(dir_okay=False, writable=True), required=True)
+@click.option("--min-sessions", default=3, show_default=True, type=click.IntRange(2, 20))
+@click.option("--limit", "max_clusters", default=20, show_default=True, type=click.IntRange(1, 50))
+@click.option("--scope", default=None, help="Restrict candidates to one scope.")
+@click.pass_context
+def procedures_audit_cmd(
+    ctx: click.Context,
+    output: str,
+    min_sessions: int,
+    max_clusters: int,
+    scope: str | None,
+) -> None:
+    """Export read-only procedure candidates for human labelling.
+
+    The export contains clusters of step traces, not stored procedural memories.
+    It does not write to the Slowave database.
+    """
+    from slowave.procedural_audit import build_audit_export
+
+    document = build_audit_export(
+        ctx.obj["db"], min_sessions=min_sessions, max_clusters=max_clusters, scope=scope
+    )
+    output_path = os.path.abspath(os.path.expanduser(output))
+    _ensure_db_dir(output_path)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(document, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    result = {
+        "output": output_path,
+        "clusters": len(document["clusters"]),
+        "step_sessions": document["step_sessions"],
+        "gate": document["gate"],
+        "procedure_memory_status": document["procedure_memory_status"],
+    }
+    _print(result, ctx.obj["json"])
 
 
 @cli.command("dedup-schemas")
@@ -1775,11 +1926,9 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         worker = _worker_health()
         session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
         feedback = _feedback_health(ctx.obj["db"])
-        lifecycle_version = _lifecycle_version_health(ctx.obj["db"])
         result["worker_health"] = worker
         result["session_lifecycle_health"] = session_lifecycle
         result["feedback_health"] = feedback
-        result["lifecycle_version_health"] = lifecycle_version
 
         # Client checks
         clients = get_client_statuses()
@@ -1789,7 +1938,6 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             ("WORKER_HEALTH", worker),
             ("SESSION_LIFECYCLE_HEALTH", session_lifecycle),
             ("FEEDBACK_HEALTH", feedback),
-            ("LIFECYCLE_VERSION_HEALTH", lifecycle_version),
         ):
             for warning in health.get("warnings", []):
                 warnings.append(
@@ -1858,7 +2006,6 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         worker = _worker_health()
         session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
         feedback = _feedback_health(ctx.obj["db"])
-        lifecycle_version = _lifecycle_version_health(ctx.obj["db"])
 
         renderer.section("Worker Health")
         renderer.item("Worker process detected", str(worker.get("process_detected", False)))
@@ -1867,7 +2014,8 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         renderer.section("Session Lifecycle Health")
         renderer.item("Sessions started", f"{session_lifecycle.get('sessions_started', 0):,}")
         renderer.item(
-            "Sessions ended/committed", f"{session_lifecycle.get('sessions_committed', 0):,}"
+            "Sessions ended/committed",
+            f"{session_lifecycle.get('sessions_committed', 0):,}",
         )
 
         renderer.section("Feedback Health")
@@ -1882,19 +2030,6 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             "Last feedback",
             "never" if age is None else f"{age:g} day(s) ago",
         )
-
-        renderer.section("Lifecycle Version Telemetry")
-        renderer.item("Current contract version", str(lifecycle_version.get("current_version")))
-        by_version = lifecycle_version.get("by_version", {})
-        if not by_version:
-            renderer.item("Activity by version", "none recorded yet")
-        for version, counts in by_version.items():
-            renderer.item(
-                version,
-                f"activate={counts['activate_calls']} recall={counts['recall_calls']} "
-                f"feedback={counts['feedback_calls']} "
-                f"recall/activate={counts['recall_activate_ratio']} (diagnostic, not a target)",
-            )
 
         # Client checks
         renderer.section("Clients")
@@ -1913,7 +2048,6 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             ("Worker", worker),
             ("Session lifecycle", session_lifecycle),
             ("Feedback", feedback),
-            ("Lifecycle version", lifecycle_version),
         ):
             for warning in health.get("warnings", []):
                 operational_warnings.append((label, str(warning)))
@@ -1938,7 +2072,8 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             for name, detail in warnings_list:
                 if "custom instructions" in detail.lower():
                     renderer.warning(
-                        f"{name}: {detail}", "Run: slowave setup --dry-run, then slowave setup"
+                        f"{name}: {detail}",
+                        "Run: slowave setup --dry-run, then slowave setup",
                     )
                 else:
                     renderer.warning(f"{name}: {detail}")
@@ -2086,7 +2221,9 @@ def uninstall_cmd(dry_run: bool) -> None:
             plist = _home() / "Library/LaunchAgents/com.slowave.worker.plist"
             if plist.exists():
                 subprocess.run(
-                    ["launchctl", "unload", str(plist)], capture_output=True, check=False
+                    ["launchctl", "unload", str(plist)],
+                    capture_output=True,
+                    check=False,
                 )
                 plist.unlink()
                 changes.append("launchd worker")

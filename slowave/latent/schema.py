@@ -24,10 +24,9 @@ the latent state, not the substrate of it. If we later add Stage 11
 a nicer sentence; until then, the central member's text is what the
 schema "says".
 
-Contradiction detection (Stage 6b) is also implemented here as a
-pure geometric operation: two schemas conflict when their centroids
-are close (same topic) but a measurable facet axis differs and the
-newer one has higher confidence.
+Geometry is used only for non-authoritative topical association. Semantic
+truth, contradiction, and supersession are decided by explicit client
+feedback outside this module.
 """
 
 from __future__ import annotations
@@ -98,18 +97,11 @@ class LatentSchema:
 
 @dataclass(frozen=True)
 class GeometricVerdict:
-    """Result of a geometric contradiction comparison.
-
-    Mirrors the shape of ``ContradictionJudge.judge``'s ``JudgeResult``
-    so the Consolidator can route either backend through the same code
-    path.
-    """
+    """Result of a non-authoritative topical-relation comparison."""
 
     verdict: str  # 'unrelated' | 'relates_to'
     reasoning: str
     similarity: float
-    facet_distance: float
-    time_delta_s: int
 
 
 # ---------------------------------------------------------------------------
@@ -466,27 +458,15 @@ class LatentSchemaBuilder:
         )
 
 
-# ---- Geometric contradiction judge --------------------------------------
+# ---- Geometric topical-relation judge -----------------------------------
 
 
 @dataclass(frozen=True)
-class GeometricJudgeConfig:
+class GeometricRelationConfig:
     # Centroid cosine similarity required for two schemas to be
     # "about the same thing" (the only floor below which no verdict
     # beyond "unrelated" is meaningful).
     same_topic_cosine: float = 0.75
-    # Facet-axis distance above which two same-topic schemas are judged
-    # to diverge enough in their facet structure to be worth noting,
-    # though the verdict remains the honest catch-all.
-    # Computed as 1 - mean(|cos(axis_old, axis_new)|).
-    contradicts_facet_dist: float = 0.35
-    # New schema must have at least this much support to supersede
-    # an older one.
-    min_support_to_supersede: int = 2
-    # Minimum time (seconds) between old and new schema for the newer
-    # one to supersede. Prevents rapid toggling where two schemas
-    # contradict each other within a very short window.
-    min_time_delta_to_supersede_s: float = 3600.0  # 1 hour
     # Cosine above which Consolidator._write_latent_schema's near-duplicate
     # guard reinforces the closest active schema instead of ever reaching
     # this judge. Set >= 1.0 to disable the guard (every candidate reaches
@@ -497,47 +477,19 @@ class GeometricJudgeConfig:
     related_schema_cosine: float = 0.72
 
 
-class GeometricContradictionJudge:
-    """Latent-space relation detector.
+class GeometricRelationJudge:
+    """Non-authoritative latent-space topical relation detector.
 
     Emits exactly two verdicts: 'unrelated' (below the same-topic cosine
-    floor) or 'relates_to' (cleared it). This is the end state of two
-    rounds of cutting geometric discriminants that didn't hold up on real
-    data, not the original design:
-
-      * 2026-07-22: 'supersedes' and 'refines' removed. Both depended on
-        direction_score, a single global SVD1 "value substitution" axis
-        fit from a small synthetic seed set. Independent measurement in
-        the sibling semantic-relations repo found it carried no
-        separating signal on real held-out pairs, and got WORSE (not
-        better) when refit on more real data -- evidence against the
-        mechanism itself, not against that seed set. Supersession (status
-        changes) is now gated on metadata (support count + time delta) at
-        the consolidation call site instead.
-      * 2026-07-23: 'part_of' removed. Its asymmetric-subspace-containment
-        signal was structurally biased toward calling broad/generic
-        schemas "containers" (their facet axes span more variance, so more
-        things geometrically "fit inside" them regardless of real
-        hierarchy) -- a hand-labeled audit of production edges found ~11%
-        precision. It also carried no differential weight at retrieval
-        time vs relates_to, so even a fixed detector wouldn't have changed
-        behavior without also building consumption logic that never
-        existed. See
-        private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md.
-
-    Cosine alone cannot reliably distinguish value-substitution, elaboration,
-    restatement, or specialization within a same-topic pair -- that's the
-    throughline across both removals, not two unrelated incidents. If a
-    genuinely reliable geometric discriminant is found later, add it back
-    deliberately with its own validated evidence, not by reviving either of
-    these.
+    floor) or 'relates_to' (cleared it). The result may create an inspectable
+    association edge; it cannot change either schema's lifecycle state.
     """
 
     def __init__(
         self,
-        cfg: Optional[GeometricJudgeConfig] = None,
+        cfg: Optional[GeometricRelationConfig] = None,
     ):
-        self.cfg = cfg or GeometricJudgeConfig()
+        self.cfg = cfg or GeometricRelationConfig()
 
     def judge(self, *, old: LatentSchema, new: LatentSchema) -> GeometricVerdict:
         # Centroid similarity -- the ONLY topical gate. Below this floor the
@@ -548,15 +500,7 @@ class GeometricContradictionJudge:
         denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12
         cos = float(a @ b / denom)
 
-        # Time delta (always present, even if mean_ts==0)
-        dt_s = int(new.mean_ts - old.mean_ts)
-
-        def _emit(
-            verdict: str,
-            *,
-            facet_distance: float | None = None,
-            has_facet_signal: bool | None = None,
-        ) -> None:
+        def _emit(verdict: str) -> None:
             emit_judge_signal(
                 {
                     "code_path": "consolidation_judge",
@@ -565,8 +509,6 @@ class GeometricContradictionJudge:
                     "old_text": old.central_episode_text[:200],
                     "new_text": new.central_episode_text[:200],
                     "cos": cos,
-                    "facet_distance": facet_distance,
-                    "has_facet_signal": has_facet_signal,
                     "verdict": verdict,
                 }
             )
@@ -577,44 +519,11 @@ class GeometricContradictionJudge:
                 verdict="unrelated",
                 reasoning=f"centroid_cos={cos:.3f}<same_topic",
                 similarity=cos,
-                facet_distance=0.0,
-                time_delta_s=dt_s,
             )
 
-        # Facet-axis distance = 1 - mean(|cos(axis_old_i, axis_new_i)|) over
-        # the min(k_old, k_new) pairs. Bounded in [0, 1]. `has_facet_signal`
-        # tracks whether that pairwise comparison actually happened -- with
-        # no axes on one or both sides there is nothing to compare, and
-        # facet_dist=0.0 in that case means "no data", not "these two
-        # confirm each other". Diagnostic only (logged into the reason
-        # string and the judge_debug signal below) -- does not gate the
-        # verdict; see the class docstring for why.
-        has_facet_signal = old.facet_axes.size > 0 and new.facet_axes.size > 0
-        if has_facet_signal:
-            k = min(old.facet_axes.shape[0], new.facet_axes.shape[0])
-            pair_cos = []
-            for i in range(k):
-                pa = old.facet_axes[i]
-                pb = new.facet_axes[i]
-                pdenom = (np.linalg.norm(pa) * np.linalg.norm(pb)) + 1e-12
-                pair_cos.append(abs(float(pa @ pb / pdenom)))
-            facet_dist = 1.0 - float(np.mean(pair_cos)) if pair_cos else 0.0
-        else:
-            facet_dist = 0.0
-
-        # Same-topic: the honest verdict is relates_to. Cosine alone cannot
-        # distinguish value-substitution, elaboration, restatement, or
-        # specialization within a same-topic pair -- see the class
-        # docstring for the two rounds of geometric discriminants (facet
-        # divergence/direction_score, then subspace containment) that were
-        # tried and removed for exactly this reason. Supersession (status
-        # changes) is gated on metadata (support count + time delta) at the
-        # consolidation call site, not on a geometric classifier.
-        _emit("relates_to", facet_distance=facet_dist, has_facet_signal=has_facet_signal)
+        _emit("relates_to")
         return GeometricVerdict(
             verdict="relates_to",
-            reasoning=f"centroid_cos={cos:.3f} facet_dist={facet_dist:.3f}",
+            reasoning=f"centroid_cos={cos:.3f}",
             similarity=cos,
-            facet_distance=facet_dist,
-            time_delta_s=dt_s,
         )

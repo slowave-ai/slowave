@@ -43,8 +43,8 @@ def test_remember_result_is_backward_compatible_int(eng):
     assert result.event_id > 0
     assert result.schema_id > 0
     assert result.created_schema is not None
+    assert result.disposition == "created"
     assert result.created_schema.id == result.schema_id
-    assert isinstance(result.superseded_schema_ids, list)
 
 
 def test_remember_result_serializes_as_int_for_existing_payloads(eng):
@@ -64,5 +64,15 @@ def test_remember_result_as_dict_is_json_friendly(eng):
     assert result.as_dict() == {
         "event_id": result.event_id,
         "schema_id": result.schema_id,
-        "superseded_schema_ids": result.superseded_schema_ids,
+        "disposition": result.disposition,
     }
+
+
+def test_exact_duplicate_reports_matched_without_claiming_creation(eng):
+    first = eng.remember(content="Use stable identifiers.", type="decision")
+    second = eng.remember(content="Use stable identifiers.", type="decision")
+
+    assert first.disposition == "created"
+    assert second.disposition == "matched"
+    assert second.schema_id == first.schema_id
+    assert second.created_schema is None

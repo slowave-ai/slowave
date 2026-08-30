@@ -15,7 +15,7 @@ score/is_labile demotion (only the direct signal-driven salience/
 confidence/status mutations), and feedback (useful/partially_useful) clearing
 a flagged schema's is_labile.
 
-Recurrence-clears-lability and Consolidator.reconsolidate_labile_schemas()
+Recurrence-clears-lability
 have their own dedicated file: tests/unit/test_labile_lifecycle.py.
 
 Three FeedbackConfig fields that used to have dedicated "confirmed dead"
@@ -87,48 +87,15 @@ def _feedback(
     )
 
 
-class TestBooleanNeedsReviewDoesNotExcludeFromDefaultRetrieval:
-    """is_labile=1 (boolean) is a soft ranking penalty, not a hard filter.
-
-    Only status != "active" hard-excludes a schema from eng.context() /
-    default-mode recall. Boolean is_labile, set by the noise-score
-    demotion rule, never touches status.
-    """
-
-    def test_noise_demoted_schema_still_returned(self) -> None:
-        eng, path = _engine()
-        try:
-            demoted = _schema(eng, "repeatedly irrelevant schema", 1)
-            control = _schema(eng, "never-marked control schema", 2)
-            for i in range(4):
-                _feedback(
-                    eng,
-                    demoted,
-                    "irrelevant",
-                    outcome="success",
-                    scope_id="eval:test",
-                    seq=i,
-                    irrelevant=True,
-                )
-            s = eng.schemas.get(demoted)
-            assert s.is_labile is True
-            assert s.status == "active"
-            assert s.facets.get("context_noise_score", 0.0) > 0.0
-
-            visible_ids = {sch.id for sch in eng.context(limit=100)}
-            assert demoted in visible_ids
-            assert control in visible_ids
-        finally:
-            eng.close()
-            _cleanup(path)
-
+class TestSemanticReviewGating:
     def test_wrong_plus_failure_escalates_status_and_excludes(self) -> None:
         eng, path = _engine()
         try:
             sid = _schema(eng, "wrong and failed schema", 3)
             _feedback(eng, sid, "wrong", outcome="failure", scope_id="eval:test", seq=0, wrong=True)
             s = eng.schemas.get(sid)
-            assert s.status == "needs_review"
+            assert s.status == "stale"
+            assert s.stale_reason == "contradicted"
 
             visible_ids = {sch.id for sch in eng.context(limit=100)}
             assert sid not in visible_ids
@@ -136,137 +103,18 @@ class TestBooleanNeedsReviewDoesNotExcludeFromDefaultRetrieval:
             eng.close()
             _cleanup(path)
 
-    def test_wrong_without_failure_outcome_does_not_escalate_status(self) -> None:
+    def test_wrong_without_failure_outcome_still_retires_truth(self) -> None:
         eng, path = _engine()
         try:
             sid = _schema(eng, "wrong but not failed schema", 4)
             _feedback(eng, sid, "wrong", outcome="success", scope_id="eval:test", seq=0, wrong=True)
             s = eng.schemas.get(sid)
-            assert s.status == "active"
-            assert s.is_labile is True
+            assert s.status == "stale"
+            assert s.stale_reason == "contradicted"
+            assert s.is_labile is False
 
             visible_ids = {sch.id for sch in eng.context(limit=100)}
-            assert sid in visible_ids
-        finally:
-            eng.close()
-            _cleanup(path)
-
-
-class TestContextNoiseScoreDoesNotRequireScopeId:
-    """Fixed 2026-07-10: the noise-counting query used to filter
-    WHERE scope_id IS NOT NULL, silently excluding scope-less feedback from
-    context_noise_score / the is_labile demotion rule, with no warning.
-    That filter was removed — noise tracking now works identically whether
-    or not a scope is present (see core/08-feedback.md Invariant 10 and
-    outcomes/08-feedback.md's "Follow-up (2026-07-10)" section)."""
-
-    def test_no_scope_id_still_tracks_noise(self) -> None:
-        eng, path = _engine()
-        try:
-            sid = _schema(eng, "no scope schema", 5)
-            for i in range(4):
-                _feedback(
-                    eng, sid, "irrelevant", outcome="success", scope_id=None, seq=i, irrelevant=True
-                )
-            s = eng.schemas.get(sid)
-            assert s.facets.get("context_noise_score", 0.0) == 0.8
-            assert s.is_labile is True
-        finally:
-            eng.close()
-            _cleanup(path)
-
-    def test_same_scenario_with_scope_id_tracks_noise(self) -> None:
-        eng, path = _engine()
-        try:
-            sid = _schema(eng, "scoped schema", 6)
-            for i in range(4):
-                _feedback(
-                    eng,
-                    sid,
-                    "irrelevant",
-                    outcome="success",
-                    scope_id="eval:test",
-                    seq=i,
-                    irrelevant=True,
-                )
-            s = eng.schemas.get(sid)
-            assert s.facets.get("context_noise_score", 0.0) == 0.8
-            assert s.is_labile is True
-        finally:
-            eng.close()
-            _cleanup(path)
-
-
-class TestContextNoiseByScopeIsolation:
-    """WP-7 (20260728_retrieval_quality_execution_progress.md): 'irrelevant'
-    feedback repeated in one scope must not degrade retrieval of the same
-    schema in a different, unrelated scope.
-
-    Scope choice made deliberately narrow ("option 1" of two discussed
-    approaches): only the retrieval-time ranking read in
-    WorkingMemoryGate._activation() (context.py) was scoped, via a new
-    per-scope `context_noise_by_scope` facet computed alongside the existing
-    global `context_noise_score`. The other two schema-global mechanisms
-    driven by the same feedback -- the `is_labile` 3-strikes demotion in
-    `_update_utility_scores` (which also imposes an unconditional 0.20x
-    score multiplier in recall(), see services/retrieval.py, and a 5x
-    discount in pattern_completion.py) and the `irrelevant_salience_delta`
-    mutation applied to the schema's global `salience` column in
-    FeedbackService.retrieval_feedback() -- were deliberately left
-    unchanged. A schema hammered with 'irrelevant' marks in one scope still
-    accumulates is_labile and a lower global salience exactly as before this
-    WP; only the additive context_noise_by_scope ranking penalty is scoped.
-    This test locks in that narrower scope so a future WP consciously
-    chooses to extend (or not extend) scoping to those two mechanisms,
-    rather than the boundary drifting silently.
-    """
-
-    def test_irrelevant_in_one_scope_does_not_raise_noise_for_another(self) -> None:
-        eng, path = _engine()
-        try:
-            sid = _schema(eng, "cross-scope isolation schema", 21)
-            for i in range(3):
-                _feedback(
-                    eng,
-                    sid,
-                    "irrelevant",
-                    outcome="success",
-                    scope_id="project:alpha",
-                    seq=i,
-                    irrelevant=True,
-                )
-            s = eng.schemas.get(sid)
-            by_scope = s.facets.get("context_noise_by_scope", {})
-            assert by_scope.get("project:alpha", 0.0) > 0.0
-            # No feedback was ever recorded under project:beta -- it must not
-            # inherit a nonzero noise ratio from project:alpha's rejections.
-            assert by_scope.get("project:beta", 0.0) == 0.0
-        finally:
-            eng.close()
-            _cleanup(path)
-
-    def test_global_mechanisms_remain_unscoped_by_design(self) -> None:
-        """Documents the deliberate limitation: is_labile and schema.salience
-        still degrade globally from single-scope irrelevant feedback. See
-        class docstring -- this is "option 1", not a full fix."""
-        eng, path = _engine()
-        try:
-            sid = _schema(eng, "still globally demoted schema", 22)
-            before_salience = eng.schemas.get(sid).salience
-            for i in range(3):
-                _feedback(
-                    eng,
-                    sid,
-                    "irrelevant",
-                    outcome="success",
-                    scope_id="project:alpha",
-                    seq=i,
-                    irrelevant=True,
-                )
-            s = eng.schemas.get(sid)
-            assert s.is_labile is True  # still fires from single-scope evidence
-            assert s.salience < before_salience  # still a global salience cut
-            assert s.facets.get("context_noise_score", 0.0) > 0.0  # global aggregate unchanged
+            assert sid not in visible_ids
         finally:
             eng.close()
             _cleanup(path)
@@ -383,17 +231,7 @@ class TestApplyLearningFlagsGateExactlyTheirLabelSubset:
             eng.close()
             _cleanup(path)
 
-    def test_apply_learning_false_does_not_disable_noise_score_demotion(self) -> None:
-        """Discovered 2026-07-10 while building scripts/feedback_ablation.py
-        into a scored benchmark: retrieval_feedback() persists the
-        context_feedback_events row and calls schemas.refresh_utility()
-        UNCONDITIONALLY, outside the `if self.cfg.apply_learning:` block
-        (services/feedback.py). refresh_utility() recomputes
-        context_noise_score directly from persisted events and can still set
-        the boolean is_labile flag — so "the master learning gate" does
-        NOT gate this specific derived mechanism, only the direct
-        salience/confidence/status mutations. Requires scope_id (see
-        TestContextNoiseScoreRequiresScopeId) to be visible at all."""
+    def test_apply_learning_false_preserves_semantic_state_for_irrelevant(self) -> None:
         eng, path = _engine(apply_learning=False)
         try:
             sid = _schema(eng, "master gate scoped schema", 20)
@@ -411,9 +249,7 @@ class TestApplyLearningFlagsGateExactlyTheirLabelSubset:
             # Direct mutation IS gated: salience/confidence never moved.
             assert s.salience == 1.0
             assert s.confidence == 1.0
-            # But the noise-score/is_labile demotion still fired.
-            assert s.facets.get("context_noise_score", 0.0) > 0.0
-            assert s.is_labile is True
+            assert s.is_labile is False
         finally:
             eng.close()
             _cleanup(path)
@@ -428,7 +264,7 @@ class TestApplyLearningFlagsGateExactlyTheirLabelSubset:
             _feedback(eng, useful_sid, "useful", outcome="success", seq=0, used=True)
             _feedback(eng, irr_sid, "irrelevant", outcome="success", seq=1, irrelevant=True)
             assert eng.schemas.get(useful_sid).salience == u_before
-            assert eng.schemas.get(irr_sid).salience < i_before
+            assert eng.schemas.get(irr_sid).salience == i_before
         finally:
             eng.close()
             _cleanup(path)
@@ -506,49 +342,18 @@ class TestFeedbackClearsLability:
         try:
             sid = _schema(eng, "flagged then irrelevant schema", 26)
             eng.schemas.adjust_feedback_state(sid, is_labile=True)
-            _feedback(eng, sid, "irrelevant", outcome="success", seq=0, irrelevant=True)
-            assert eng.schemas.get(sid).is_labile is True
-        finally:
-            eng.close()
-            _cleanup(path)
-
-    def test_useful_clears_is_labile_flagged_via_real_negative_history(self) -> None:
-        """Regression (found by tests/acceptance/test_e2e.py's Phase 4, not
-        by the tests above): flagging is_labile via adjust_feedback_state
-        directly (no context_feedback_events history) masked a real bug.
-        When the flag is instead set the organic way — 3 real `irrelevant`
-        marks via retrieval_feedback(), building actual history — a
-        subsequent `useful` mark used to get silently overridden back to
-        is_labile=1 within the *same* reinforce() call: the demote
-        recount inside _update_utility_scores ran before the current
-        `useful` event's context_feedback_events row was INSERTed, so it
-        was blind to the very event trying to clear the flag and re-set it
-        from stale history. Fixed via reinforce()'s force_clear_review."""
-        eng, path = _engine()
-        try:
-            sid = _schema(eng, "organically flagged then useful schema", 27)
-            for i in range(3):
-                _feedback(
-                    eng,
-                    sid,
-                    "irrelevant",
-                    outcome="unknown",
-                    scope_id="eval:test",
-                    seq=i,
-                    irrelevant=True,
-                )
             assert eng.schemas.get(sid).is_labile is True
 
             _feedback(
                 eng,
                 sid,
-                "useful",
+                "irrelevant",
                 outcome="success",
                 scope_id="eval:test",
                 seq=99,
-                used=True,
+                irrelevant=True,
             )
-            assert eng.schemas.get(sid).is_labile is False
+            assert eng.schemas.get(sid).is_labile is True
         finally:
             eng.close()
             _cleanup(path)

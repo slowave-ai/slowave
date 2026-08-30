@@ -252,14 +252,15 @@ class TestUsefulFeedbackReinforces:
         assert abs(partial_sig.salience_delta) < abs(useful_sig.salience_delta)
 
 
-class TestIrrelevantPenalizes:
-    """Test that irrelevant feedback reduces but doesn't mark review."""
+class TestIrrelevantAccessEvidence:
+    """Irrelevant feedback is contextual access evidence, not semantic damage."""
 
-    def test_irrelevant_reduces_salience(self) -> None:
+    def test_irrelevant_preserves_semantic_state(self) -> None:
         eng, path = _tmp_engine()
         try:
             sid = _create_schema(eng, "irrelevant memory")
             s = eng.schemas.get(sid)
+            before_confidence = s.confidence
             before_salience = s.salience
             before_review = s.is_labile
             context_id = _ctx_id()
@@ -273,15 +274,15 @@ class TestIrrelevantPenalizes:
             )
 
             s = eng.schemas.get(sid)
-            assert s.salience < before_salience
-            assert s.is_labile == before_review  # doesn't change
+            assert s.confidence == before_confidence
+            assert s.salience == before_salience
+            assert s.is_labile == before_review
         finally:
             eng.close()
             _cleanup(path)
 
 
-class TestStalePenalizeAndReview:
-    """Test that stale feedback marks is_labile."""
+class TestStaleRetirement:
 
     def test_stale_marks_review(self) -> None:
         eng, path = _tmp_engine()
@@ -300,15 +301,16 @@ class TestStalePenalizeAndReview:
             )
 
             s = eng.schemas.get(sid)
-            assert s.is_labile is True
+            assert s.is_labile is False
+            assert s.status == "stale"
+            assert s.stale_reason == "superseded"
             assert s.salience < 1.0  # also reduced
         finally:
             eng.close()
             _cleanup(path)
 
 
-class TestWrongPenalizeAndReview:
-    """Test that wrong feedback marks is_labile strongly."""
+class TestWrongRetirement:
 
     def test_wrong_marks_review(self) -> None:
         eng, path = _tmp_engine()
@@ -326,7 +328,9 @@ class TestWrongPenalizeAndReview:
             )
 
             s = eng.schemas.get(sid)
-            assert s.is_labile is True
+            assert s.is_labile is False
+            assert s.status == "stale"
+            assert s.stale_reason == "contradicted"
             assert s.salience < s_before.salience
             assert s.confidence < s_before.confidence
         finally:
@@ -423,7 +427,7 @@ class TestOutcomeDoesNotAffectSchemaRewardByDefault:
 class TestMixedFeedbackPayloads:
     """Regression tests for item arrays using label-specific deltas."""
 
-    def test_useful_context_can_still_penalize_irrelevant_items(self) -> None:
+    def test_useful_context_preserves_irrelevant_item_semantics(self) -> None:
         eng, path = _tmp_engine()
         try:
             useful_sid = _create_schema(eng, "actually useful memory")
@@ -442,9 +446,9 @@ class TestMixedFeedbackPayloads:
             )
 
             assert result["applied"]["reinforced"] == [f"sch_{useful_sid}"]
-            assert result["applied"]["penalized"] == [f"sch_{irrelevant_sid}"]
+            assert result["applied"]["penalized"] == []
             assert eng.schemas.get(useful_sid).salience > useful_before.salience
-            assert eng.schemas.get(irrelevant_sid).salience < irrelevant_before.salience
+            assert eng.schemas.get(irrelevant_sid).salience == irrelevant_before.salience
         finally:
             eng.close()
             _cleanup(path)
@@ -559,8 +563,12 @@ class TestMixedFeedbackPayloads:
             assert result["applied"]["marked_review"] == [f"sch_{stale_sid}", f"sch_{wrong_sid}"]
             stale_after = eng.schemas.get(stale_sid)
             wrong_after = eng.schemas.get(wrong_sid)
-            assert stale_after.is_labile is True
-            assert wrong_after.is_labile is True
+            assert stale_after.is_labile is False
+            assert wrong_after.is_labile is False
+            assert stale_after.status == "stale"
+            assert stale_after.stale_reason == "superseded"
+            assert wrong_after.status == "stale"
+            assert wrong_after.stale_reason == "contradicted"
             assert stale_after.salience < stale_before.salience
             assert wrong_after.salience < wrong_before.salience
             assert stale_after.confidence < stale_before.confidence
@@ -602,7 +610,7 @@ class TestMixedFeedbackPayloads:
             eng.close()
             _cleanup(path)
 
-    def test_irrelevant_with_success_still_penalizes(self) -> None:
+    def test_irrelevant_with_success_preserves_semantic_state(self) -> None:
         eng, path = _tmp_engine()
         try:
             sid = _create_schema(eng, "irrelevant despite success")
@@ -620,8 +628,7 @@ class TestMixedFeedbackPayloads:
             assert result["signal"]["outcome_reward"] == 1.0
 
             s = eng.schemas.get(sid)
-            # Memory still penalized because feedback says irrelevant
-            assert s.salience < s_before.salience
+            assert s.salience == s_before.salience
         finally:
             eng.close()
             _cleanup(path)

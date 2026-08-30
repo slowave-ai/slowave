@@ -119,8 +119,47 @@ def test_get_idle_timeout_s_default():
             os.environ["SLOWAVE_SESSION_IDLE_TIMEOUT"] = old_val
 
 
+def test_reap_twice_reuses_same_engine_no_closed_db():
+    """Regression: reusing the SAME engine across reap passes must not crash.
+
+    SQLiteDB.connect() caches one connection per thread (threading.local).
+    The reaper used to call conn.close() in finally, which left the stale,
+    closed handle in the thread-local cache, so the NEXT pass reacquired the
+    closed connection and threw "Cannot operate on a closed database". The
+    fix releases via eng.db.close(), which clears the thread-local cache.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = f"{tmpdir}/test.db"
+        eng = _build_test_engine(db_path)
+
+        def build():
+            return eng  # SAME engine instance reused across passes
+
+        # Insert an old open session so timeout_s=0 reaps it. Do NOT call
+        # conn.close() here: SQLiteDB caches this per-thread connection and
+        # would hand the reaper a closed handle. The reaper owns the release.
+        conn = eng.db.connect()
+        old_ts = int(time.time()) - 3700
+        conn.execute(
+            "INSERT INTO sessions (id, agent, scope_id, scope_kind, started_ts, ended_ts) "
+            "VALUES (?, ?, ?, ?, ?, NULL)",
+            ("sess_same_eng", "test", "project:test", "project", old_ts),
+        )
+        conn.commit()
+
+        # First pass (would leave a stale closed conn in the cache under the old fix).
+        first = _reap_once(build, timeout_s=0)
+        assert "sess_same_eng" in first
+
+        # Second pass against the SAME engine/thread must NOT raise
+        # "Cannot operate on a closed database".
+        closed = _reap_once(build, timeout_s=0)
+        assert isinstance(closed, list)
+
+
 if __name__ == "__main__":
     test_reap_old_open_session()
     test_preserve_fresh_session()
     test_get_idle_timeout_s_default()
+    test_reap_twice_reuses_same_engine_no_closed_db()
     print("All tests passed!")

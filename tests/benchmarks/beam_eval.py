@@ -86,6 +86,7 @@ from slowave.latent.retrieval import RetrievalConfig
 from slowave.latent.salience import SalienceConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
 from tests.benchmarks.llm_judge import (
+    QuotaExhausted,
     call_llm,
     confirm_paid_run,
     estimate_cost_usd,

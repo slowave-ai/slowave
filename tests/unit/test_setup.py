@@ -21,11 +21,16 @@ from __future__ import annotations
 import json
 
 import pytest
+from click.testing import CliRunner
 
 from slowave.cli.setup import (
+    _CODEX_STOP_CMD,
     _MARKER_START,
+    _USER_PROMPT_CMD,
     _backup_file,
+    _build_summary,
     _detect_lifecycle_version,
+    _detected_clients,
     _inject_block,
     _lifecycle_block,
     _patch_claude_code_hooks,
@@ -40,6 +45,7 @@ from slowave.cli.setup import (
     _remove_mcp_servers_from_settings,
     _write_json,
     _write_toml,
+    setup_cmd,
 )
 from slowave.lifecycle import LIFECYCLE_VERSION
 
@@ -149,7 +155,10 @@ class TestPatchClaudeCodeHooks:
         existing = {
             "hooks": {
                 "PreToolUse": [
-                    {"matcher": "", "hooks": [{"type": "command", "command": "echo hi"}]}
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "echo hi"}],
+                    }
                 ]
             }
         }
@@ -162,7 +171,10 @@ class TestPatchClaudeCodeHooks:
         cfg = {
             "hooks": {
                 "UserPromptSubmit": [
-                    {"matcher": "", "hooks": [{"type": "command", "command": stale_cmd}]}
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": stale_cmd}],
+                    }
                 ]
             }
         }
@@ -183,9 +195,17 @@ class TestPatchClaudeCodeHooks:
         cfg = {
             "hooks": {
                 "UserPromptSubmit": [
-                    {"matcher": "", "hooks": [{"type": "command", "command": _USER_PROMPT_CMD}]}
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": _USER_PROMPT_CMD}],
+                    }
                 ],
-                "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": _STOP_CMD}]}],
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": _STOP_CMD}],
+                    }
+                ],
             }
         }
         _, changed = _patch_claude_code_hooks(cfg)
@@ -242,7 +262,11 @@ class TestPatchOpencodeMcp:
     def test_adds_server_to_empty_config(self):
         cfg, changed = _patch_opencode_mcp({})
         assert changed is True
-        assert cfg["mcp"]["slowave"] == {"type": "remote", "url": HTTP_URL, "enabled": True}
+        assert cfg["mcp"]["slowave"] == {
+            "type": "remote",
+            "url": HTTP_URL,
+            "enabled": True,
+        }
 
     def test_idempotent_when_present(self):
         cfg, _ = _patch_opencode_mcp({})
@@ -272,11 +296,15 @@ class TestPatchOpencodeInstructions:
         cfg = {"instructions": [".claude/CLAUDE.md"]}
         cfg2, changed = _patch_opencode_instructions(cfg, "/path/to/slowave-instructions.md")
         assert changed is True
-        assert cfg2["instructions"] == [".claude/CLAUDE.md", "/path/to/slowave-instructions.md"]
+        assert cfg2["instructions"] == [
+            ".claude/CLAUDE.md",
+            "/path/to/slowave-instructions.md",
+        ]
 
     def test_changed_independent_of_mcp_patch(self):
         """Regression: MCP entry already present but instructions not yet registered —
-        the instructions patch must still report changed=True so the caller persists it."""
+        the instructions patch must still report changed=True so the caller persists it.
+        """
         cfg, _ = _patch_opencode_mcp({})
         _, mcp_changed_again = _patch_opencode_mcp(cfg)
         cfg, instructions_changed = _patch_opencode_instructions(
@@ -292,6 +320,7 @@ class TestPatchCodexHooks:
         assert changed is True
         assert "UserPromptSubmit" in cfg["hooks"]
         assert "Stop" in cfg["hooks"]
+        assert cfg["hooks"]["Stop"][0]["hooks"][0]["command"] == _CODEX_STOP_CMD
 
     def test_idempotent_when_hooks_present(self):
         cfg, _ = _patch_codex_hooks({})
@@ -421,6 +450,20 @@ class TestInjectBlock:
         assert "old content" not in content
         assert _MARKER_START in content
 
+    def test_same_version_with_stale_content_is_not_up_to_date(self):
+        from slowave.cli.setup import _lifecycle_block_up_to_date
+
+        stale = (
+            "<!-- slowave-lifecycle-start v9 -->\nold content\n" "<!-- slowave-lifecycle-end v9 -->"
+        )
+        assert not _lifecycle_block_up_to_date(stale, _lifecycle_block("claude-code"))
+
+    def test_exact_current_block_is_up_to_date(self):
+        from slowave.cli.setup import _lifecycle_block_up_to_date
+
+        block = _lifecycle_block("claude-code")
+        assert _lifecycle_block_up_to_date(block, block)
+
     def test_prepends_before_existing_user_content(self, tmp_path):
         target = tmp_path / ".clinerules"
         target.write_text("# My existing rules\n", encoding="utf-8")
@@ -468,7 +511,9 @@ class TestDetectLifecycleVersion:
     def test_returns_none_when_absent(self):
         assert _detect_lifecycle_version("# just some notes, no slowave block\n") is None
 
-    def test_generated_template_markers_match_the_constant_not_a_hardcoded_literal(self):
+    def test_generated_template_markers_match_the_constant_not_a_hardcoded_literal(
+        self,
+    ):
         """Regression guard for the "verify every integration receives the
         current lifecycle version, not only the template in source" gap
         (WP-8): the start/end markers must both derive from LIFECYCLE_VERSION,
@@ -477,6 +522,57 @@ class TestDetectLifecycleVersion:
         block = _lifecycle_block("claude-code")
         assert block.count(f"-start {LIFECYCLE_VERSION} -->") == 1
         assert block.count(f"-end {LIFECYCLE_VERSION} -->") == 1
+
+    def test_generated_block_mandates_clear_procedures_and_memory_quality(self):
+        block = _lifecycle_block("claude-code")
+        assert "`procedure` is REQUIRED whenever a clear procedure was attempted" in block
+        assert "whether the outcome was success, partial, or failure" in block
+        assert "at least two causally ordered actions" in block
+        assert "writing memory for your future self" in block
+        assert "all free-form JSON fields are critical retrieval and reuse inputs" in block
+        assert (
+            "`procedure.context` must be a JSON object containing only durable client-defined facts"
+            in block
+        )
+        assert "Procedure feedback separates `use=" in block
+        assert "Use this accepted `procedure` shape" in block
+        assert '"steps":[{"summary":"..."}]' in block
+        assert "optional `version`, if sent, must be `2`" in block
+        assert (
+            "A procedure is a retrieval-oriented abstraction of the reusable method, "
+            "not a reconstruction of the completed session. Write the summary so that "
+            "a future task with the same kind of goal can retrieve it. Include only the "
+            "causally necessary steps, decision points, safety checks, ordering constraints, "
+            "and verification method. Exclude investigation history, transient execution "
+            "details, completed-session results, and information already recorded in the "
+            "outcome summary. Avoid duplication between summary, context, steps, and caveats. "
+            "Write the shortest procedure that preserves the method’s useful logic; do not "
+            "target a fixed length or require it to be independently executable. Place durable "
+            "applicability facts in `context` and conditional guidance in `caveats`; do not "
+            "add new fields."
+        ) in block
+        assert "Do NOT send `procedure.preconditions`" in block
+        assert "the current validator rejects them" in block
+        assert "`contribution` is required when used" in block
+        assert "`contribution` is required when used" in block
+
+    def test_generated_block_hardens_client_memory_responsibilities(self):
+        block = _lifecycle_block("claude-code")
+        assert "Slowave is your persistent memory layer across tasks" in block
+        assert "quality of your long-term decisions depends on" in block
+        assert "actively consulting Slowave when past experience may help" in block
+        assert "preserving durable knowledge when it emerges" in block
+        assert "Each endpoint has a distinct role" in block
+        assert '`{"ok":true,"data":...}`' in block
+        assert '`{"ok":false,"error":' in block
+        assert "target-specific evidence about retrieved memories and procedures" in block
+        assert "including incomplete or failed results" in block
+        assert "resolve the Slowave scope from the repository root" in block
+        assert "project:<repository-root-name>" in block
+        assert "reuse that exact value for every Slowave call" in block
+        assert "fall back to `project:<basename(cwd)>` and report the fallback" in block
+        assert "do not force a word count" in block
+        assert "one concise action-led statement" in _USER_PROMPT_CMD
 
 
 # ===========================================================================
@@ -586,6 +682,37 @@ def fake_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+class TestDetectedClients:
+    def test_only_detected_clients_are_selected(self, fake_home):
+        (fake_home / ".claude").mkdir()
+        (fake_home / ".cline").mkdir()
+
+        assert [spec.key for spec in _detected_clients("all")] == [
+            "claude-code",
+            "cline",
+        ]
+
+    def test_summary_contains_no_undetected_clients(self, fake_home):
+        (fake_home / ".claude").mkdir()
+        (fake_home / ".cline").mkdir()
+
+        summary = _build_summary("all", worker=False, install_hooks=True, slowave_bin="slowave")
+
+        assert {change.client for change in summary.changes} == {"Claude Code", "Cline"}
+
+    def test_setup_output_omits_undetected_clients_and_telemetry(self, fake_home):
+        (fake_home / ".claude").mkdir()
+
+        result = CliRunner().invoke(setup_cmd, ["--dry-run", "--no-worker"])
+
+        assert result.exit_code == 0, result.output
+        assert "Claude Code" in result.output
+        assert "Not installed" not in result.output
+        for client in ("Claude Desktop", "Cline", "Cursor", "Windsurf", "OpenCode", "Codex"):
+            assert client not in result.output
+        assert "Lifecycle Version Telemetry" not in result.output
+
+
 class TestCleanupRemoveLifecycleBlocks:
     def test_removes_block_from_clinerules(self, fake_home):
         target = fake_home / ".cline" / "rules" / "slowave.md"
@@ -642,7 +769,12 @@ class TestCleanupRemoveMcpConfigs:
         cfg_path = cursor_dir / "mcp.json"
         cfg_path.write_text(
             json.dumps(
-                {"mcpServers": {"slowave": {"command": "/usr/local/bin/slowave-mcp"}, "other": {}}}
+                {
+                    "mcpServers": {
+                        "slowave": {"command": "/usr/local/bin/slowave-mcp"},
+                        "other": {},
+                    }
+                }
             ),
             encoding="utf-8",
         )
@@ -741,3 +873,35 @@ class TestCleanupRemoveSetupBackups:
     def test_no_op_when_no_backups_exist(self, fake_home):
         count = _cleanup_mod._remove_setup_backups(dry_run=False)
         assert count == 0
+
+
+# ===========================================================================
+# _cline_mcp_settings_path — Cline MCP config file resolution
+# ===========================================================================
+
+
+class TestClineMcpSettingsPath:
+    """Current Cline (>= 3.0.x / platform v24) reads MCP config only from
+    ~/.cline/data/settings/cline_mcp_settings.json (resolveMcpSettingsPath()).
+    A stale legacy ~/.cline/mcp.json (written by old slowave setup) must never
+    shadow it, or Cline silently ignores the config while doctor reports
+    \"configured\"."""
+
+    def test_prefers_current_path_over_legacy_mcp_json(self, fake_home):
+        # Simulate a machine where an older setup left ~/.cline/mcp.json behind.
+        legacy = fake_home / ".cline" / "mcp.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+        # Even though the legacy file exists, current Cline reads data/settings.
+        got = _setup_mod._cline_mcp_settings_path()
+        assert got == (fake_home / ".cline" / "data" / "settings" / "cline_mcp_settings.json")
+
+    def test_defaults_to_current_path_when_no_cline_dir(self, fake_home):
+        got = _setup_mod._cline_mcp_settings_path()
+        assert got == (fake_home / ".cline" / "data" / "settings" / "cline_mcp_settings.json")
+
+    def test_targets_current_path_when_cli_dir_exists(self, fake_home):
+        (fake_home / ".cline" / "data").mkdir(parents=True, exist_ok=True)
+        got = _setup_mod._cline_mcp_settings_path()
+        assert got == (fake_home / ".cline" / "data" / "settings" / "cline_mcp_settings.json")

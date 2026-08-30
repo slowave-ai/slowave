@@ -117,9 +117,27 @@ def test_coactivation_edge_included_when_both_endpoints_visible():
         eng.schemas.upsert_coactivation(id_a, id_b, now_ts=1_000_000)
         eng.close()
 
-        payload = _schema_graph_payload(path, {})
+        payload = _schema_graph_payload(path, {"relations": ["coactivated_with"]})
         assert _no_dangling_edges(payload)
         coact_edges = [e for e in payload["edges"] if e["relation"] == "coactivated_with"]
         assert len(coact_edges) == 1
+    finally:
+        _cleanup(path)
+
+
+def test_coactivation_edges_require_explicit_relation_selection():
+    eng, path = _tmp_engine()
+    try:
+        id_a = eng.schemas.create(
+            content_text="A", facets={}, tags=[], embedding=None, dedupe=False
+        )
+        id_b = eng.schemas.create(
+            content_text="B", facets={}, tags=[], embedding=None, dedupe=False
+        )
+        eng.schemas.upsert_coactivation(id_a, id_b, now_ts=1_000_000)
+        eng.close()
+
+        payload = _schema_graph_payload(path, {"relations": ["relates_to"]})
+        assert not any(e["relation"] == "coactivated_with" for e in payload["edges"])
     finally:
         _cleanup(path)
