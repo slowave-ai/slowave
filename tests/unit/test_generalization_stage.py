@@ -65,10 +65,10 @@ def _make_schema(
         """
         INSERT INTO schemas
           (content_text, facets_json, tags_json, scope_id, status, confidence,
-           salience, supporting_episode_ids, contradicting_episode_ids,
+           salience, supporting_episode_ids,
            is_labile, generalization_stage, first_formed_ts, last_updated_ts)
         VALUES (?, '{}', '{"tags":[]}', ?, 'active', 1.0,
-                1.0, '{"ids":[]}', '{"ids":[]}', 0, ?, ?, ?)
+                1.0, '{"ids":[]}', 0, ?, ?, ?)
         """,
         (content, scope_id, gen_stage, now, now),
     )
@@ -345,6 +345,35 @@ class TestSchemaStoreGeneralizationStage:
         # No cross-scope history yet -> must stay stage 0
         assert schema.generalization_stage == 0
 
+    def test_cross_scope_reinforcement_is_idempotent_and_never_promotes(self):
+        """Regression (2026-08-18): the offline cross-scope reinforcement
+        diagnostic must (a) count each distinct source scope ONCE -- the same
+        source scope re-reinforcing on repeated worker passes is churn, not
+        new breadth -- and (b) never contribute to distinct_scope_count / stage
+        promotion. It once fed ``distinct_scopes +=
+        cross_scope_reinforcement_count // 2``, fabricating scope breadth (in
+        production: a control/smoke schema reached stage 3 global with
+        scope_breadth_pct > 1.0). Promotion is driven only by external
+        validation (admitted recall, used feedback, evidence)."""
+        db = _make_db()
+        store = SchemaStore(db, dim=384)
+        sid = _make_schema(db)
+        # 6 reinforcement events from the SAME source scope -> 1 distinct scope
+        for _ in range(6):
+            store.increment_cross_scope_reinforcement(sid, source_scope_id="project:alpha")
+        schema = store.get(sid)
+        assert schema.facets.get("cross_scope_reinforcement_scopes", []) == ["project:alpha"]
+        assert schema.facets.get("cross_scope_reinforcement_count", 0) == 1
+        # A genuinely new source scope adds one more.
+        store.increment_cross_scope_reinforcement(sid, source_scope_id="domain:beta")
+        schema = store.get(sid)
+        assert schema.facets.get("cross_scope_reinforcement_count", 0) == 2
+        store.reinforce(sid, amount=0.1)
+        schema = store.get(sid)
+        # Neither count nor idempotency affects scope breadth or stage.
+        assert schema.facets.get("distinct_scope_count", 0) == 0
+        assert schema.generalization_stage == 0
+
 
 # ---------------------------------------------------------------------------
 # 3b. Regression tests: consolidation-path schema_evidence (raw_event_id=NULL)
@@ -456,7 +485,6 @@ def _schema_obj(
         confidence=1.0,
         salience=1.0,
         supporting_episode_ids=[],
-        contradicting_episode_ids=[],
         is_labile=False,
         first_formed_ts=int(time.time()),
         last_updated_ts=int(time.time()),
@@ -709,11 +737,11 @@ class TestRecallCosineScoring:
         cur = conn.execute(
             "INSERT INTO schemas "
             "(content_text, facets_json, tags_json, scope_id, status, confidence,"
-            " salience, supporting_episode_ids, contradicting_episode_ids,"
+            " salience, supporting_episode_ids,"
             " is_labile, generalization_stage, first_formed_ts, last_updated_ts,"
             " embedding, dim)"
             " VALUES (?, '{}', '{\"tags\":[]}', ?, 'active', 1.0,"
-            " 1.0, '{\"ids\":[]}', '{\"ids\":[]}', 0, 2, ?, ?, ?, ?)",
+            " 1.0, '{\"ids\":[]}', 0, 2, ?, ?, ?, ?)",
             ("pytest fixtures", "project:alpha", now, now, pack_f32(schema_vec), dim),
         )
         conn.commit()
@@ -761,7 +789,6 @@ def _cross_scope_schema(*, gen_stage: int = 2, embedding=None) -> "Schema":
         confidence=1.0,
         salience=5.0,
         supporting_episode_ids=[],
-        contradicting_episode_ids=[],
         is_labile=False,
         first_formed_ts=int(time.time()),
         last_updated_ts=int(time.time()),

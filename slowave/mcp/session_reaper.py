@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from slowave import ops
+
 log = logging.getLogger(__name__)
 
 
@@ -69,7 +71,13 @@ def _reap_once(build_engine: Callable, timeout_s: int) -> list[str]:
         for row in rows:
             sid = row["id"]
             try:
-                eng.session_end(sid, consolidate=False)
+                ops.commit(
+                    eng,
+                    session_id=sid,
+                    outcome="unknown",
+                    verification={"status": "unverified", "summary": "Idle reaper closure"},
+                    enforce_feedback=False,
+                )
                 closed_ids.append(sid)
                 log.info(f"Reaped idle session {sid}")
             except Exception as e:
@@ -77,7 +85,14 @@ def _reap_once(build_engine: Callable, timeout_s: int) -> list[str]:
 
         return closed_ids
     finally:
-        conn.close()
+        # Do NOT close `conn` directly: SQLiteDB.connect() caches the
+        # connection per thread (threading.local) and returns that cached
+        # handle from connect(). Calling conn.close() here leaves the stale,
+        # closed handle in the thread-local cache, so the NEXT reap pass
+        # reuses a closed connection and throws "Cannot operate on a closed
+        # database". Release via SQLiteDB.close(), which closes the current
+        # thread's connection AND clears the thread-local cache.
+        eng.db.close()
 
 
 def start(build_engine: Callable, poll_interval_s: int = 120) -> Optional[threading.Thread]:

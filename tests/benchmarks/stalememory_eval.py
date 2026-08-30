@@ -63,7 +63,7 @@ from slowave.core.engine import SlowaveEngine
 from slowave.latent.replay_engine import ReplayConfig
 from slowave.latent.retrieval import RetrievalConfig
 from slowave.latent.salience import SalienceConfig
-from slowave.latent.schema import GeometricJudgeConfig
+from slowave.latent.schema import GeometricRelationConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
 from tests.benchmarks.report_format import print_footer, print_header, print_table
 from tests.benchmarks.retrieval_metrics import (
@@ -134,11 +134,9 @@ def _new_consolidation_diag_accumulator() -> dict[str, Any]:
         "prototypes_processed": 0,
         "schemas_created": 0,
         "schemas_reinforced": 0,
-        "schemas_contradicted": 0,
         "schemas_skipped": 0,
         "near_dup_intercepts": 0,
         "verdict_counts": {},
-        "gate_downgrades": {},
         "confidence_histogram": [],
     }
 
@@ -152,12 +150,11 @@ def _accumulate_consolidation_diag(acc: dict[str, Any], diag: dict[str, Any] | N
         "prototypes_processed",
         "schemas_created",
         "schemas_reinforced",
-        "schemas_contradicted",
         "schemas_skipped",
         "near_dup_intercepts",
     ):
         acc[key] += int(diag.get(key, 0) or 0)
-    for key in ("verdict_counts", "gate_downgrades"):
+    for key in ("verdict_counts",):
         for k, v in (diag.get(key) or {}).items():
             acc[key][k] = acc[key].get(k, 0) + int(v)
     acc["confidence_histogram"].extend(diag.get("confidence_histogram") or [])
@@ -250,7 +247,7 @@ def run_scenario(
                 neighbor_top_k=6,
                 use_multi_scale=True,
             ),
-            judge=GeometricJudgeConfig(**(judge_overrides or {})),
+            relation=GeometricRelationConfig(**(judge_overrides or {})),
             disable_encoder=False,
         )
         eng = SlowaveEngine(cfg, shared_encoder=shared_encoder)
@@ -637,7 +634,7 @@ def main() -> None:
     parser.add_argument(
         "--judge-overrides",
         default="",
-        help="JSON dict of GeometricJudgeConfig field overrides "
+        help="JSON dict of GeometricRelationConfig field overrides "
         "(plans/05-consolidation.md Threshold Ablation Matrix), e.g. "
         "'{\"near_dup_guard_cosine\": 1.01}'.",
     )

@@ -1,10 +1,10 @@
 """Tests for the near-duplicate guard's active-status gap.
 
 Corrects an initial wrong claim (see private/docs/consolidation/PROGRESS.md,
-2026-07-09 CORRECTION) that the geometric judge's "reinforces"/"contradicts"
+2026-07-09 CORRECTION) that the topical relation judge's association output
 verdicts were provably unreachable because near_dup_guard_cosine (0.92) is
 below reinforce_cosine (0.95). Real production data (~/.slowave/backups)
-showed 78 "reinforces" and 2 "supersedes" relations, all originating from
+showed association edges, while lifecycle decisions belonged to client feedback,
 the judge path (_write_latent_schema), not from a different code path.
 
 The near-duplicate guard's search_embedding(limit=1) returns the single
@@ -27,8 +27,8 @@ import pytest
 
 from slowave.core.consolidation import Consolidator
 from slowave.latent.schema import (
-    GeometricContradictionJudge,
-    GeometricJudgeConfig,
+    GeometricRelationConfig,
+    GeometricRelationJudge,
     GeometricVerdict,
     LatentSchema,
 )
@@ -65,7 +65,7 @@ def consolidator():
     conn = db.connect()
     conn.execute("PRAGMA foreign_keys = OFF")
 
-    judge = GeometricContradictionJudge(GeometricJudgeConfig())
+    judge = GeometricRelationJudge(GeometricRelationConfig())
     cons = Consolidator(
         db=db,
         semantic=MagicMock(),
@@ -73,10 +73,13 @@ def consolidator():
         schemas=MagicMock(),
         encoder=None,
         latent_builder=MagicMock(),
-        geometric_judge=judge,
+        relation_judge=judge,
     )
     cons.schemas.create.return_value = 42
     cons.schemas.last_create_reinforced_existing_id = None
+    # Fix #1: no pre-existing schema for this prototype -> the write path
+    # reaches the geometric near-dup guard / judge (cross-prototype scenario).
+    cons.schemas.find_by_primary_prototype.return_value = None
     yield cons
     db.close()
 
@@ -98,14 +101,12 @@ def test_inactive_near_dup_does_not_block_judge(consolidator):
         with patch.object(consolidator, "_fetch_schema_embedding", return_value=old_emb):
             with patch.object(consolidator, "_scope_for_episodes", return_value=None):
                 with patch.object(
-                    consolidator.geometric_judge,
+                    consolidator.relation_judge,
                     "judge",
                     return_value=GeometricVerdict(
                         verdict="relates_to",
                         reasoning="test",
                         similarity=0.97,
-                        facet_distance=0.0,
-                        time_delta_s=1000,
                     ),
                 ) as mock_judge:
                     outcome, new_id = consolidator._write_latent_schema(
@@ -128,7 +129,7 @@ def test_active_near_dup_does_block_judge(consolidator):
     consolidator.schemas.search_embedding.return_value = [(99, 0.97)]
     consolidator.schemas.get.return_value = active_near_dup
 
-    with patch.object(consolidator.geometric_judge, "judge") as mock_judge:
+    with patch.object(consolidator.relation_judge, "judge") as mock_judge:
         outcome, new_id = consolidator._write_latent_schema(
             prototype_id=1, schema=make_latent_schema()
         )

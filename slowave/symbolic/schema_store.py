@@ -29,8 +29,7 @@ from slowave.utils.vec import (
 VALID_STATUS = (
     "active",
     "needs_review",
-    "superseded",
-    "contradicted",
+    "stale",
     "archived",
     "forgotten",
 )
@@ -42,44 +41,9 @@ VALID_STATUS = (
 # of always guessing "active". Deliberately CLI/dashboard-only -- not exposed
 # as an MCP tool, since forgetting requires a human looking at a specific
 # schema id, not an agent inferring intent from conversational subtext.
-# "contradicts" and the old "related_to" were removed (2026-07-14): contradicts
-# was unreachable in practice (it required an exact time_delta_s<=0 tie, and
-# every call site now writes "supersedes" for that case too -- see
-# Consolidator._write_latent_schema / reconsolidate_labile_schemas), and
-# related_to was only ever add_relation()'s own fallback for an invalid
-# relation string, never triggered by any real caller. Both sat at 0 edges in
-# production. The "contradicted" schema *status* (VALID_STATUS above) is
-# unrelated and unaffected -- it still distinguishes a same-instant clash from
-# an ordinary update, just no longer via a separate relation edge label.
-#
-# "relates_to" (2026-07-15) is a distinct, deliberate reintroduction, NOT a
-# revival of the old related_to fallback -- do not conflate the two spellings.
-# It is the taxonomy's honest catch-all: cosine cleared the same-topic floor
-# (these two schemas are about the same thing) but neither containment,
-# direction_score, nor facet_distance clears the bar for a stronger claim
-# (part_of / supersedes / refines / reinforces). Without this bucket, the two
-# geometry shortcuts that only ever detect loose similarity -- the centroid-
-# proximity linker and GeometricContradictionJudge's old cos-only shortcut --
-# had nowhere honest to put their output and mislabeled it "reinforces", a
-# term that should mean "this specifically restates and strengthens that exact
-# belief". See GeometricContradictionJudge.judge() and
-# Consolidator._link_schemas_via_prototype_centroid, both of which now write
-# this relation directly.
-# (2026-07-22): the 4-relation taxonomy (refines, supersedes, part_of,
-# relates_to) has been collapsed to a single content-relation type.
-# "refines" and "supersedes" were removed because no geometric signal
-# (direction_score, facet_distance) generalizes beyond synthetic seed
-# sets, per independent measurement in the semantic-relations sibling
-# repo. "part_of" (subspace containment) survived that round, but was
-# removed 2026-07-23 after a hand-labeled audit of production edges found
-# ~11% precision -- broad/generic schemas' wider facet-axis spread made
-# them geometrically absorb containment edges from unrelated facts almost
-# regardless of real hierarchy, and it carried no differential weight at
-# retrieval time vs relates_to anyway. See
-# private/docs/iterations/20260723_part_of_audit_and_brain_alignment_review.md.
-# All same-topic pairs (cosine above same_topic_cosine) are now relates_to
-# -- the only content-relation type left, and symmetric, so no relation
-# in schema_relations carries directional meaning anymore.
+# Geometry writes only the symmetric ``relates_to`` association. Contradiction
+# and supersession statuses are client-owned history and are never inferred by
+# this store or by consolidation.
 VALID_RELATIONS = ("relates_to",)
 DEDUP_ACTIVE_STATUSES = ("active", "needs_review")
 
@@ -92,14 +56,11 @@ SALIENCE_CEILING = 20.0
 
 # A schema flagged is_labile is temporarily uncertain and open to revision
 # (see core/08-feedback.md's "Labile State & Reconsolidation" section) —
-# the flag is set by decay, remember()'s ambiguous-collision case, or
-# feedback's noise-demotion/direct stale-wrong marks. A labile schema
+# the flag is set by decay or legacy review paths. A labile schema
 # restabilizes on its own if it keeps getting genuinely reactivated
 # afterward — sustained reactivation is itself evidence the memory is
 # still good, mirroring how repeated recall drives real memory
-# consolidation. This is a passive counterpart to
-# Consolidator.reconsolidate_labile_schemas() (the active, replay-against-
-# neighbor form of the same resolution process): _RECONSOLIDATION_RECOVERY_RECURRENCE
+# consolidation. _RECONSOLIDATION_RECOVERY_RECURRENCE
 # recurrence hits *since being flagged* (tracked via the recurrence_count_at_flag
 # facet, captured lazily the first time _update_utility_scores observes the
 # flag) clears is_labile.
@@ -364,7 +325,6 @@ class Schema:
     confidence: float
     salience: float
     supporting_episode_ids: list[int]
-    contradicting_episode_ids: list[int]
     is_labile: bool
     first_formed_ts: int
     last_updated_ts: int
@@ -385,6 +345,7 @@ class Schema:
     # Logic version active when this schema was created (see schema.sql
     # comment on schemas.logic_version).
     logic_version: str = "0"
+    stale_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -462,10 +423,10 @@ class SchemaStore:
         prototype_ids: list[int] | None = None,
         scope_id: str | None = None,
         status: str = "active",
+        stale_reason: str | None = None,
         confidence: float = 1.0,
         salience: float = 1.0,
         supporting_episode_ids: list[int] | None = None,
-        contradicting_episode_ids: list[int] | None = None,
         is_labile: bool = False,
         evidence: list[tuple[int | None, int | None, str | None, float]] | None = None,
         dedupe: bool = True,
@@ -474,10 +435,13 @@ class SchemaStore:
         logic_version: str = "0",
     ) -> int:
         self.last_create_reinforced_existing_id = None
+        if status == "superseded":
+            status, stale_reason = "stale", "superseded"
+        elif status == "contradicted":
+            status, stale_reason = "stale", "contradicted"
         status = status if status in VALID_STATUS else "active"
         now = int(time.time())
         supporting = [int(x) for x in (supporting_episode_ids or [])]
-        contradicting = [int(x) for x in (contradicting_episode_ids or [])]
         proto_ids = list(dict.fromkeys(int(p) for p in (prototype_ids or [])))
         primary_proto = proto_ids[0] if proto_ids else None
 
@@ -492,7 +456,6 @@ class SchemaStore:
                     existing_id,
                     prototype_ids=proto_ids,
                     supporting_episode_ids=supporting,
-                    contradicting_episode_ids=contradicting,
                     evidence=evidence,
                     salience_delta=max(0.05, min(float(salience) * 0.25, 0.5)),
                     confidence=confidence,
@@ -541,10 +504,9 @@ class SchemaStore:
         cur = conn.execute(
             """
             INSERT INTO schemas (
-              prototype_id, content_text, facets_json, tags_json, scope_id, status, confidence,
+              prototype_id, content_text, facets_json, tags_json, scope_id, status, stale_reason, confidence,
               salience, embedding, dim, facet_axes, facet_strengths, n_facet_axes,
-              supporting_episode_ids,
-              contradicting_episode_ids, is_labile, first_formed_ts,
+              supporting_episode_ids, is_labile, first_formed_ts,
               last_updated_ts, logic_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -555,6 +517,7 @@ class SchemaStore:
                 dumps_json({"tags": [str(t) for t in (tags or [])]}),
                 scope_id,
                 status,
+                stale_reason,
                 float(confidence),
                 float(salience),
                 emb_blob,
@@ -563,7 +526,6 @@ class SchemaStore:
                 facet_strengths_blob,
                 n_facet_axes,
                 dumps_json({"ids": supporting}),
-                dumps_json({"ids": contradicting}),
                 1 if is_labile else 0,
                 now,
                 now,
@@ -626,13 +588,36 @@ class SchemaStore:
                 return int(row["id"])
         return None
 
+    def find_by_primary_prototype(self, prototype_id: int) -> Schema | None:
+        """Return the schema owned by a primary prototype, in ANY status.
+
+        One-schema-per-primary-prototype invariant (dedup fix #1): a
+        prototype's identity *is* its schema, so re-consolidating the same
+        prototype reactivates/updates that single engram in place rather than
+        minting a fresh copy. The lookup is deliberately status-agnostic —
+        a schema that was retired (``superseded``/``contradicted``/``archived``)
+        is still the same engram and must be found, not hidden by the
+        active-only filters used by ``search_embedding``/``find_duplicate``.
+
+        On the degenerate DB that accumulated duplicates before the fix, all
+        copies carry the same primary ``prototype_id``; highest id wins here so
+        the guard targets the most recent copy. A clean DB has exactly one.
+        """
+        conn = self.db.connect()
+        row = conn.execute(
+            "SELECT * FROM schemas WHERE prototype_id = ? ORDER BY id DESC LIMIT 1",
+            (int(prototype_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_schema(row)
+
     def reinforce_schema(
         self,
         schema_id: int,
         *,
         prototype_ids: list[int] | None = None,
         supporting_episode_ids: list[int] | None = None,
-        contradicting_episode_ids: list[int] | None = None,
         evidence: list[tuple[int | None, int | None, str | None, float]] | None = None,
         salience_delta: float = 0.2,
         confidence: float | None = None,
@@ -647,7 +632,7 @@ class SchemaStore:
         """
         conn = self.db.connect()
         row = conn.execute(
-            "SELECT supporting_episode_ids, contradicting_episode_ids, salience, "
+            "SELECT supporting_episode_ids, salience, "
             "confidence, facets_json, tags_json FROM schemas WHERE id = ?",
             (int(schema_id),),
         ).fetchone()
@@ -663,7 +648,6 @@ class SchemaStore:
             return merged
 
         supporting = merge_ids(row["supporting_episode_ids"], supporting_episode_ids)
-        contradicting = merge_ids(row["contradicting_episode_ids"], contradicting_episode_ids)
         merged_confidence = max(float(row["confidence"]), float(confidence or 0.0))
 
         # Keep existing facets/tags stable, only filling missing keys/tags from
@@ -682,7 +666,6 @@ class SchemaStore:
             SET salience = min(salience + ?, 20.0),
                 confidence = ?,
                 supporting_episode_ids = ?,
-                contradicting_episode_ids = ?,
                 facets_json = ?,
                 tags_json = ?,
                 last_updated_ts = ?
@@ -692,7 +675,6 @@ class SchemaStore:
                 float(salience_delta),
                 merged_confidence,
                 dumps_json({"ids": supporting}),
-                dumps_json({"ids": contradicting}),
                 dumps_json(merged_facets),
                 dumps_json({"tags": merged_tags}),
                 int(time.time()),
@@ -719,12 +701,19 @@ class SchemaStore:
         schema_id: int,
         *,
         status: str,
+        stale_reason: str | None = None,
         is_labile: bool | None = None,
         salience: float | None = None,
     ) -> None:
+        if status == "superseded":
+            status, stale_reason = "stale", "superseded"
+        elif status == "contradicted":
+            status, stale_reason = "stale", "contradicted"
         status = status if status in VALID_STATUS else "active"
         sets = ["status = ?", "last_updated_ts = ?"]
         args: list[Any] = [status, int(time.time())]
+        sets.insert(1, "stale_reason = ?")
+        args.insert(1, stale_reason)
         if is_labile is not None:
             sets.append("is_labile = ?")
             args.append(1 if is_labile else 0)
@@ -901,7 +890,6 @@ class SchemaStore:
         """
         if src_schema_id == dst_schema_id:
             return
-        import math
 
         lam = math.log(2) / half_life_s
         conn = self.db.connect()
@@ -934,8 +922,6 @@ class SchemaStore:
         Returns the number of rows decayed. Rows whose weight drops to
         or below 1e-6 are deleted (they'll never contribute meaningfully).
         """
-        import math
-
         lam = math.log(2) / half_life_s
         conn = self.db.connect()
         # Decay in-place
@@ -981,12 +967,7 @@ class SchemaStore:
                 sets.append("confidence = ?")
                 args.append(new_confidence)
             if clear_labile:
-                # An explicit useful/partially_useful mark is direct positive
-                # evidence a labile schema is still good — clear it here
-                # rather than leaving reconsolidation only to Consolidator.
-                # reconsolidate_labile_schemas()'s replay or sustained
-                # passive recurrence (core/08-feedback.md's "Labile State &
-                # Reconsolidation" section).
+                # Explicit positive evidence can clear decay/review lability.
                 sets.append("is_labile = 0")
             args.append(int(schema_id))
             conn.execute(f"UPDATE schemas SET {', '.join(sets)} WHERE id = ?", tuple(args))
@@ -998,13 +979,22 @@ class SchemaStore:
         conn.commit()
         self._update_utility_scores(schema_id, recall_hit=True, force_clear_labile=clear_labile)
 
-    def increment_cross_scope_reinforcement(self, schema_id: int) -> None:
-        """Increment cross_scope_reinforcement_count in facets for a schema.
+    def increment_cross_scope_reinforcement(
+        self, schema_id: int, source_scope_id: str | None = None
+    ) -> None:
+        """Record that a schema from ``source_scope_id`` reinforced this schema.
 
         Called by the consolidation path when a new latent schema from a
         different scope reinforces an existing schema. This is a distinct
-        signal from observed recall — offline reinforcement carries lower
-        weight in generalization stage promotion.
+        signal from observed recall, and is retained as a *diagnostic only*:
+        it carries no weight in generalization stage promotion (see
+        ``_update_utility_scores``).
+
+        Idempotent per distinct source scope: the same source scope
+        re-reinforcing the same schema on repeated consolidation passes
+        counts ONCE, so ``cross_scope_reinforcement_count`` reflects genuine
+        cross-context breadth (the number of distinct source scopes), not
+        consolidation churn.
         """
         conn = self.db.connect()
         row = conn.execute(
@@ -1015,9 +1005,13 @@ class SchemaStore:
         facets = loads_json(row["facets_json"])
         if not isinstance(facets, dict):
             facets = {}
-        facets["cross_scope_reinforcement_count"] = (
-            int(facets.get("cross_scope_reinforcement_count", 0)) + 1
-        )
+        scopes = facets.get("cross_scope_reinforcement_scopes", [])
+        if not isinstance(scopes, list):
+            scopes = [s for s in scopes if isinstance(s, str)]
+        if source_scope_id and source_scope_id not in scopes:
+            scopes.append(source_scope_id)
+        facets["cross_scope_reinforcement_scopes"] = scopes
+        facets["cross_scope_reinforcement_count"] = len(scopes)
         conn.execute(
             "UPDATE schemas SET facets_json = ?, last_updated_ts = ? WHERE id = ?",
             (dumps_json(facets), int(time.time()), int(schema_id)),
@@ -1339,12 +1333,21 @@ class SchemaStore:
             | {str(r["session_id"]) for r in evidence_rows}
         )
 
-        # Offline reinforcement bonus: each cross-scope reinforcement from
-        # consolidation counts as 0.5 equivalent observed-recall scope.
-        # Observed recall (context_recall_items) is the ground-truth signal;
-        # offline reinforcement is weaker evidence and carries half the weight.
-        reinforcement_count = int(facets.get("cross_scope_reinforcement_count", 0))
-        distinct_scopes += reinforcement_count // 2  # integer, conservative
+        # Offline reinforcement deliberately does NOT contribute to scope
+        # breadth or stage promotion. Brain-faithful rationale: cross-scope
+        # generalization (hippocampus -> neocortex transfer) requires the
+        # memory to have been validated as useful across *distinct contexts*.
+        # Consolidation replay of the SAME cross-scope near-duplicate is not
+        # external validation -- it strengthens salience/stability of that one
+        # trace but adds zero semantic breadth. Crediting it (the old
+        # ``distinct_scopes += cross_scope_reinforcement_count // 2``) let
+        # repeat worker passes fabricate scope breadth; in production it drove
+        # a control/smoke schema to stage 3 (global) with scope_breadth_pct
+        # > 1.0 (more "distinct scopes" than active scopes). Promotion is now
+        # driven only by external evidence: admitted cross-scope recall,
+        # validated ``used`` feedback, and cross-scope remember evidence above.
+        # ``cross_scope_reinforcement_count`` remains a diagnostic facet,
+        # written by ``increment_cross_scope_reinforcement``.
 
         total_active_scopes, total_active_scope_kinds = self.scope_registry.active_counts(
             self._gen_cfg.active_window_days
@@ -1711,7 +1714,6 @@ class SchemaStore:
             for dupe in dupes:
                 dupe_id = int(dupe["id"])
                 supporting = loads_json(dupe["supporting_episode_ids"]).get("ids", [])
-                contradicting = loads_json(dupe["contradicting_episode_ids"]).get("ids", [])
                 proto_rows = conn.execute(
                     "SELECT prototype_id FROM schema_prototype_map WHERE schema_id = ?",
                     (dupe_id,),
@@ -1724,7 +1726,6 @@ class SchemaStore:
                     canonical_id,
                     prototype_ids=[int(r["prototype_id"]) for r in proto_rows],
                     supporting_episode_ids=[int(x) for x in supporting],
-                    contradicting_episode_ids=[int(x) for x in contradicting],
                     evidence=[
                         (r["episode_id"], r["raw_event_id"], r["quote"], float(r["weight"]))
                         for r in evidence_rows
@@ -2003,7 +2004,6 @@ class SchemaStore:
 
     def _row_to_schema(self, row: Any) -> Schema:
         supporting = loads_json(row["supporting_episode_ids"]).get("ids", [])
-        contradicting = loads_json(row["contradicting_episode_ids"]).get("ids", [])
         # Unpack stored embedding blob so the working-memory gate can score
         # activation geometrically (cosine) rather than purely lexically.
         emb: np.ndarray | None = None
@@ -2050,10 +2050,10 @@ class SchemaStore:
             tags=[str(t) for t in loads_json(row["tags_json"]).get("tags", [])],
             scope_id=None if row["scope_id"] is None else str(row["scope_id"]),
             status=str(row["status"]),
+            stale_reason=(None if row["stale_reason"] is None else str(row["stale_reason"])),
             confidence=float(row["confidence"]),
             salience=float(row["salience"]),
             supporting_episode_ids=[int(x) for x in supporting],
-            contradicting_episode_ids=[int(x) for x in contradicting],
             is_labile=bool(row["is_labile"]),
             first_formed_ts=int(row["first_formed_ts"]),
             last_updated_ts=int(row["last_updated_ts"]),

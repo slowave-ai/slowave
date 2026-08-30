@@ -2,13 +2,13 @@
 
 Thanks for your interest in contributing to Slowave.
 
-Slowave is an experimental, local-first memory engine for AI agents. The project is currently in alpha, so APIs, storage layout, configuration, and behavior may still change as the design evolves.
+Slowave is an experimental, local-first memory engine for AI agents. The project is currently in beta, so APIs, storage layout, configuration, and behavior may still change as the design evolves.
 
 This document explains how to contribute, what kinds of contributions are most useful, and how licensing works.
 
 ## Project status
 
-Slowave is currently alpha software.
+Slowave is currently beta software.
 
 That means:
 

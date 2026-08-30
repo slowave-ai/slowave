@@ -151,3 +151,109 @@ def test_multiple_embeddable_events_still_all_included_in_macro_text(ingest):
     assert "fact one" in content_text
     assert "fact two" in content_text
     assert "outcome=success" not in content_text
+
+
+def test_control_role_is_excluded_even_if_an_embedding_was_supplied(ingest):
+    """Role eligibility is a defense-in-depth boundary, independent of content."""
+    svc, raw_log, episode_text, episodic = ingest
+    rng = np.random.default_rng(3)
+    experience_emb, control_emb = _unit(rng), _unit(rng)
+    raw_log.append(
+        session_id="sess-1",
+        type="observation",
+        content="a meaningful observation",
+        embedding=experience_emb,
+        metadata={"memory_role": "experience"},
+    )
+    raw_log.append(
+        session_id="sess-1",
+        type="arbitrary_control_type",
+        content="generic repeated transport marker",
+        embedding=control_emb,
+        metadata={"memory_role": "control"},
+    )
+
+    episode_ids = svc.form_episodes("sess-1")
+    content_text, source_content = _macro_episode_text(episodic, episode_text, episode_ids)
+    assert "meaningful observation" in content_text
+    assert "generic repeated transport marker" not in content_text
+    assert "generic repeated transport marker" not in source_content
+
+
+def test_recall_cue_does_not_form_episodes_despite_experience_role(ingest):
+    """The MCP recall log ``slowave_recall: <query>`` is a cue, not a memory —
+    it must not form episodes even if a (legacy) event stored it as
+    ``experience`` with an embedding. This is what a logic-version rebuild
+    relies on to decontaminate historical records."""
+    svc, raw_log, episode_text, episodic = ingest
+    rng = np.random.default_rng(4)
+    raw_log.append(
+        session_id="sess-1",
+        type="trajectory:action",
+        content="slowave_recall: Explicit user preferences for an AI assistant",
+        embedding=_unit(rng),
+        metadata={"memory_role": "experience"},
+    )
+    # A genuine task event must still form episodes alongside the excluded cue.
+    raw_log.append(
+        session_id="sess-1",
+        type="trajectory:action",
+        content="Implemented the retry backoff",
+        embedding=_unit(rng),
+        metadata={"memory_role": "experience"},
+    )
+    episode_ids = svc.form_episodes("sess-1")
+    assert episode_ids
+    content_text, source_content = _macro_episode_text(episodic, episode_text, episode_ids)
+    assert "retry backoff" in content_text
+    assert "slowave_recall" not in content_text
+    assert "slowave_recall" not in source_content
+
+
+def test_lifecycle_only_trajectory_forms_no_episodes(ingest):
+    """A trajectory that narrates only Slowave lifecycle steps (the sch_624
+    pattern) forms NO episodes; the session is effectively empty of memory."""
+    svc, raw_log, _episode_text, episodic = ingest
+    rng = np.random.default_rng(5)
+    for summary in (
+        "Activated the Slowave session.",
+        "Submitted complete retrieval feedback.",
+        "Committed the session.",
+    ):
+        raw_log.append(
+            session_id="sess-1",
+            type="trajectory:action",
+            content=summary,
+            embedding=_unit(rng),
+            metadata={"memory_role": "experience"},
+        )
+    episode_ids = svc.form_episodes("sess-1")
+    assert not episode_ids
+
+
+def test_legacy_embedded_task_complete_does_not_form_episodes(ingest):
+    """A legacy task_complete event (stored embedding, no memory_role -> defaults
+    to experience) must not form episodes: the type is Slowave's own commit
+    marker and is excluded regardless of role/embedding. This is what a
+    logic-version rebuild relies on to drop historical ``outcome=...`` schemas."""
+    svc, raw_log, episode_text, episodic = ingest
+    rng = np.random.default_rng(6)
+    raw_log.append(
+        session_id="sess-1",
+        type="task_complete",
+        content="outcome=success",
+        embedding=_unit(rng),  # legacy: a stored embedding with no memory_role
+    )
+    # A genuine task event alongside must still form episodes.
+    raw_log.append(
+        session_id="sess-1",
+        type="remember:fact",
+        content="the real fact",
+        embedding=_unit(rng),
+    )
+    episode_ids = svc.form_episodes("sess-1")
+    assert episode_ids
+    content_text, source_content = _macro_episode_text(episodic, episode_text, episode_ids)
+    assert "real fact" in content_text
+    assert "outcome=success" not in content_text
+    assert "outcome=success" not in source_content

@@ -24,7 +24,7 @@ Restart Cline.
 
 | What | Where |
 |---|---|
-| MCP server (HTTP) | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (VS Code, macOS) |
+| MCP server (HTTP) | `~/.cline/data/settings/cline_mcp_settings.json` (CLI/TUI, macOS/Linux) · `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (VS Code, macOS) |
 | Lifecycle instructions | `~/.cline/rules/slowave.md` |
 | Background worker | launchd (macOS) / systemd (Linux) / Task Scheduler (Windows) |
 
@@ -42,16 +42,22 @@ Restart Cline.
 
 Open Cline's MCP settings JSON and add or merge:
 
+- **CLI/TUI** (macOS/Linux): `~/.cline/data/settings/cline_mcp_settings.json`
+- **VS Code (macOS):** `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+
 ```jsonc
 {
   "mcpServers": {
     "slowave": {
-      "type": "http",
-      "url": "http://127.0.0.1:8766/mcp"
+      "url": "http://127.0.0.1:8766/sse"
     }
   }
 }
 ```
+
+> Cline resolves MCP config from the `data/settings` file (or `$CLINE_MCP_SETTINGS_PATH`).
+> The legacy `~/.cline/mcp.json` is no longer read by current Cline — writing there
+> makes `slowave doctor` report the client as configured while the tools never appear.
 
 Make sure the daemon is running (`slowave serve status`). Restart / reload Cline after editing.
 

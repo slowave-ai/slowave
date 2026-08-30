@@ -220,7 +220,6 @@ def _stub_schema(
         confidence=1.0,
         salience=salience,
         supporting_episode_ids=[],
-        contradicting_episode_ids=[],
         is_labile=False,
         first_formed_ts=1000000,
         last_updated_ts=1000000,
@@ -237,7 +236,7 @@ def test_cosine_term_admits_paraphrased_schema_with_zero_token_overlap() -> None
     schema_emb = cue_emb.copy()  # perfect cosine = 1.0
 
     gate = WorkingMemoryGate()
-    cue = MemoryCue(query="xyz_unmatched_tokens_only")  # no overlap with schema text
+    cue = MemoryCue(query="unmatched tokens only")  # no overlap with schema text
     policy = GatePolicy(min_activation=0.20)
 
     schema = _stub_schema(
@@ -250,6 +249,61 @@ def test_cosine_term_admits_paraphrased_schema_with_zero_token_overlap() -> None
     state = gate.select([schema], cue=cue, policy=policy, cue_embedding=cue_emb)
 
     assert len(state.items) == 1, "Schema with perfect cosine must be admitted"
+
+
+def test_distinctive_named_anchor_cannot_be_waived_by_cosine() -> None:
+    dim = 8
+    cue_emb = _make_unit(dim, seed=1)
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(query="What decision was made for QuasarKV shard QZ-771?")
+    policy = GatePolicy(min_activation=0.20)
+    unrelated = _stub_schema(
+        1,
+        text="A decision was made to simplify the relation taxonomy.",
+        embedding=cue_emb.copy(),
+        salience=1.0,
+    )
+
+    state = gate.select([unrelated], cue=cue, policy=policy, cue_embedding=cue_emb)
+
+    assert not state.items
+    assert state.suppressed["distinctive_term_mismatch"] == 1
+
+
+def test_distinctive_named_anchor_admits_matching_schema() -> None:
+    dim = 8
+    cue_emb = _make_unit(dim, seed=1)
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(query="What decision was made for QuasarKV shard QZ-771?")
+    policy = GatePolicy(min_activation=0.20)
+    matching = _stub_schema(
+        1,
+        text="QuasarKV shard QZ-771 uses tenant_id as its partition key.",
+        embedding=cue_emb.copy(),
+        salience=1.0,
+    )
+
+    state = gate.select([matching], cue=cue, policy=policy, cue_embedding=cue_emb)
+
+    assert [item.schema.id for item in state.items] == [1]
+
+
+def test_external_analysis_target_does_not_require_anchor_in_background_memory() -> None:
+    dim = 8
+    cue_emb = _make_unit(dim, seed=1)
+    gate = WorkingMemoryGate()
+    cue = MemoryCue(query="Compare Mem0 with our local memory architecture")
+    policy = GatePolicy(min_activation=0.20)
+    background = _stub_schema(
+        1,
+        text="The local system separates episodic memories from durable schemas.",
+        embedding=cue_emb.copy(),
+        salience=1.0,
+    )
+
+    state = gate.select([background], cue=cue, policy=policy, cue_embedding=cue_emb)
+
+    assert [item.schema.id for item in state.items] == [1]
     assert state.items[0].activation >= 0.40
     assert "cosine=" in state.items[0].reason
 

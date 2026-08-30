@@ -108,6 +108,60 @@ register_tools(mcp, _build_engine)
 
 
 # ---------------------------------------------------------------------------
+# Bearer guard for the ASGI response lifecycle
+# ---------------------------------------------------------------------------
+def _wrap_no_double_send(app):
+    """Return *app* wrapped so a response is never sent twice on one request.
+
+    uvicorn's h11 protocol aborts with ``RuntimeError: Expected ASGI message
+    'http.response.body', but got 'http.response.start'`` (the crash signature
+    repeatedly seen in /tmp/slowave-daemon.err) whenever Starlette's
+    ``ServerErrorMiddleware`` emits a second ``http.response.start`` after a
+    response has already begun streaming.
+
+    That scenario is routine for a streaming MCP daemon: a client times out,
+    disconnects, or has its session terminated mid-response; the transport
+    endpoint raises with headers already flushed; Starlette then tries to send
+    a 500 response on the same connection, and uvicorn aborts the request.
+
+    This guard drops any duplicate ``http.response.start`` and, once a response
+    has started, swallows the post-start error instead of letting it resurface
+    as a second response. A single client cancel therefore degrades to a
+    closed connection instead of a request-handling / daemon failure. Requests
+    that fail *before* anything is sent still raise normally so real 500s are
+    preserved.
+    """
+
+    async def wrapped(scope, receive, send):
+        if scope.get("type") != "http":
+            return await app(scope, receive, send)
+
+        started = False
+
+        async def _guarded_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                if started:
+                    # A response was already emitted for this request; silently
+                    # drop the duplicate so uvicorn never sees a double-send.
+                    return
+                started = True
+            await send(message)
+
+        try:
+            return await app(scope, receive, _guarded_send)
+        except Exception:
+            if started:
+                # Response already flushed; a mid-stream error (typically a
+                # client disconnect / session termination) must not become a
+                # second response. uvicorn tears the connection down.
+                return
+            raise
+
+    return wrapped
+
+
+# ---------------------------------------------------------------------------
 # Build the ASGI app — streamable-HTTP + SSE + /health
 # ---------------------------------------------------------------------------
 def _make_app():
@@ -150,7 +204,9 @@ def _make_app():
             }
         )
 
-    # Primary app — owns the lifespan; must not be wrapped
+    # Primary app — owns the lifespan that runs StreamableHTTPSessionManager.
+    # We wrap it below, but the wrap passes non-HTTP (incl. lifespan) scopes
+    # straight through, so the manager lifecycle is untouched.
     app = mcp.streamable_http_app()
 
     # Graft /health into the primary app's router
@@ -162,7 +218,9 @@ def _make_app():
     for route in sse_app.routes:
         app.router.routes.append(route)
 
-    return app
+    # Guard against the response double-send that previously took down request
+    # handling whenever a client disconnected / a session terminated mid-stream.
+    return _wrap_no_double_send(app)
 
 
 # ---------------------------------------------------------------------------

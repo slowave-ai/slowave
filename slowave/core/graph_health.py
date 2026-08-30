@@ -55,7 +55,7 @@ def compute(db_path: str) -> dict[str, Any]:
 def _schema_cosine_distribution(conn: sqlite3.Connection) -> dict[str, Any] | None:
     """Pairwise cosine similarity distribution across active/labile schemas.
 
-    Buckets pairs into the verdict zones used by GeometricContradictionJudge,
+    Buckets pairs into the verdict zones used by GeometricRelationJudge,
     plus fine-grained 0.05-step histogram bins and percentiles.
 
     Returns None when numpy is unavailable or there are <2 schemas.
@@ -150,7 +150,7 @@ def _schema_graph(conn: sqlite3.Connection) -> dict[str, Any]:
         "SELECT status, COUNT(*) as cnt FROM schemas GROUP BY status"
     ).fetchall()
     status = {r["status"]: r["cnt"] for r in status_rows}
-    superseded_pct = round(100.0 * status.get("superseded", 0) / max(1, total), 2)
+    stale_pct = round(100.0 * status.get("stale", 0) / max(1, total), 2)
 
     # S2: relation distribution
     rel_rows = conn.execute(
@@ -188,7 +188,7 @@ def _schema_graph(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "total": total,
         "status": status,
-        "superseded_pct": superseded_pct,
+        "stale_pct": stale_pct,
         "relations": relations,
         "total_relations": total_relations,
         "isolates": isolates,
@@ -701,7 +701,7 @@ def snapshot(conn: sqlite3.Connection, worker_run_id: int | None) -> int | None:
         cur = conn.execute(
             """INSERT INTO graph_health_snapshots (
                worker_run_id, ts,
-               total_schemas, superseded_pct,
+               total_schemas, stale_pct,
                schema_isolates, schema_isolate_pct,
                schema_components, schema_largest_component,
                salience_median, salience_ceiling_breaches,
@@ -716,7 +716,7 @@ def snapshot(conn: sqlite3.Connection, worker_run_id: int | None) -> int | None:
                 worker_run_id,
                 int(_time.time()),
                 s["total"],
-                s["superseded_pct"],
+                s["stale_pct"],
                 s["isolates"],
                 s["isolate_pct"],
                 s["components"]["total_components"],

@@ -1,7 +1,7 @@
 """Single source of truth for the Slowave lifecycle-instructions version.
 
 "Lifecycle" here means the 5-verb cognitive-cycle contract (activate /
-remember / recall / reinforce / commit) that clients are told to follow --
+remember / recall / feedback / commit) that clients are told to follow --
 both via the injected block in CLAUDE.md/.clinerules/etc.
 (slowave/cli/setup.py's ``_LIFECYCLE_BLOCK_TEMPLATE``) and via the MCP tool
 docstrings themselves. Bump this constant whenever that contract changes in
@@ -25,4 +25,4 @@ is re-run) -- `slowave doctor` reports the latter.
 
 from __future__ import annotations
 
-LIFECYCLE_VERSION = "v3"
+LIFECYCLE_VERSION = "v10"

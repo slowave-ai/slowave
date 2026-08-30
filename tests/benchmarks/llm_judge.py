@@ -21,9 +21,10 @@ class QuotaExhausted(Exception):
 
 
 # $ per million tokens (prompt, completion) on OpenRouter, for models actually
-# used as judge/answerer in this project. Verified 2026-07-13 via openrouter.ai
+# used as judge/answerer in this project. Verified 2026-08-11 via openrouter.ai
 # — re-check there if pricing looks stale by the time you read this.
 KNOWN_MODEL_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    "openai/gpt-4o-mini": (0.15, 0.60),
     "deepseek/deepseek-v4-flash": (0.077, 0.154),
     "deepseek/deepseek-v4-pro": (0.435, 0.87),
 }

@@ -334,7 +334,9 @@ class RetrievalPipeline:
                 q_temporal = self._temporal.encode(self.cfg.temporal_anchor_ts)
             else:
                 q_temporal = self._temporal.now()
-            ep_ts = np.asarray([int(m.ts) for m in episodes], dtype=np.int64)
+            ep_ts = np.asarray(
+                [int(m.metadata.get("occurred_at", m.ts)) for m in episodes], dtype=np.int64
+            )
             ep_temporal = self._temporal.encode_many(ep_ts)
             sims = ep_temporal @ q_temporal
             for m, sim in zip(episodes, sims, strict=False):

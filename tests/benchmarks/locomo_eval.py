@@ -52,8 +52,9 @@ from slowave.core.engine import SlowaveEngine
 from slowave.latent.replay_engine import ReplayConfig
 from slowave.latent.retrieval import RetrievalConfig
 from slowave.latent.salience import SalienceConfig
-from slowave.latent.schema import GeometricJudgeConfig
+from slowave.latent.schema import GeometricRelationConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
+from tests.benchmarks.evidence_format import format_retrieved_evidence
 from tests.benchmarks.llm_judge import (
     confirm_paid_run,
     estimate_cost_usd,
@@ -279,6 +280,7 @@ def run_conversation(
     judge_model=None,
     openai_client=None,
     limit_questions=0,
+    save_full_hypothesis=False,
 ):
     conv_id = str(sample.get("sample_id", "?"))
     # Pin the global numpy RNG to a deterministic seed derived from conv_id so
@@ -323,7 +325,7 @@ def run_conversation(
                 use_temporal=not no_temporal,
                 temporal_weight=0.0 if no_temporal else temporal_weight,
             ),
-            judge=GeometricJudgeConfig(**(judge_overrides or {})),
+            relation=GeometricRelationConfig(**(judge_overrides or {})),
             disable_encoder=False,
         )
         eng = SlowaveEngine(cfg, shared_encoder=shared_encoder)
@@ -434,6 +436,7 @@ def run_conversation(
             sh = " ".join(s.content_text for s in r.schemas)
             eh = " ".join(ep["content_text"] for ep in r.episode_texts if ep["content_text"])
             hyp = (sh + " " + eh).strip()
+            structured_hypothesis = format_retrieved_evidence(r)
             ks = keyword_score(hyp, answer)
             f1 = f1_score(hyp, answer)
             recall_at_k, mrr = compute_recall_at_k_and_mrr(
@@ -450,7 +453,7 @@ def run_conversation(
                     conv_id=conv_id,
                     question=question,
                     expected=answer,
-                    hypothesis=hyp[:400],
+                    hypothesis=structured_hypothesis if save_full_hypothesis else hyp[:400],
                     category=category,
                     keyword_score=round(ks, 3),
                     f1=round(f1, 3),
@@ -681,11 +684,9 @@ def _aggregate_consolidation_diag(results):
         "prototypes_processed": 0,
         "schemas_created": 0,
         "schemas_reinforced": 0,
-        "schemas_contradicted": 0,
         "schemas_skipped": 0,
         "near_dup_intercepts": 0,
         "verdict_counts": {},
-        "gate_downgrades": {},
         "confidence_histogram": [],
     }
     for r in results:
@@ -697,12 +698,11 @@ def _aggregate_consolidation_diag(results):
             "prototypes_processed",
             "schemas_created",
             "schemas_reinforced",
-            "schemas_contradicted",
             "schemas_skipped",
             "near_dup_intercepts",
         ):
             agg[key] += int(diag.get(key, 0) or 0)
-        for key in ("verdict_counts", "gate_downgrades"):
+        for key in ("verdict_counts",):
             for k, v in (diag.get(key) or {}).items():
                 agg[key][k] = agg[key].get(k, 0) + int(v)
         agg["confidence_histogram"].extend(diag.get("confidence_histogram") or [])
@@ -733,7 +733,10 @@ def _aggregate_temporal_diag(results):
         "anchor_fired_n": len(fired_all),
         "anchor_fired_rate": round(len(fired_all) / max(1, len(results)), 4),
         "mean_displacement_s": (
-            round(sum(r.anchor_displacement_s for r in fired_all) / max(1, len(fired_all)), 1)
+            round(
+                sum(r.anchor_displacement_s for r in fired_all) / max(1, len(fired_all)),
+                1,
+            )
             if fired_all
             else 0.0
         ),
@@ -763,7 +766,10 @@ def _save(path, results, args, elapsed, partial):
             "recall_at_k": cat_recall_at_k,
             "mrr": cat_mrr,
             "llm_judge_score_pct": (
-                round(100 * sum(r.llm_judge_score for r in cat_judge_rows) / len(cat_judge_rows), 2)
+                round(
+                    100 * sum(r.llm_judge_score for r in cat_judge_rows) / len(cat_judge_rows),
+                    2,
+                )
                 if cat_judge_rows
                 else None
             ),
@@ -796,6 +802,8 @@ def _save(path, results, args, elapsed, partial):
             "temporal_weight": args.temporal_weight,
             "judge_overrides": args.judge_overrides,
             "judge_model": args.judge_model or None,
+            "full_hypotheses": args.save_full_hypotheses,
+            "evidence_format": "structured_v1" if args.save_full_hypotheses else "preview",
             "total_elapsed_s": round(elapsed, 2),
         },
         "summary": {
@@ -966,7 +974,7 @@ def main():
     parser.add_argument(
         "--judge-overrides",
         default="",
-        help="JSON dict of GeometricJudgeConfig field overrides "
+        help="JSON dict of GeometricRelationConfig field overrides "
         "(plans/05-consolidation.md Threshold Ablation Matrix), e.g. "
         "'{\"related_schema_cosine\": 1.01}'.",
     )
@@ -977,6 +985,12 @@ def main():
         "pass (via OpenRouter, needs OPENROUTER_API_KEY) alongside the default "
         "zero-cost keyword-overlap score. Costs real API tokens; unset by "
         "default so the benchmark stays free.",
+    )
+    parser.add_argument(
+        "--save-full-hypotheses",
+        action="store_true",
+        help="Persist complete retrieved contexts instead of 400-character previews. "
+        "Required when the artifact will be passed to aml_answer_eval.py.",
     )
     parser.add_argument("--out", default="")
     parser.add_argument(
@@ -1073,7 +1087,10 @@ def main():
             def _is_broken_row(r: dict) -> bool:
                 # question=="[error]"/"[timeout]" catches rows even from
                 # before error= was guaranteed non-empty (legacy data).
-                return bool(r.get("error")) or r.get("question") in ("[error]", "[timeout]")
+                return bool(r.get("error")) or r.get("question") in (
+                    "[error]",
+                    "[timeout]",
+                )
 
             done_conv_ids = {
                 cid
@@ -1125,7 +1142,10 @@ def main():
                 flush=True,
             )
         except Exception as e:
-            print(f"[WARN] --resume: could not load {out_path} ({e}), starting fresh.", flush=True)
+            print(
+                f"[WARN] --resume: could not load {out_path} ({e}), starting fresh.",
+                flush=True,
+            )
             all_results = []
             done_conv_ids = set()
 
@@ -1208,6 +1228,7 @@ def _run_locomo_loop(
                 judge_model=args.judge_model or None,
                 openai_client=openai_client,
                 limit_questions=args.limit_questions,
+                save_full_hypothesis=args.save_full_hypotheses,
             )
         except ConversationTimeout:
             print(

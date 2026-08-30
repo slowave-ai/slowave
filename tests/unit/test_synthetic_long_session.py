@@ -231,10 +231,10 @@ class TestFeedbackSuppression:
         ids_broad = {s.id for s in result_broad.schemas}
         assert schema_id in ids_broad, "Needs-review schema should be visible in broad mode"
 
-    def test_wrong_failed_combo_sets_status_needs_review(
+    def test_wrong_feedback_sets_status_contradicted(
         self, engine_with_encoder: SlowaveEngine
     ) -> None:
-        """wrong + failed feedback escalates schema status to needs_review."""
+        """Wrong client feedback retires the schema as contradicted."""
         eng = engine_with_encoder
 
         schema_id = eng.remember(
@@ -253,17 +253,18 @@ class TestFeedbackSuppression:
             wrong_memory_ids=[f"sch_{schema_id}"],
         )
 
-        # Status must have been escalated to needs_review (not just flag set)
+        # Status is terminal and client-owned.
         schema = eng.schemas.get(schema_id)
         assert (
-            schema.status == "needs_review"
-        ), f"wrong+failed should escalate status to needs_review, got {schema.status}"
+            schema.status == "stale"
+        ), f"wrong feedback should retire as stale/contradicted, got {schema.status}"
+        assert schema.stale_reason == "contradicted"
 
         # And it must be excluded from default recall
         result = eng.recall("database fact failure", top_k=5)
         assert schema_id not in {
             s.id for s in result.schemas
-        }, "needs_review schema must be excluded from default recall"
+        }, "contradicted schema must be excluded from default recall"
 
 
 class TestBroadSummaryDemotion:

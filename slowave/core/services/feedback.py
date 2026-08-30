@@ -12,14 +12,68 @@ import logging
 import time
 from typing import Any, Callable
 
-from slowave.core.feedback import FeedbackConfig
+from slowave.core.feedback import FeedbackConfig, feedback_signal_for
 from slowave.core.scope import scope_kind as _scope_kind
+from slowave.core.services.feedback_events import FeedbackEventService
+from slowave.core.services.retrieval_access import (
+    RetrievalAccessEvidenceStore,
+    canonical_cue_text,
+    packed_cue_embedding,
+)
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.symbolic.schema_store import SchemaStore
 from slowave.utils.vec import dumps_json
 
 log = logging.getLogger(__name__)
+
+
+def _bounded_response_json(response: dict[str, Any], max_chars: int) -> str:
+    """Serialize a snapshot without ever cutting JSON in the middle.
+
+    Oversized snapshots retain as many complete top-level list entries as fit
+    and declare what was omitted. Normalized retrieval-item rows remain the
+    authoritative complete item inventory.
+    """
+    encoded = json.dumps(response)
+    if len(encoded) <= max_chars:
+        return encoded
+
+    bounded: dict[str, Any] = {
+        "_truncated": True,
+        "original_chars": len(encoded),
+        "omitted_counts": {},
+    }
+    for key in ("memory_ids", "procedure_ids"):
+        if key in response:
+            bounded[key] = response[key]
+
+    for key, value in response.items():
+        if key in bounded or key in {"memory_ids", "procedure_ids"}:
+            continue
+        if not isinstance(value, list):
+            candidate = {**bounded, key: value}
+            if len(json.dumps(candidate)) <= max_chars:
+                bounded = candidate
+            continue
+        kept: list[Any] = []
+        bounded[key] = kept
+        for entry in value:
+            kept.append(entry)
+            if len(json.dumps(bounded)) > max_chars:
+                kept.pop()
+                break
+        omitted = len(value) - len(kept)
+        if omitted:
+            bounded["omitted_counts"][key] = omitted
+
+    result = json.dumps(bounded)
+    if len(result) <= max_chars:
+        return result
+    # Extremely small caller-provided caps cannot carry metadata. A minimal
+    # valid object is still preferable to malformed JSON.
+    minimal = json.dumps({"_truncated": True})
+    return minimal if len(minimal) <= max_chars else "{}"
 
 
 class FeedbackService:
@@ -31,9 +85,13 @@ class FeedbackService:
         db: SQLiteDB,
         schemas: SchemaStore,
         cfg: FeedbackConfig,
+        encoder=None,
     ):
         self.db = db
         self.schemas = schemas
+        self.encoder = encoder
+        self.access_evidence = RetrievalAccessEvidenceStore(db)
+        self.feedback_events = FeedbackEventService(db)
         self._parse_procedure_ids: Callable[[list[str]], list[str]] = (
             lambda ids: []
         )  # removed Phase 1 P1
@@ -64,6 +122,8 @@ class FeedbackService:
         response: dict[str, Any] | None = None,
         filtered_items: list[dict[str, Any]] | None = None,
         lifecycle_version: str | None = None,
+        retrieval_policy_version: str | None = None,
+        continuity_state: str | None = None,
     ) -> None:
         """Record a retrieval response snapshot for feedback correlation.
 
@@ -87,15 +147,27 @@ class FeedbackService:
 
         conn = self.db.connect()
         now = int(time.time())
+        cue = packed_cue_embedding(
+            self.encoder,
+            canonical_cue_text(
+                query=query,
+                goal=goal,
+                task_type=task_type,
+                situation=situation,
+                requirements=requirements,
+                topics=topics,
+                entities=entities,
+            ),
+        )
 
         memory_ids = []
         response_json_text = None
         if response:
             memory_ids = response.get("memory_ids", []) + response.get("procedure_ids", [])
             if self.cfg.persist_response_json:
-                import json
-
-                response_json_text = json.dumps(response)[: self.cfg.max_response_json_chars]
+                response_json_text = _bounded_response_json(
+                    response, self.cfg.max_response_json_chars
+                )
 
         conn.execute(
             """
@@ -104,8 +176,9 @@ class FeedbackService:
               application, query, goal, task_type, situation_json, requirements_json,
               mode, limit_n, count_n, topics_json, entities_json,
               cue_terms_json, suppressed_json, memory_ids_json,
-              response_json, created_at, lifecycle_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              response_json, cue_embedding, cue_dim, retrieval_policy_version,
+              continuity_state, created_at, lifecycle_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(retrieval_id),
@@ -128,11 +201,14 @@ class FeedbackService:
                 dumps_json(suppressed or {}),
                 dumps_json(memory_ids),
                 response_json_text,
+                cue[0] if cue else None,
+                cue[1] if cue else None,
+                retrieval_policy_version,
+                continuity_state,
                 now,
                 LIFECYCLE_VERSION if lifecycle_version is None else (lifecycle_version or None),
             ),
         )
-
         items: list[tuple[str, str, dict[str, Any]]] = []
         if response:
             for schema_item in response.get("schemas", []):
@@ -164,8 +240,9 @@ class FeedbackService:
                         INSERT INTO context_recall_items (
                           context_id, memory_id, retrieval_type, memory_type, rank,
                           activation, reason, content_text, status,
-                          salience, confidence, admitted, pathway, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          salience, confidence, admitted, pathway, topical_relevance,
+                          final_rank_score, score_margin, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             str(retrieval_id),
@@ -181,6 +258,9 @@ class FeedbackService:
                             item.get("confidence"),
                             1,  # admitted=1: item was selected into context
                             item.get("pathway", "direct"),
+                            item.get("topical_relevance", item.get("activation")),
+                            item.get("final_rank_score", item.get("score")),
+                            item.get("score_margin"),
                             now,
                         ),
                     )
@@ -400,7 +480,6 @@ class FeedbackService:
         signal = feedback_signal_for(fb_label, outcome, self.cfg)
         useful_signal = feedback_signal_for("useful", outcome, self.cfg)
         partial_signal = feedback_signal_for("partially_useful", outcome, self.cfg)
-        irrelevant_signal = feedback_signal_for("irrelevant", outcome, self.cfg)
         stale_signal = feedback_signal_for("stale", outcome, self.cfg)
         wrong_signal = feedback_signal_for("wrong", outcome, self.cfg)
 
@@ -475,36 +554,27 @@ class FeedbackService:
                     except KeyError:
                         pass
 
-            if self.cfg.apply_negative_learning:
-                for schema_id in irrelevant_ids:
-                    try:
-                        if self.schemas.get(schema_id).status == "forgotten":
-                            continue
-                        self.schemas.adjust_feedback_state(
-                            schema_id,
-                            salience_delta=irrelevant_signal.salience_delta * source_weight,
-                            confidence_delta=0.0,
-                            min_salience=self.cfg.min_salience,
-                            min_confidence=self.cfg.min_confidence,
-                            max_confidence=self.cfg.max_confidence,
-                        )
-                        applied["penalized"].append(f"sch_{schema_id}")
-                    except KeyError:
-                        pass
-
             if self.cfg.apply_stale_wrong_review:
                 for schema_id in stale_ids:
                     try:
-                        if self.schemas.get(schema_id).status == "forgotten":
+                        schema = self.schemas.get(schema_id)
+                        if schema.status not in ("active", "needs_review"):
                             continue
                         self.schemas.adjust_feedback_state(
                             schema_id,
                             salience_delta=stale_signal.salience_delta * source_weight,
                             confidence_delta=stale_signal.confidence_delta * source_weight,
-                            is_labile=True,
+                            is_labile=False,
                             min_salience=self.cfg.min_salience,
                             min_confidence=self.cfg.min_confidence,
                             max_confidence=self.cfg.max_confidence,
+                        )
+                        self.schemas.update_status(
+                            schema_id,
+                            status="stale",
+                            stale_reason="superseded",
+                            is_labile=False,
+                            salience=0.05,
                         )
                         applied["marked_review"].append(f"sch_{schema_id}")
                     except KeyError:
@@ -513,27 +583,24 @@ class FeedbackService:
                 for schema_id in wrong_ids:
                     try:
                         schema = self.schemas.get(schema_id)
-                        if schema.status == "forgotten":
+                        if schema.status not in ("active", "needs_review"):
                             continue
                         self.schemas.adjust_feedback_state(
                             schema_id,
                             salience_delta=wrong_signal.salience_delta * source_weight,
                             confidence_delta=wrong_signal.confidence_delta * source_weight,
-                            is_labile=True,
+                            is_labile=False,
                             min_salience=self.cfg.min_salience,
                             min_confidence=self.cfg.min_confidence,
                             max_confidence=self.cfg.max_confidence,
                         )
-                        # wrong + outcome=failed: escalate status to needs_review so the
-                        # mode-gated filter in recall() fully excludes the schema in
-                        # default mode rather than relying on score-penalisation alone.
-                        # Only escalate from "active" -- schemas already in a resolved
-                        # state (superseded/contradicted/archived) must not be pulled
-                        # back into needs_review visibility by an ordinary feedback call;
-                        # that resolution should only be undone by whatever process
-                        # reached it (e.g. a new supersession, or explicit unforget).
-                        if outcome == "failure" and schema.status == "active":
-                            self.schemas.update_status(schema_id, status="needs_review")
+                        self.schemas.update_status(
+                            schema_id,
+                            status="stale",
+                            stale_reason="contradicted",
+                            is_labile=False,
+                            salience=0.05,
+                        )
                         applied["marked_review"].append(f"sch_{schema_id}")
                     except KeyError:
                         pass
@@ -582,7 +649,7 @@ class FeedbackService:
                     now,
                 ),
             )
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO context_feedback_events (
               context_id, retrieval_type, session_id, scope_id, scope_kind,
@@ -611,8 +678,10 @@ class FeedbackService:
                 signal.outcome_reward,
                 dumps_json([f"sch_{i}" for i in used_ids]),
                 dumps_json([f"sch_{i}" for i in irrelevant_ids]),
-                dumps_json([f"sch_{i}" for i in stale_ids]),
-                dumps_json([f"sch_{i}" for i in wrong_ids]),
+                # Canonicalize legacy wrong ids into stale ids with reason
+                # ``contradicted``; do not write new wrong-memory fields.
+                dumps_json([f"sch_{i}" for i in sorted(set(stale_ids + wrong_ids))]),
+                dumps_json([]),
                 dumps_json(used_procedure_ids or []),
                 dumps_json(irrelevant_procedure_ids or []),
                 dumps_json(stale_procedure_ids or []),
@@ -622,12 +691,36 @@ class FeedbackService:
                 now,
             ),
         )
+        # FDB-1 shadow normalization.  It intentionally excludes task outcome:
+        # the legacy row/mutations remain replayable, while the new event stream
+        # models retrieval evidence independently of task success.
+        self.feedback_events.record_legacy_reinforce(
+            retrieval_id=str(retrieval_id),
+            feedback=fb_label,
+            used_memory_ids=[f"sch_{i}" for i in used_ids],
+            irrelevant_memory_ids=[f"sch_{i}" for i in irrelevant_ids],
+            stale_memory_ids=[f"sch_{i}" for i in stale_ids],
+            wrong_memory_ids=[f"sch_{i}" for i in wrong_ids],
+            used_procedure_ids=used_procedure_ids,
+            irrelevant_procedure_ids=irrelevant_procedure_ids,
+            stale_procedure_ids=stale_procedure_ids,
+            wrong_procedure_ids=wrong_procedure_ids,
+            missing_context=missing_context,
+            source_feedback_id=int(cursor.lastrowid) if cursor.lastrowid is not None else None,
+            conn=conn,
+        )
+        access_evidence = self.access_evidence.record_feedback(
+            conn,
+            retrieval_id=str(retrieval_id),
+            useful_ids=used_ids if fb_label == "useful" else [],
+            irrelevant_ids=irrelevant_ids if fb_label == "irrelevant" else [],
+        )
         conn.commit()
 
         # Refresh noise/utility facets now that the event row is persisted —
         # the per-schema adjustments above ran before this insert and would
         # otherwise lag one feedback event behind.
-        for schema_id in set(used_ids + irrelevant_ids + stale_ids + wrong_ids):
+        for schema_id in set(used_ids + stale_ids + wrong_ids):
             try:
                 self.schemas.refresh_utility(schema_id)
             except KeyError:
@@ -643,8 +736,125 @@ class FeedbackService:
             "applied": applied,
             "signal": dataclasses.asdict(signal),
             "source_weight": source_weight,
+            "access_evidence": access_evidence,
         }
 
     def context_feedback(self, *, context_id: str, **kwargs: Any) -> dict[str, Any]:
         """Backward-compatible wrapper for context/gating feedback."""
         return self.retrieval_feedback(retrieval_id=context_id, retrieval_type="context", **kwargs)
+
+    def feedback(
+        self,
+        *,
+        retrieval_id: str,
+        memory_feedback: list[dict[str, Any]] | None = None,
+        procedure_feedback: list[dict[str, Any]] | None = None,
+        retrieval_quality: str | None = None,
+        missing: list[str] | None = None,
+        coverage: str = "partial",
+    ) -> dict[str, Any]:
+        """Record v9 feedback and apply only explicit declarative assessments.
+
+        Task outcome is intentionally absent. Procedure evidence is persisted
+        append-only for later outcome joining; it never enters declarative
+        salience/confidence updates.
+        """
+        result = self.feedback_events.record(
+            retrieval_id=retrieval_id,
+            memory_feedback=memory_feedback,
+            procedure_feedback=procedure_feedback,
+            retrieval_quality=retrieval_quality,
+            missing=missing,
+            coverage=coverage,
+            source_contract="slowave_feedback:v9",
+            mutation_mode="active",
+        )
+        rejected_targets = {item["target_id"] for item in result["rejected"]}
+        accepted_memory = [
+            item
+            for item in (memory_feedback or [])
+            if item.get("memory_id") not in rejected_targets
+        ]
+        applied: dict[str, list[str]] = {
+            "strengthened": [],
+            "superseded": [],
+            "contradicted": [],
+            "outdated": [],
+            "unsupported": [],
+            "withdrawn": [],
+            "replacements": [],
+            "access_evidence": [],
+        }
+        for item in accepted_memory:
+            memory_id = str(item["memory_id"])
+            try:
+                schema_id = int(memory_id.removeprefix("sch_"))
+            except ValueError:
+                continue
+            assessment = item["assessment"]
+            stale_reason = item.get("stale_reason")
+            schema = self.schemas.get(schema_id)
+            if schema.status == "forgotten":
+                continue
+            if assessment == "used":
+                # Conflicting feedback is append-only evidence, not authority
+                # to resurrect a memory already retired by stale/wrong input.
+                if schema.status not in ("active", "needs_review"):
+                    continue
+                signal = feedback_signal_for("useful", "unknown", self.cfg)
+                self.schemas.reinforce(
+                    schema_id,
+                    amount=signal.salience_delta,
+                    confidence_delta=signal.confidence_delta,
+                    min_confidence=self.cfg.min_confidence,
+                    max_confidence=self.cfg.max_confidence,
+                    clear_labile=True,
+                )
+                applied["strengthened"].append(memory_id)
+            elif assessment == "stale":
+                # First accepted terminal assessment wins. A later conflicting
+                # assessment is still persisted above but cannot oscillate the
+                # lifecycle state or resurrect an already retired memory.
+                if schema.status not in ("active", "needs_review"):
+                    continue
+                signal = feedback_signal_for(assessment, "unknown", self.cfg)
+                self.schemas.adjust_feedback_state(
+                    schema_id,
+                    salience_delta=signal.salience_delta,
+                    confidence_delta=signal.confidence_delta,
+                    is_labile=False,
+                    min_salience=self.cfg.min_salience,
+                    min_confidence=self.cfg.min_confidence,
+                    max_confidence=self.cfg.max_confidence,
+                )
+                terminal_status = "stale"
+                stale_reason = stale_reason or "superseded"
+                self.schemas.update_status(
+                    schema_id,
+                    status=terminal_status,
+                    stale_reason=stale_reason,
+                    is_labile=False,
+                    salience=0.05,
+                )
+                applied[stale_reason].append(memory_id)
+                replacement_memory_id = item.get("replacement_memory_id")
+                if replacement_memory_id:
+                    applied["replacements"].append(f"{memory_id}->{replacement_memory_id}")
+            elif assessment == "irrelevant":
+                applied["access_evidence"].append(memory_id)
+        irrelevant_ids = [
+            int(str(item["memory_id"]).removeprefix("sch_"))
+            for item in accepted_memory
+            if item["assessment"] == "irrelevant"
+        ]
+        if irrelevant_ids:
+            conn = self.db.connect()
+            self.access_evidence.record_feedback(
+                conn,
+                retrieval_id=retrieval_id,
+                useful_ids=[],
+                irrelevant_ids=irrelevant_ids,
+            )
+            conn.commit()
+        result["applied"] = applied
+        return result
