@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.16.4...slowave-v0.17.0) (2026-08-30)
+
+
+### Features
+
+* **beta:** mcp, retrieval, procedural memory, dashboard, acceptance tests ([#123](https://github.com/slowave-ai/slowave/issues/123)) ([0705a95](https://github.com/slowave-ai/slowave/commit/0705a956c308fec612e7b8b640c629a4b9de2166))
+
+
+### Bug Fixes
+
+* update release workflow repository guard ([#124](https://github.com/slowave-ai/slowave/issues/124)) ([6ffc068](https://github.com/slowave-ai/slowave/commit/6ffc068981758718b2a6539029c4d7b7dfd5f115))
+
 ## [0.16.4](https://github.com/mrsalty/slowave/compare/slowave-v0.16.3...slowave-v0.16.4) (2026-08-04)
 
 
