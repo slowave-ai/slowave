@@ -140,14 +140,6 @@ Work in progress — suggest more integrations or report broken ones with setup 
 
 ---
 
-## Honest limits
-
-- Slowave can only recall information the agent saved.
-- Retrieval may omit relevant memories or surface irrelevant ones.
-- Slowave does not verify that stored information is true.
-- Memory quality depends on what the agent saves and how it rates retrievals.
-
----
 
 ## Documentation
 
