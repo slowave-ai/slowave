@@ -1,22 +1,20 @@
 # Design Rationale
 
-![Brain-inspired memory architecture](../img/brain.png)
-
 Slowave is a centralized, adaptive memory substrate shared across AI tools.
 
 It gives different assistants, agents, chat clients, and MCP-compatible tools access to the same persistent memory layer instead of each tool keeping its own isolated memory.
 
 It is built around one core idea:
 
-> **Memory is a latent process before it is a language process.**
+> **Memory is a latent process before it is a reasoning process.**
 
 Slowave stores and updates memory through local embeddings, timestamps, scopes, salience, reinforcement, decay, supersession, and graph relationships. Only after retrieval does it render selected memory as natural language for a human, agent, chatbot, or language model.
 
 The architectural separation is simple:
 
-> Use language models for language.
+> Use language models for reasoning.
 >
-> Use memory mechanisms for memory.
+> Use latent space mechanisms for memory.
 
 Slowave is not a replacement for a language model, a reasoning engine, or an autonomous agent framework. It is the persistent memory layer those systems can use. The downstream client remains responsible for reasoning, planning, answer construction, tool execution, and final user-facing behavior.
 
@@ -82,11 +80,9 @@ It is not:
 - a language model;
 - a general reasoning engine;
 - a full autonomous agent framework;
-- a cloud-hosted managed memory service;
 - a natural-language summarization engine;
-- a replacement for application-specific business logic;
-- a guarantee of maximum benchmark accuracy;
-- a system that can decide by itself whether a remembered fact is true in the outside world.
+- a static knowledge base retrieval system
+- a markdown file manager
 
 Higher-order reasoning, planning, synthesis, and final answer construction still belong to the downstream model or application.
 
@@ -98,7 +94,7 @@ Slowave provides persistent context. The client decides how to use it.
 
 Many modern memory systems use language models as memory *operators*. A language model is asked to summarize conversations, merge memories, reflect on past sessions, rewrite stored knowledge, or rerank retrieved context.
 
-Slowave rejects that role — and it is worth being precise about what is rejected and what is not.
+Slowave approach is different.
 
 The language model **is** part of the boundary of the system:
 
@@ -172,31 +168,15 @@ One rule keeps this honest: behavioral memory *explains*, it never *prescribes*.
 
 ---
 
-## Trade-Offs
-
-Slowave intentionally prioritizes locality, privacy, transparency, deterministic behavior, resource efficiency, long-term adaptation, and cross-tool portability.
-
-Those choices create trade-offs.
-
-Slowave does not use an LLM to reinterpret every memory operation. It does not automatically synthesize final answers from memory. It does not guarantee that every recalled item is useful. It can still retrieve stale, irrelevant, outdated, overly broad, or overly local context when the available signals are ambiguous.
-
-This is why feedback, scopes, decay, supersession, and client-side reasoning remain important.
-
-Scope isolation is a soft mechanism, not a guarantee. Applications that need strict separation between users, tenants, clients, or confidential projects should use separate storage, separate profiles, or additional access-control boundaries outside Slowave.
-
----
-
 ## Positioning
 
-Slowave is not trying to become the reasoning layer.
-
-It is a centralized, reusable memory layer for systems that need persistent context across sessions, tools, and models. Context is organized by flexible scopes — projects, domains, workflows, clients, relationships, or unscoped general memory — not hardcoded to one domain such as coding.
+Slowave is a centralized, reusable memory layer for systems that need persistent context across sessions, tools, and models. Context is organized by flexible scopes — projects, domains, workflows, clients, relationships, or unscoped general memory — not hardcoded to one domain such as coding.
 
 The guiding principles are few:
 
-- Evolve memory through use: strengthen what keeps helping, let stale information lose priority, supersede outdated facts instead of accumulating contradictions.
+- Evolve memory through use: strengthen what keeps helping, let stale information lose priority.
 - Keep memory local, inspectable, and portable — independent of any model vendor.
-- Inject context selectively instead of replaying history wholesale.
+- Inject context selectively instead of replaying history.
 - Support many tools through one shared substrate, and keep the reasoning layer interchangeable.
 
 The client can change. The model can change. The interface can change. The memory remains available.

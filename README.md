@@ -3,128 +3,114 @@
 [![PyPI Status](https://img.shields.io/pypi/status/slowave?color=orange)](https://pypi.org/project/slowave/)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-<img src="img/slowave-logo-text.jpeg" alt="Slowave" width="350"/>
+---
 
-**A living local memory layer across your AI tools.**
+<img src="img/slowave-logo-text.jpeg" alt="Slowave" width="300"/>
 
-- Slowave keeps useful decisions, context, procedures, while lets stale memories fade.
-- Memory evolves over time, following your work.
-- Fully local, no data leaves your machine. 
-- Inspectable through a local dashboard.
-- No LLM API key required.
+**A living memory layer across your AI tools.**
 
 ---
 
-## How it feels
+Slowave keeps useful decisions, context, procedures, while lets stale memories fade.
 
-You work daily with your AI tools:
+- Pick up where you left off, even when you switch AI tools.
+- Useful memories are reinforced. Irrelevant or outdated memories fade.
+- Past solutions and failures can become reusable procedures.
+- Memory is stored locally in SQLite. No data leaves your machine. 
+- Slowave makes no LLM calls. No LLM API key is required. 
+- Inspect and manage memory through the local dashboard.
 
-- **Day 1** — cold start: Slowave bootstraps memory, initializing the embedding-based memory state.
-- **Week 1** — emerging patterns: new interactions begin reinforcing relevant signals, forming stable associations.
-- **Month 1** — context consolidates: frequently reinforced information becomes consistently retrievable, low-signal data fades.
-
-Multiple AI clients continuously build and reuse the same evolving memory over time:
-- not a markdown manager
-- not static RAG retrieval system
-- not an extra LLM layer over your agent
+Works on Claude Code, Codex, Curson, Cline, Windsurf, OpenCode, Claude Desktop. 
 
 ---
 
-## What you gain over time
+## How Slowave memory works
 
-Slowave becomes more useful the more you use it.
+Slowave works through 5 simple MCP tools:
 
-* **Continuity** — pick up projects where you left off
-* **Clarity** — your AI understands you without repeated explanation
-* **Consistency** — keep your context across AI tools
-* **Retention** — retain decisions, patterns, and preferences over time
-* **Focus** — spend time creating instead of managing context
+- **Activate** — start a task and load relevant memory.
+- **Remember** — save a fact, decision, preference, or instruction.
+- **Recall** — search memory during a task.
+- **Feedback** — mark retrieved memory as useful, irrelevant, or stale.
+- **Commit** — save the task outcome and any reusable procedure.
 
-Slowave does not just store information — it compounds it into usable context.
+Remember, recall, and feedback can be called more than once during a task.
 
-The result is a continuous working context that follows you across tools and time.
+- A **background worker** consolidate your memories and ...
+
+See [design.md](docs/design.md) and [architecture.md](docs/architecture.md) for more details.
 
 ---
 
 ## Installation
 
-### Setup all clients in one go
-
-Install Slowave and configure every detected client in one go:
+Install Slowave:
 
 ```bash
 pipx install slowave
 ```
 
-Then wire everything up:
+Preview the changes, configure detected clients, and verify the installation:
 
 ```bash
-slowave setup --dry-run   # preview what will change
-slowave setup             # apply: MCP configs, lifecycle instructions, hooks, services
-slowave doctor            # verify: daemon health, client detection
+slowave setup --dry-run   # preview
+slowave setup             # configure detected clients
+slowave doctor            # verify the installation
 ```
 
-`slowave setup` is idempotent and safe to run multiple times. The HTTP MCP daemon and background consolidation worker start automatically as system services.
+`slowave setup` is idempotent, safe to run more than once. It 
+- configures MCP.
+- installs the lifecycle instructions.
+- starts the daemon.
+- starts the background worker.
+
+
 
 > [!IMPORTANT]
-> **Public beta.** APIs and the storage schema may change. Your memory lives in a local plaintext SQLite database by default; protect it with OS permissions or full-disk encryption.
+> **No LLM API key required.**
 
 
-### Per-client setup
-
-To configure a single client, or to find client-specific details:
-
-| Client | Integration doc |
-|---|---|
-| Claude Code | [integrations/claude-code/README.md](integrations/claude-code/README.md) |
-| Claude Desktop ¹ | [integrations/claude-desktop/README.md](integrations/claude-desktop/README.md) |
-| Cline | [integrations/cline/README.md](integrations/cline/README.md) |
-| Cursor ¹ | [integrations/cursor/README.md](integrations/cursor/README.md) |
-| OpenCode | [integrations/opencode/README.md](integrations/opencode/README.md) |
-| Windsurf | [integrations/windsurf/README.md](integrations/windsurf/README.md) |
-| Codex | [integrations/codex/README.md](integrations/codex/README.md) |
-| Gemini CLI | coming soon |
-
-¹ requires one manual paste after setup
-
-See the complete install & setup reference: [docs/install.md](docs/install.md)
-
-### Storage
-
-The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
-
-Memory is stored in a local SQLite database at `~/.slowave/slowave.db` — fully inspectable, never leaves your machine. Not encrypted by default; protect sensitive data with OS permissions or full-disk encryption.
-
-
----
-
-## Why Slowave is different
-
-Slowave is a local, feedback-driven long-term memory layer for AI agents — not a transcript replay, static RAG file, or LLM summarization pipeline.
-
-- **Local and model-independent** — memory stays in a local SQLite database; it needs no memory-service API key or internal LLM calls.
-- **Shared across clients** — one scoped store provides continuity across supported MCP tools.
-- **Adaptive, not append-only** — explicit feedback can reinforce useful memory, suppress noise, and record stale or superseded information with provenance.
-- **Selective context** — Slowave retrieves a compact, task-relevant brief instead of replaying conversation history.
-- **Inspectable and controllable** — you can inspect evidence, review retrievals, and suppress a memory; execution-backed procedures preserve reusable work patterns.
-
-The architecture draws inspiration from episodic memory, offline consolidation, and associative recall. Read the [design rationale](docs/design.md) or [architecture guide](docs/architecture.md) for the full model.
+Configure one client with `slowave setup --client <name>`. See [supported clients](#supported-clients) and the [installation reference](docs/install.md).
 
 ---
 
 ## Dashboard
 
-Monitor Slowave’s memory health, incoming events and memory consolidation in real time.
+Start the local dashboard:
+
+```bash
+slowave dashboard
+```
+
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) to inspect memories, retrievals, procedures, activity, and system health.
 
 <p align="center">
-    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Dashboard overview" width="33%"></a>
-    <a href="img/schemas.jpg"><img src="img/schemas.jpg" alt="Memory detail" width="33%"></a>
-    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="33%"></a><br>
-    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="33%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Activity" width="33%"></a>
-    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="33%"></a>
+  <a href="img/overview.jpg">
+    <img src="img/overview.jpg" alt="Slowave local dashboard" width="80%">
+  </a>
 </p>
 
+<p align="center">
+    <a href="img/schemas.jpg"><img src="img/schemas.jpg" alt="Memory detail" width="16%"></a>
+    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="16%"></a>
+    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="16%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Activity" width="16%"></a>
+    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="16%"></a>
+</p>
+
+
+---
+
+## Design choices
+
+- **Local** — memory stays on your machine in SQLite.
+- **Shared** — supported AI tools can use the same memory.
+- **Agent-driven** — your LLM agent decides what to save and rates what it retrieves. 
+- **Feedback-based** — memories can be reinforced, ignored, marked stale, or replaced.
+- **Deterministic** - no LLM in the loop, memory is stored in latent space and governed by deterministic algorithms.
+- **Inspectable** — the dashboard shows what was stored and why it was retrieved.
+
+The consolidation model is inspired by episodic memory, associative recall, and slow-wave sleep. See [design.md](docs/design.md) and [architecture.md](docs/architecture.md) for details.
 
 ---
 
@@ -136,25 +122,30 @@ Work in progress — suggest more integrations or report broken ones with setup 
 
 | Client         | macOS | Linux | Windows | Setup                                    |
 |----------------|--|--|--|------------------------------------------|
-| Claude Code    | ✅ | ✅ | ✅ | `slowave setup --client claude-code`     |
-| Cline          | ✅ | ✅ | ✅ | `slowave setup --client cline`           |
-| Cursor         | ✅ | ✅ | ✅ | `slowave setup --client cursor` ¹        |
-| Windsurf (Devin)    | ✅ | ✅ | ✅ | `slowave setup --client windsurf`        |
-| Claude Desktop | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
-| OpenCode       | ✅ | ✅ | ✅ | `slowave setup --client opencode`        |
-| Codex          | ✅ | ✅ | ✅ | `slowave setup --client codex`           |
-| Gemini CLI     | ⬜ | ⬜ | ⬜ | `slowave setup --client gemini`          |
-| All the above  |  |  |  | `slowave setup`                          |
+| [Claude Code](integrations/claude-code/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-code` |
+| [Cline](integrations/cline/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cline` |
+| [Cursor](integrations/cursor/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cursor` ¹ |
+| [Windsurf](integrations/windsurf/README.md) | ✅ | ✅ | ✅ | `slowave setup --client windsurf` |
+| [Claude Desktop](integrations/claude-desktop/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
+| [OpenCode](integrations/opencode/README.md) | ✅ | ✅ | ✅ | `slowave setup --client opencode` |
+| [Codex](integrations/codex/README.md) | ✅ | ✅ | ✅ | `slowave setup --client codex` |
+| All the above |  |  |  | `slowave setup` |
 
 ¹ requires one manual paste after setup
+
+> [!IMPORTANT]
+> The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
+>
+> Memory is stored in plaintext at `~/.slowave/slowave.db`. Slowave does not send it to a hosted memory service. Protect sensitive data with OS permissions or full-disk encryption.
 
 ---
 
 ## Honest limits
 
-- It recalls stored information; it does not infer missing preferences.
-- It retrieves relevant memories; it does not perform reasoning.
-- Memory quality (definition, feedback, classification, etc) depend on your agent capabilities.
+- Slowave can only recall information the agent saved.
+- Retrieval may omit relevant memories or surface irrelevant ones.
+- Slowave does not verify that stored information is true.
+- Memory quality depends on what the agent saves and how it rates retrievals.
 
 ---
 
@@ -171,6 +162,7 @@ Work in progress — suggest more integrations or report broken ones with setup 
 Slowave is open source under the AGPL-3.0-or-later license.
 
 Contributions are welcome, especially in:
+
 - client integrations
 - recall quality improvements
 - evaluation datasets
@@ -182,4 +174,4 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting a pull request.
 
 ## License
 
-  Slowave is open source under the [GNU AGPL-3.0-or-later](LICENSE) license.
+Slowave is open source under the [GNU AGPL-3.0-or-later](LICENSE) license.
