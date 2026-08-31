@@ -36,7 +36,7 @@ Slowave works through 5 simple MCP tools:
 
 Remember, recall, and feedback can be called more than once during a task.
 
-- A **background worker** consolidate your memories and ...
+A **background worker** consolidates your memories and procedures.
 
 See [design.md](docs/design.md) and [architecture.md](docs/architecture.md) for more details.
 
