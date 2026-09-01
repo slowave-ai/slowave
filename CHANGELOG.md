@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.1...slowave-v0.17.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* dashboard improvements, added benchmark runs and results, docs polishing ([#131](https://github.com/slowave-ai/slowave/issues/131)) ([acd65d0](https://github.com/slowave-ai/slowave/commit/acd65d0a9890da79be152983ea1b60d5a6790730))
+
 ## [0.17.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.0...slowave-v0.17.1) (2026-08-30)
 
 
