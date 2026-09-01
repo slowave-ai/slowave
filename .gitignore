@@ -87,6 +87,9 @@ node_modules/
 *.db
 !tests/**/*.db
 
+# Local runtime memory/session data (never commit)
+*.ses
+
 # uv
 .uv/
 

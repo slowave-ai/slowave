@@ -34,13 +34,13 @@ To configure a single client, or to find client-specific details:
 
 | Client | Integration doc |
 |---|---|
-| Claude Code | [integrations/claude-code/README.md](integrations/claude-code/README.md) |
-| Claude Desktop ¹ | [integrations/claude-desktop/README.md](integrations/claude-desktop/README.md) |
-| Cline | [integrations/cline/README.md](integrations/cline/README.md) |
-| Cursor ¹ | [integrations/cursor/README.md](integrations/cursor/README.md) |
-| OpenCode | [integrations/opencode/README.md](integrations/opencode/README.md) |
-| Windsurf | [integrations/windsurf/README.md](integrations/windsurf/README.md) |
-| Codex ² | [integrations/codex/README.md](integrations/codex/README.md) |
+| Claude Code | [integrations/claude-code/README.md](../integrations/claude-code/README.md) |
+| Claude Desktop ¹ | [integrations/claude-desktop/README.md](../integrations/claude-desktop/README.md) |
+| Cline | [integrations/cline/README.md](../integrations/cline/README.md) |
+| Cursor ¹ | [integrations/cursor/README.md](../integrations/cursor/README.md) |
+| OpenCode | [integrations/opencode/README.md](../integrations/opencode/README.md) |
+| Windsurf | [integrations/windsurf/README.md](../integrations/windsurf/README.md) |
+| Codex ² | [integrations/codex/README.md](../integrations/codex/README.md) |
 
 ¹ requires one manual paste after setup
 ² also configures Codex Desktop (ChatGPT app) and the Codex IDE extension — all three share `~/.codex/config.toml`

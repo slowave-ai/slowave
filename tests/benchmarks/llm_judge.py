@@ -20,10 +20,16 @@ class QuotaExhausted(Exception):
     """Raised when the LLM API returns 402 (insufficient credits)."""
 
 
+class InvalidModel(Exception):
+    """Raised when the provider rejects the requested model ID (a permanent
+    config error — retrying will not help)."""
+
+
 # $ per million tokens (prompt, completion) on OpenRouter, for models actually
 # used as judge/answerer in this project. Verified 2026-08-11 via openrouter.ai
 # — re-check there if pricing looks stale by the time you read this.
 KNOWN_MODEL_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    "openai/gpt-5.6-luna": (0.20, 1.20),
     "openai/gpt-4o-mini": (0.15, 0.60),
     "deepseek/deepseek-v4-flash": (0.077, 0.154),
     "deepseek/deepseek-v4-pro": (0.435, 0.87),
@@ -151,6 +157,12 @@ def call_llm(
             err_str = str(e)
             if "402" in err_str or "Insufficient credits" in err_str:
                 raise QuotaExhausted(str(e)) from e
+            if "not a valid model" in err_str.lower() or "model id" in err_str.lower():
+                raise InvalidModel(
+                    f"Model '{model}' was rejected by the provider ({err_str}). "
+                    "Check the model ID — e.g. 'deepseek/deepseek-v4-flash' "
+                    "(no '-latest' suffix)."
+                ) from e
             if "400" in err_str and (
                 "context length" in err_str.lower() or "maximum context" in err_str.lower()
             ):
@@ -215,15 +227,11 @@ def parse_judge_response(raw: str) -> tuple[float, str] | None:
         except ValueError:
             continue
 
-    # Strategy 4: fallback — find any number in [0,1]
-    match = re.search(r"(\d+\.?\d*)", raw)
-    if match:
-        try:
-            score = float(match.group(1))
-            if 0.0 <= score <= 1.0:
-                return score, raw[:200]
-        except ValueError:
-            pass
+    # No further fallback. The prompt demands a strict JSON object, and a judge
+    # that returns prose with a stray "0"/"1" (e.g. "0 of 3 facts present") must
+    # not have that digit silently treated as a score. Anything that doesn't
+    # parse as a `score` field is an explicit parse failure, which the caller
+    # records (parse_ok=False) and excludes from the score average.
 
     return None
 

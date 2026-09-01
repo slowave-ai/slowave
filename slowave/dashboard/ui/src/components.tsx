@@ -242,7 +242,6 @@ export function AppShell({
           <div>
             <strong>Slowave</strong>
             <span>Dashboard</span>
-            <small className="brand-version">v{version}</small>
           </div>
         </div>
         <nav aria-label="Primary">

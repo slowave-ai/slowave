@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import threading
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from shutil import copy2, copytree
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from setuptools.build_meta import build_wheel
 
 from slowave.dashboard.app import _make_handler
 
@@ -34,6 +38,10 @@ def test_static_shell_and_assets_are_served_with_safe_paths(tmp_path: Path) -> N
         assert 'data-allow-actions="false"' in html
 
         with urlopen(base + "/img/slowave-logo-small.jpeg") as response:
+            assert response.headers["Content-Type"].startswith("image/jpeg")
+            assert response.read(2) == b"\xff\xd8"
+
+        with urlopen(base + "/img/slowave-logo-text-small.jpeg") as response:
             assert response.headers["Content-Type"].startswith("image/jpeg")
             assert response.read(2) == b"\xff\xd8"
 
@@ -80,16 +88,29 @@ def test_static_shell_preserves_action_gate(tmp_path: Path) -> None:
         server.server_close()
 
 
-def test_package_data_includes_dashboard_shell_and_referenced_assets() -> None:
-    """The wheel manifest must include every static dashboard file it serves."""
+def test_wheel_contains_dashboard_shell_and_referenced_assets(tmp_path: Path, monkeypatch) -> None:
+    """A released wheel must be able to serve its Vite dashboard on its own."""
     source_root = Path(__file__).parents[2]
-    assert '"dashboard/static/**/*"' in (source_root / "pyproject.toml").read_text()
-    static_root = source_root / "slowave/dashboard/static"
-    index = (static_root / "index.html").read_text()
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        copy2(source_root / name, package_root / name)
+    copytree(source_root / "slowave", package_root / "slowave")
+
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    monkeypatch.chdir(package_root)
+    wheel_name = build_wheel(str(wheel_dir))
+    with zipfile.ZipFile(wheel_dir / wheel_name) as wheel:
+        files = set(wheel.namelist())
+        index = wheel.read("slowave/dashboard/static/index.html").decode()
+
+    assert "slowave/dashboard/static/index.html" in files
+    assert "slowave/dashboard/static/img/slowave-logo-text-small.jpeg" in files
     assets = [value for value in index.split('"') if value.startswith(("/assets/", "/img/"))]
     assert assets
     for asset in assets:
-        assert (static_root / asset.lstrip("/")).is_file()
+        assert f"slowave/dashboard/static/{asset.lstrip('/')}" in files
 
 
 def test_canonical_product_routes_refresh_to_react_shell(tmp_path: Path) -> None:

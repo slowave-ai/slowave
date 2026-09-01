@@ -61,6 +61,8 @@ from slowave.latent.salience import SalienceConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
 from tests.benchmarks.evidence_format import format_retrieved_evidence
 from tests.benchmarks.llm_judge import (
+    InvalidModel,
+    QuotaExhausted,
     confirm_paid_run,
     estimate_cost_usd,
     get_openai_client,
@@ -634,8 +636,8 @@ def print_report(
     print(f" MRR     : {mrr}")
     judge_rows = [r for r in results if not r.error and r.llm_judge_score is not None]
     if judge_rows:
-        judge_errs = sum(1 for r in judge_rows if not r.llm_judge_parse_ok)
-        print(f" Judge parse errors: {judge_errs}/{len(judge_rows)}")
+        judge_errs = sum(1 for r in results if not r.error and not r.llm_judge_parse_ok)
+        print(f" Judge parse errors: {judge_errs}/{len(judge_rows) + judge_errs}")
 
     # Timing — total wall-clock plus the phases that make it up, so it's
     # obvious where the time actually went instead of one opaque number.
@@ -779,7 +781,7 @@ def _build_payload(
         if judge_rows
         else None
     )
-    total_judge_parse_errors = sum(1 for r in judge_rows if not r.llm_judge_parse_ok)
+    total_judge_parse_errors = sum(1 for r in results if not r.error and not r.llm_judge_parse_ok)
     fired_all = [r for r in results if r.anchor_fired]
     temporal_diag = {
         "n": len(results),
@@ -830,6 +832,9 @@ def _build_payload(
             "debug": args.debug,
             "keep_debug_dbs": args.keep_debug_dbs,
             "no_salience_rerank": args.no_salience_rerank,
+            "salience_weight": args.salience_weight,
+            "tau_seconds": args.tau_seconds,
+            "surprise_weight": args.surprise_weight,
             "no_graph_expansion": args.no_graph_expansion,
             "no_temporal": args.no_temporal,
             "judge_model": args.judge_model or None,
@@ -1170,11 +1175,48 @@ def main() -> None:
         print(f"\nJudging {len(pending_judge)} questions concurrently...", flush=True)
         t_judge_start = time.time()
         jobs = [job for _idx, job in pending_judge]
-        judged = judge_batch_concurrent(openai_client, args.judge_model, jobs)
+        try:
+            judged = judge_batch_concurrent(openai_client, args.judge_model, jobs)
+        except (InvalidModel, QuotaExhausted) as e:
+            print(f"\nFATAL: {e}", file=sys.stderr)
+            _write_payload(
+                out_path,
+                _build_payload(
+                    results=results,
+                    dataset_path=dataset_path,
+                    args=args,
+                    total_elapsed=time.time() - t_start,
+                    partial=True,
+                ),
+            )
+            sys.exit(1)
+        except Exception as e:
+            # A requested judge is the primary score. Persist the retrieval
+            # work, but do not emit an apparently complete artifact with no
+            # LLM-judge verdicts.
+            print(
+                f"\nFATAL: LLM-judge pass failed: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _write_payload(
+                out_path,
+                _build_payload(
+                    results=results,
+                    dataset_path=dataset_path,
+                    args=args,
+                    total_elapsed=time.time() - t_start,
+                    partial=True,
+                ),
+            )
+            sys.exit(1)
         judge_elapsed = time.time() - t_judge_start
         for (idx, _job), (score, reason, pt, ct, parse_ok) in zip(pending_judge, judged):
             row = results[idx]
-            row.llm_judge_score = score
+            # A judge that couldn't be parsed is NOT a "wrong" verdict — leave
+            # the score unset so it is excluded from the mean; parse_ok records
+            # the failure separately.
+            row.llm_judge_score = score if parse_ok else None
             row.llm_judge_reason = reason
             row.llm_judge_parse_ok = parse_ok
             row.debug["llm_judge_tokens"] = {"prompt": pt, "completion": ct}

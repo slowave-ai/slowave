@@ -384,6 +384,7 @@ function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) 
   const retrievals = Number(data.retrievals_total ?? 0);
   const matched = Math.max(0, retrievals - Number(data.retrievals_no_match ?? 0));
   const feedbackComplete = Number(data.retrievals_feedback_complete ?? 0);
+  const activeScopes = Number(summary?.active_scopes ?? 0);
   return (
     <div className="memory-health-section">
       <Section title="Memory health">
@@ -393,6 +394,7 @@ function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) 
           <RateMetricCard title="Assessed memories used" numerator={used} denominator={assessed} tooltip={`Distinct retrieved active memories explicitly assessed as used divided by distinct retrieved active memories with an applicable feedback assessment. A memory retrieved multiple times counts once; ${assessed.toLocaleString()} assessed + ${Math.max(0, retrieved - assessed).toLocaleString()} unassessed = ${retrieved.toLocaleString()} retrieved.`} className="metric-used" secondary={assessed < retrieved ? `${Math.max(0, retrieved - assessed).toLocaleString()} unassessed` : undefined} />
           <RateMetricCard title="Retrieval match rate" numerator={matched} denominator={retrievals} tooltip="Eligible retrieval operations returning at least one admitted item divided by eligible retrieval operations. An empty result is not proof that no stored memory was relevant." className="metric-no-match" secondary={`${(retrievals - matched).toLocaleString()} empty`} />
           <RateMetricCard title="Feedback coverage" numerator={feedbackComplete} denominator={retrievals} tooltip={glossary.retrievals_feedback_complete} className="metric-feedback" />
+          <MetricCard title="Active scopes" value={activeScopes.toLocaleString()} tooltip={glossary.active_scopes} href="/memory" className="metric-scopes" />
         </div>
       </Section>
     </div>
