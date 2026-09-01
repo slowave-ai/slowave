@@ -49,6 +49,10 @@ test = [
     "pytest-randomly>=3.16",
     "pytest-rerunfailures>=15.0",
     "faiss-cpu>=1.7",
+    # Python 3.14 virtual environments no longer bundle these build tools.
+    # The dashboard-wheel test imports setuptools.build_meta directly.
+    "setuptools>=61",
+    "wheel",
 ]
 http = ["httpx>=0.25"]
 dev = ["pytest>=9.0.3", "black", "isort", "build", "twine", "faiss-cpu>=1.7"]

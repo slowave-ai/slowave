@@ -63,6 +63,15 @@
   --accent-memory: #4ade80;
   --accent-procedure: #a78bfa;
 }
+:root[data-theme="light"] .effectiveness-card strong,
+:root[data-theme="light"] .metric-rate-percent,
+:root[data-theme="light"] .effectiveness-percent {
+  color: var(--text);
+  background: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  text-shadow: none;
+}
 * {
   box-sizing: border-box;
 }
@@ -489,6 +498,7 @@ main {
 .effectiveness-card.metric-irrelevant { --metric-accent: var(--warning); }
 .effectiveness-card.metric-no-match { --metric-accent: var(--accent-episode); }
 .effectiveness-card.metric-feedback { --metric-accent: var(--accent-activity); }
+.effectiveness-card.metric-scopes { --metric-accent: var(--accent-memory); }
 .effectiveness-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -34,13 +34,13 @@ download_longmemeval() {
     echo "→ LongMemEval oracle split (~15 MB) ..."
     mkdir -p "$REPO_ROOT/data/longmemeval"
     curl -fL --progress-bar \
-        "https://huggingface.co/datasets/xiaowu0162/LongMemEval/resolve/main/longmemeval_oracle.json" \
+        "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json" \
         -o "$REPO_ROOT/data/longmemeval/longmemeval_oracle.json"
     echo "  ✓ data/longmemeval/longmemeval_oracle.json"
 
     echo "→ LongMemEval full haystack (~265 MB, needed for 93.4% haystack run) ..."
     curl -fL --progress-bar \
-        "https://huggingface.co/datasets/xiaowu0162/LongMemEval/resolve/main/longmemeval_s_cleaned.json" \
+        "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json" \
         -o "$REPO_ROOT/data/longmemeval/longmemeval_s_cleaned.json"
     echo "  ✓ data/longmemeval/longmemeval_s_cleaned.json"
 }
@@ -59,17 +59,17 @@ download_dmr() {
 download_stalememory() {
     echo "→ StaleMemory (~13 MB, synthetically generated benchmark) ..."
     mkdir -p "$REPO_ROOT/data/stalememory"
-    # Hosted in the Slowave releases as a standalone asset.
-    # If not yet released, generate it locally:
-    #   python scripts/generate_stalememory.py --out data/stalememory/
-    curl -fL --progress-bar \
+    # Hosted in the Slowave releases as a standalone asset. There is no local
+    # generator in this checkout, so fail clearly when the asset is unavailable.
+    if ! curl -fL --progress-bar \
         "https://github.com/mrsalty/slowave/releases/download/datasets/stalememory_scenarios.tar.gz" \
-        -o /tmp/stalememory_scenarios.tar.gz 2>/dev/null && \
-    tar -xzf /tmp/stalememory_scenarios.tar.gz -C "$REPO_ROOT/data/stalememory/" && \
-    rm /tmp/stalememory_scenarios.tar.gz && \
-    echo "  ✓ data/stalememory/scenarios.jsonl + manifest.json" || \
-    echo "  ✗ StaleMemory release asset not yet published. Generate locally:"
-    echo "    python scripts/generate_stalememory.py --out data/stalememory/"
+        -o /tmp/stalememory_scenarios.tar.gz 2>/dev/null; then
+        echo "  ✗ StaleMemory release asset not available; obtain scenarios.jsonl from the project maintainer."
+        return 1
+    fi
+    tar -xzf /tmp/stalememory_scenarios.tar.gz -C "$REPO_ROOT/data/stalememory/"
+    rm /tmp/stalememory_scenarios.tar.gz
+    echo "  ✓ data/stalememory/scenarios.jsonl + manifest.json"
 }
 
 case "$TARGET" in

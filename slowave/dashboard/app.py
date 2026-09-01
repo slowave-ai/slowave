@@ -41,15 +41,16 @@ VALID_SCHEMA_STATUSES = (
 # stdlib server with its own copy of this list.
 VALID_SCHEMA_RELATIONS = ("relates_to",)
 
-# Dashboard header logo, copied into the package-owned static output so installed
+# Dashboard wordmark, copied into the package-owned static output so installed
 # wheels do not depend on the repository checkout or current working directory.
-_LOGO_RELATIVE = Path("img") / "slowave-logo-small.jpeg"
+_WORDMARK_RELATIVE = Path("img") / "slowave-logo-text-small.jpeg"
 
 _ACTIVITY_SUMMARY_CACHE: dict[tuple[str, str, tuple[Any, ...]], tuple[float, dict[str, int]]] = {}
 _ACTIVITY_SUMMARY_CACHE_LOCK = threading.Lock()
 _ACTIVITY_SUMMARY_CACHE_TTL = 5.0
 _STATIC_DIR = Path(__file__).with_name("static")
-_LOGO_PATH: Path = _STATIC_DIR / _LOGO_RELATIVE
+_WORDMARK_PATH: Path = _STATIC_DIR / _WORDMARK_RELATIVE
+_ICON_PATH: Path = _STATIC_DIR / "img" / "slowave-logo-small.jpeg"
 
 _PRODUCT_LIST_ROUTES = {
     "/",
@@ -205,8 +206,10 @@ def _make_handler(
                     self._send_json(_event_detail(db_path, event_id))
                 elif path == "/api/debug/graph":
                     self._send_json(_graph_health_payload(db_path))
+                elif path == "/img/slowave-logo-text-small.jpeg":
+                    self._send_file(_WORDMARK_PATH, "image/jpeg")
                 elif path == "/img/slowave-logo-small.jpeg":
-                    self._send_file(_LOGO_PATH, "image/jpeg")
+                    self._send_file(_ICON_PATH, "image/jpeg")
                 elif path.startswith("/assets/") or path in {"/favicon.svg"}:
                     self._send_static(path, experimental=experimental_dashboard)
                 else:

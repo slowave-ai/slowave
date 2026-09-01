@@ -7,40 +7,63 @@
 
 <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="300"/>
 
-**A living memory layer across your AI tools.**
+**Living memory layer across your AI tools.**
 
 ---
 
-Slowave keeps useful decisions, context, procedures, while lets stale memories fade.
+Slowave gives your AI agents one local memory that persists across sessions, tools, and models.
 
-- Pick up where you left off, even when you switch AI tools.
-- Useful memories are reinforced. Irrelevant or outdated memories fade.
+- Relevant context is maintained across your sessions and tools.
+- Useful memories are reinforced. Irrelevant memories fade.
 - Past solutions and failures can become reusable procedures.
-- Memory is stored locally in SQLite. No data leaves your machine. 
-- Slowave makes no LLM calls. No LLM API key is required. 
-- Inspect and manage memory through the local dashboard.
+- Fully local. Memory is stored in SQLite. No data leaves your machine.
+- Memory maintenance and retrieval require no LLM calls or LLM API key.
+- Works via 5 simple MCP tools for your agent to call.
+- Inspect and manage your growing memory through the local dashboard.
 
-Works on Claude Code, Codex, Curson, Cline, Windsurf, OpenCode, Claude Desktop. 
+Works on Claude Code, Codex, Cursor, Cline, Windsurf, OpenCode, and Claude Desktop.
 
----
+## Day 1 demo
 
-## How Slowave memory works
+<p>
+    <img src="img/demo.gif" alt="Slowave demo" width="75%">
+</p>
 
-Slowave works through 5 simple MCP tools:
+## Why Slowave?
 
-- **Activate** — start a task and load relevant memory.
-- **Remember** — save a fact, decision, preference, or instruction.
-- **Recall** — search memory during a task.
-- **Feedback** — mark retrieved memory as useful, irrelevant, or stale.
-- **Commit** — save the task outcome and any reusable procedure.
+Most agent memory systems treat memory as a retrieval problem: they save conversations or extracted facts, search them later, and add the results back to the prompt. Over time that accumulates noise — new decisions conflict with old ones, and irrelevant information pollutes the context window.
 
-Remember, recall, and feedback can be called more than once during a task.
+A common fix is an LLM-driven maintenance layer that summarizes content and detects signals such as contradiction or supersession. That works, but it adds cost and latency and puts memory management behind a second reasoning layer. Slowave avoids this by letting the connected agent provide the judgment while it maintains memory locally.
 
-A **background worker** consolidates your memories and procedures.
+Inspired by how biological memory keeps memory processes separate from reasoning, Slowave does not treat memory as a search problem. It maintains a compact store whose relevance self-regulates through use: recalled memories gain salience, memories returned together strengthen their associations, useful memories are reinforced, and stale ones decay. The payoff is a task primed with a small, current working-memory brief — not an ever-growing replay of everything that was ever saved.
 
-See [design.md](docs/design.md) and [architecture.md](docs/architecture.md) for more details.
+Slowave implements a different paradigm:
 
----
+> Use language models for reasoning and judgment.
+
+> Use latent-space mechanisms for memory maintenance.
+
+### Key features
+
+- **One memory across all tools**: Claude Code, Codex, Cursor, and other tools can access the same local memory. You can change the client or model without starting over.
+
+- **Your agent reasons, Slowave remembers what's relevant**: Your agent provides reasoning and judgment: it decides what is worth remembering and reports whether recalled context was useful, irrelevant, or stale. Slowave uses those signals to maintain memory without a separate LLM.
+
+- **Memory evolves with use**: Directly recalled memories gain salience, and memories you use together become **co-activated** — linked so a related one surfaces even when it doesn't literally match your query. Useful feedback reinforces them further, irrelevant memories lose priority, and stale information can be suppressed or superseded.
+
+- **No LLM calls**: Slowave uses local embeddings, scopes, time, salience, associations, reinforcement, decay, and offline consolidation. It makes no LLM calls to summarize, merge, rewrite, or rerank memory, avoiding additional token cost and latency.
+
+- **Learn from past experience**: Task outcomes and multi-step methods can preserve structured procedures with context, steps, and caveats. When a similar task appears, the agent can retrieve what was tried before, whether it worked, and what to avoid.
+
+- **Compact relevant context**: Slowave retrieves a compact set of relevant memories instead of replaying an expanding transcript or loading an ever-growing collection of files.
+
+- **Flexible scoping**: Memories are initially siloed within the scope where they were learned. When a pattern proves useful across distinct scopes and sessions, Slowave can make it available more broadly with relevance safeguards.
+
+- **Observable and actionable**: Memories, source evidence, retrieval paths, feedback, procedures, and lifecycle state are visible in the local dashboard. You can reversibly suppress a memory without deleting its evidence.
+
+- **100% local**: Memory is stored in a local SQLite database. The default embedding model downloads once on first use and is cached locally; Slowave does not send memory to a hosted memory service.
+
+The result is one local memory layer that works across agents, improves through use, and remains independent of any model provider.
 
 ## Installation
 
@@ -58,21 +81,32 @@ slowave setup             # configure detected clients
 slowave doctor            # verify the installation
 ```
 
-`slowave setup` is idempotent, safe to run more than once. It 
-- configures MCP.
-- installs the lifecycle instructions.
-- starts the daemon.
-- starts the background worker.
+`slowave setup` is idempotent and safe to run more than once. It:
 
-
+- configures MCP
+- installs the lifecycle instructions
+- starts the daemon
+- starts the background worker
 
 > [!IMPORTANT]
 > **No LLM API key required.**
 
-
 Configure one client with `slowave setup --client <name>`. See [supported clients](#supported-clients) and the [installation reference](docs/install.md).
 
----
+
+## Long-term value
+
+Slowave becomes more useful as experience accumulates across projects. 
+
+What to expect:
+
+- **Day 1**: Cold start seeds your first project scope. Agents immediately preserve decisions, preferences, constraints, and task outcomes. Context from one session is recallable in the next.
+- **Week 1**: Feedback loops close. Repeated work across projects and tools builds a shared history. Useful memories reinforce; irrelevant ones fade; stale decisions get flagged. Agents start retrieving what helped before instead of re-deriving it.
+- **Month 1**: Consolidation compounds. Cross-project patterns crystallize into reusable procedures with context, steps, and caveats. Agents retrieve not just facts but what was tried, what worked, what to avoid, turning accumulated experience into a compounding advantage for every new task.
+
+
+Slowave provides persistence immediately. Its deeper value compounds through use.
+
 
 ## Dashboard
 
@@ -99,24 +133,9 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765) to inspect memories, retriev
 </p>
 
 
----
-
-## Design choices
-
-- **Local** — memory stays on your machine in SQLite.
-- **Shared** — supported AI tools can use the same memory.
-- **Agent-driven** — your LLM agent decides what to save and rates what it retrieves. 
-- **Feedback-based** — memories can be reinforced, ignored, marked stale, or replaced.
-- **Deterministic** - no LLM in the loop, memory is stored in latent space and governed by deterministic algorithms.
-- **Inspectable** — the dashboard shows what was stored and why it was retrieved.
-
-The consolidation model is inspired by episodic memory, associative recall, and slow-wave sleep. See [design.md](docs/design.md) and [architecture.md](docs/architecture.md) for details.
-
----
-
 ## Supported clients
 
-Work in progress — suggest more integrations or report broken ones with setup details.
+Client coverage is actively expanding. Suggest more integrations or report broken ones with setup details.
 
 ✅ = manually verified · ⬜ = pending verification
 
@@ -138,16 +157,59 @@ Work in progress — suggest more integrations or report broken ones with setup 
 >
 > Memory is stored in plaintext at `~/.slowave/slowave.db`. Slowave does not send it to a hosted memory service. Protect sensitive data with OS permissions or full-disk encryption.
 
----
+
+## How Slowave memory works
+
+Slowave works through 5 simple MCP tools:
+
+- **Activate:** start a task and load relevant memory.
+- **Remember:** save a fact, decision, preference, or instruction.
+- **Recall:** search memory during a task.
+- **Feedback:** mark retrieved memory as useful, irrelevant, or stale.
+- **Commit:** save the task outcome and any reusable procedure.
+
+A **background worker** consolidates relevant memories and procedures.
+
+See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for more details.
+
+
+## Boundaries
+
+Slowave is a memory layer, not a reasoning engine.
+
+- It cannot recall information that was never recorded.
+- It supplies relevant context, but the connected agent decides how to interpret and use it.
+- Memory quality depends on the client agent and the feedback it provides.
+- Slowave is in public beta. APIs, storage formats, and retrieval behavior may change before a stable release.
+
+## Benchmarks
+
+Slowave maintains and retrieves memory without LLM calls for ingestion,
+consolidation, or recall. The results below measure whether its retrieved
+evidence supports the right answer; they do not measure an LLM-generated final
+answer.
+
+| Benchmark | LLM-judge result | What it demonstrates |
+| --- | ---: | --- |
+| LoCoMo | **71.84%** | Explicit-fact retrieval across long conversations; **87.04%** on LoCoMo's multi-session category |
+| LongMemEval oracle | **65.20%** | Retaining and combining supplied evidence sessions; this oracle split does not test retrieval among distractors |
+
+The external judge was `deepseek/deepseek-v4-flash`. These values are not yet
+directly comparable with leaderboard claims using different splits, answerers,
+judges, or retrieval budgets.
+
+See [benchmarks.md](docs/benchmarks.md) for category detail, how the judge
+works, limitations, and exact local reproduction commands.
 
 
 ## Documentation
 
-- [design.md](docs/design.md) — design rationale, boundaries, and positioning
-- [architecture.md](docs/architecture.md) — brain-inspired memory model and lifecycle
-- [install.md](docs/install.md) — install & setup reference, lifecycle block, files modified
+- [design.md](docs/design.md): design rationale, boundaries, and positioning
+- [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
+- [install.md](docs/install.md): install and setup reference, lifecycle block, files modified
+- [benchmarks.md](docs/benchmarks.md): benchmark results, methodology, and reproduction
+- [troubleshooting.md](docs/troubleshooting.md): daemon, worker, dashboard, client integration, database, backup/restore
 
----
 
 ## Contributing
 
@@ -162,7 +224,6 @@ Contributions are welcome, especially in:
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting a pull request.
 
----
 
 ## License
 

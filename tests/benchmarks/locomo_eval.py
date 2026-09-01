@@ -56,6 +56,8 @@ from slowave.latent.schema import GeometricRelationConfig
 from slowave.symbolic.encoder import EncoderConfig, TextEncoder
 from tests.benchmarks.evidence_format import format_retrieved_evidence
 from tests.benchmarks.llm_judge import (
+    InvalidModel,
+    QuotaExhausted,
     confirm_paid_run,
     estimate_cost_usd,
     get_openai_client,
@@ -516,17 +518,39 @@ def run_conversation(
 
         if judge_model and pending_judge:
             jobs = [(q, hyp, ans) for _idx, q, hyp, ans in pending_judge]
-            judged = judge_batch_concurrent(openai_client, judge_model, jobs)
-            for (idx, _q, _hyp, _ans), (score, reason, pt, ct, parse_ok) in zip(
-                pending_judge, judged
-            ):
-                row = results[idx]
-                row.llm_judge_score = score
-                row.llm_judge_reason = reason
-                row.llm_judge_parse_ok = parse_ok
-                row.component_scores["llm_judge_prompt_tokens"] = pt
-                row.component_scores["llm_judge_completion_tokens"] = ct
+            try:
+                judged = judge_batch_concurrent(openai_client, judge_model, jobs)
+            except (InvalidModel, QuotaExhausted):
+                # Permanent/config errors: fail the whole run fast (handled in
+                # main) instead of silently scoring every question 0.0.
+                raise
+            except Exception as e:
+                # A run requested an LLM judge, so keyword diagnostics alone
+                # are not a complete result. Let the outer handler record this
+                # conversation as an error; the artifact is then marked
+                # partial instead of looking like a completed judge run.
+                print(
+                    f"\n  [WARN] LLM-judge pass failed for this conversation: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise RuntimeError(f"LLM-judge pass failed: {e}") from e
+            else:
+                for (idx, _q, _hyp, _ans), (score, reason, pt, ct, parse_ok) in zip(
+                    pending_judge, judged
+                ):
+                    row = results[idx]
+                    # A judge that couldn't be parsed is NOT a "wrong" verdict —
+                    # leave the score unset so it is excluded from the mean, and
+                    # let llm_judge_parse_ok=False record the failure.
+                    row.llm_judge_score = score if parse_ok else None
+                    row.llm_judge_reason = reason
+                    row.llm_judge_parse_ok = parse_ok
+                    row.component_scores["llm_judge_prompt_tokens"] = pt
+                    row.component_scores["llm_judge_completion_tokens"] = ct
         return results
+    except (InvalidModel, QuotaExhausted):
+        raise
     except Exception as e:
         return [
             QAResult(
@@ -617,10 +641,10 @@ def print_report(results, consolidate, *, judge_model=None, total_elapsed=0.0):
     judge_rows = [r for r in recall_rows if r.llm_judge_score is not None]
     if judge_rows:
         judge_avg = sum(r.llm_judge_score for r in judge_rows) / len(judge_rows)
-        judge_errs = sum(1 for r in judge_rows if not r.llm_judge_parse_ok)
+        judge_errs = sum(1 for r in recall_rows if not r.llm_judge_parse_ok)
         print(
             f" LLM-judge score: {judge_avg * 100:.1f}%  (n={len(judge_rows)}, "
-            f"parse errors: {judge_errs}/{len(judge_rows)}, category 5 excluded)"
+            f"parse errors: {judge_errs}/{len(judge_rows) + judge_errs}, category 5 excluded)"
         )
 
     print()
@@ -781,22 +805,33 @@ def _save(path, results, args, elapsed, partial):
         [r.mrr for r in recall_rows],
     )
     judge_rows = [r for r in recall_rows if r.llm_judge_score is not None]
+    # Rows where the judge actually ran (parseable verdict OR recorded parse
+    # failure). Parse-failed rows still consumed tokens, so cost accounting must
+    # include them even though they're excluded from the score mean.
+    judged_rows = [
+        r for r in recall_rows if r.llm_judge_score is not None or not r.llm_judge_parse_ok
+    ]
     total_judge_score_pct = (
         round(100 * sum(r.llm_judge_score for r in judge_rows) / len(judge_rows), 2)
         if judge_rows
         else None
     )
-    total_judge_parse_errors = sum(1 for r in judge_rows if not r.llm_judge_parse_ok)
+    total_judge_parse_errors = sum(1 for r in recall_rows if not r.llm_judge_parse_ok)
     payload = {
         "meta": {
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "partial": partial,
             "dataset": "locomo10",
             "consolidate": not args.no_consolidate,
+            "assignment_threshold": args.assignment_threshold,
             "categories": args.categories,
             "limit": args.limit,
             "top_k": args.top_k,
             "no_salience_rerank": args.no_salience_rerank,
+            "salience_weight": args.salience_weight,
+            "tau_seconds": args.tau_seconds,
+            "surprise_weight": args.surprise_weight,
+            "spread_score_weight": args.spread_score_weight,
             "no_graph_expansion": args.no_graph_expansion,
             "no_temporal": args.no_temporal,
             "temporal_weight": args.temporal_weight,
@@ -816,17 +851,18 @@ def _save(path, results, args, elapsed, partial):
             "llm_judge_n": len(judge_rows),
             "llm_judge_parse_errors": total_judge_parse_errors,
             "llm_judge_prompt_tokens": sum(
-                r.component_scores.get("llm_judge_prompt_tokens", 0) for r in judge_rows
+                r.component_scores.get("llm_judge_prompt_tokens", 0) for r in judged_rows
             ),
             "llm_judge_completion_tokens": sum(
-                r.component_scores.get("llm_judge_completion_tokens", 0) for r in judge_rows
+                r.component_scores.get("llm_judge_completion_tokens", 0) for r in judged_rows
             ),
             "llm_judge_cost_usd": (
                 estimate_cost_usd(
                     args.judge_model,
-                    sum(r.component_scores.get("llm_judge_prompt_tokens", 0) for r in judge_rows),
+                    sum(r.component_scores.get("llm_judge_prompt_tokens", 0) for r in judged_rows),
                     sum(
-                        r.component_scores.get("llm_judge_completion_tokens", 0) for r in judge_rows
+                        r.component_scores.get("llm_judge_completion_tokens", 0)
+                        for r in judged_rows
                     ),
                 )
                 if args.judge_model
@@ -1173,7 +1209,13 @@ def main():
         judge_model=args.judge_model or None,
         total_elapsed=time.time() - t_start,
     )
-    _save(out_path, all_results, args, time.time() - t_start, partial=False)
+    _save(
+        out_path,
+        all_results,
+        args,
+        time.time() - t_start,
+        partial=any(r.error for r in all_results),
+    )
     print("\nResults saved to:", out_path)
 
 
@@ -1252,6 +1294,10 @@ def _run_locomo_loop(
                     error=f"conversation exceeded --timeout {args.timeout:.0f}s (watchdog)",
                 )
             ]
+        except (InvalidModel, QuotaExhausted) as e:
+            print(f"\nFATAL: {e}", file=sys.stderr)
+            _save(out_path, all_results, args, time.time() - t_start, partial=True)
+            sys.exit(1)
         except Exception as e:
             print("  ERROR:", e)
             rs = []

@@ -315,6 +315,12 @@ def main() -> None:
         "suite stays free.",
     )
     parser.add_argument(
+        "--save-full-hypotheses",
+        action="store_true",
+        help="Persist complete LoCoMo and LongMemEval retrieved contexts for "
+        "offline judging after the suite finishes.",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Hard guarantee of zero API calls for this run: forces --judge-model "
@@ -336,6 +342,7 @@ def main() -> None:
         args.beam = False
 
     judge_flag = ["--judge-model", args.judge_model] if args.judge_model else []
+    full_hypotheses_flag = ["--save-full-hypotheses"] if args.save_full_hypotheses else []
     yes_flag = ["--yes"] if args.yes else []
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -400,6 +407,7 @@ def main() -> None:
                 + cons_flag
                 + lim_flag
                 + judge_flag
+                + full_hypotheses_flag
                 + (yes_flag if judge_flag else [])
             )
             if _run(cmd, "LoCoMo"):
@@ -428,6 +436,7 @@ def main() -> None:
                 + cons_flag
                 + lim_flag
                 + judge_flag
+                + full_hypotheses_flag
                 + (yes_flag if judge_flag else [])
             )
             if _run(cmd, "LongMemEval"):
