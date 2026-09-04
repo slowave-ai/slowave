@@ -64,12 +64,10 @@ _PRODUCT_LIST_ROUTES = {
 _PRODUCT_DETAIL_ROUTE = re.compile(r"^/(memory|retrieval|procedures|activity)/[^/]+$")
 
 
-def _is_product_route(path: str, *, experimental: bool) -> bool:
+def _is_product_route(path: str) -> bool:
     """Return whether *path* is an explicitly supported React product route."""
 
-    if path in _PRODUCT_LIST_ROUTES or _PRODUCT_DETAIL_ROUTE.fullmatch(path):
-        return True
-    return experimental and path == "/diagnostics/labs"
+    return path in _PRODUCT_LIST_ROUTES or bool(_PRODUCT_DETAIL_ROUTE.fullmatch(path))
 
 
 def run_dashboard(
@@ -79,7 +77,6 @@ def run_dashboard(
     port: int = 8765,
     refresh_ms: int = 2000,
     allow_actions: bool = True,
-    experimental_dashboard: bool = False,
     open_browser: bool = True,
 ) -> None:
     """Run the local dashboard HTTP server."""
@@ -97,7 +94,6 @@ def run_dashboard(
         db_path=db_path,
         refresh_ms=int(refresh_ms),
         allow_actions=bool(allow_actions),
-        experimental_dashboard=bool(experimental_dashboard),
     )
     try:
         server = ThreadingHTTPServer((host, int(port)), handler)
@@ -130,9 +126,7 @@ def run_dashboard(
         server.server_close()
 
 
-def _make_handler(
-    *, db_path: str, refresh_ms: int, allow_actions: bool, experimental_dashboard: bool = False
-):
+def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
     class DashboardHandler(BaseHTTPRequestHandler):
         server_version = "slowave-dashboard/0.2"
 
@@ -144,11 +138,11 @@ def _make_handler(
             path = parsed.path.rstrip("/") or "/"
             qs = parse_qs(parsed.query)
             try:
-                if _is_product_route(path, experimental=experimental_dashboard):
+                if _is_product_route(path):
                     if (_STATIC_DIR / "index.html").is_file():
-                        self._send_static("/index.html", experimental=experimental_dashboard)
+                        self._send_static("/index.html")
                     else:
-                        self._send_html(render_index_html(experimental=experimental_dashboard))
+                        self._send_html(render_index_html())
                 elif path == "/api/home":
                     self._send_json(_home_payload(db_path, qs))
                 elif path == "/api/scopes":
@@ -190,8 +184,6 @@ def _make_handler(
                     self._send_json(_procedures_payload(db_path, qs))
                 elif path == "/api/procedural-memory":
                     self._send_json(_procedural_memory_payload(db_path, qs))
-                elif path == "/api/labs/rollout" and experimental_dashboard:
-                    self._send_json(_labs_rollout_payload(db_path))
                 elif path == "/api/prototypes":
                     self._send_json(_prototypes_payload(db_path, qs))
                 elif path.startswith("/api/prototypes/") and path.endswith("/members"):
@@ -210,7 +202,7 @@ def _make_handler(
                 elif path == "/img/slowave-logo-small.jpeg":
                     self._send_file(_ICON_PATH, "image/jpeg")
                 elif path.startswith("/assets/") or path in {"/favicon.svg"}:
-                    self._send_static(path, experimental=experimental_dashboard)
+                    self._send_static(path)
                 else:
                     self._send_json(
                         {"error": "not found", "path": path},
@@ -274,7 +266,7 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(data)
 
-        def _send_static(self, request_path: str, *, experimental: bool) -> None:
+        def _send_static(self, request_path: str) -> None:
             """Serve only files below the package-owned Vite output directory."""
             relative = unquote(request_path).lstrip("/")
             if ".." in Path(relative).parts:
@@ -293,7 +285,6 @@ def _make_handler(
             content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
             if candidate.name == "index.html":
                 html = candidate.read_text(encoding="utf-8")
-                html = html.replace("__EXPERIMENTAL__", "true" if experimental else "false")
                 html = html.replace("__REFRESH_MS__", str(refresh_ms)).replace(
                     "__ALLOW_ACTIONS__", "true" if allow_actions else "false"
                 )
@@ -3995,240 +3986,6 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
                 "helpful_assessments": helpful_assessments,
                 "effect_assessed": effect_assessed,
                 "harmful_assessments": harmful_assessments,
-            },
-        }
-    finally:
-        conn.close()
-
-
-def _labs_rollout_payload(db_path: str) -> dict[str, Any]:
-    """Return exploratory post-v9 measurements for the opt-in Labs surface."""
-    if not os.path.exists(db_path):
-        return {"status": "db_not_found"}
-    conn = _connect(db_path)
-    try:
-        lifecycle_version = LIFECYCLE_VERSION
-        session_rows = conn.execute(
-            "SELECT id, started_ts, ended_ts, outcome, feedback_status FROM sessions "
-            "WHERE lifecycle_version = ? ORDER BY started_ts",
-            (lifecycle_version,),
-        ).fetchall()
-        session_ids = {str(row["id"]) for row in session_rows}
-        completed = [row for row in session_rows if row["ended_ts"] is not None]
-        incomplete = [row for row in completed if row["feedback_status"] == "incomplete"]
-        active_pending = [row for row in session_rows if row["ended_ts"] is None]
-        outcomes = {"success": 0, "partial": 0, "failure": 0, "unknown": 0}
-        for row in completed:
-            outcome = str(row["outcome"] or "unknown")
-            outcomes[outcome if outcome in outcomes else "unknown"] += 1
-
-        provenance_epoch_row = conn.execute(
-            "SELECT MIN(e.ts) AS started_at FROM raw_events e "
-            "JOIN sessions s ON s.id=e.session_id WHERE s.lifecycle_version = ? "
-            "AND json_extract(e.metadata_json, '$.provenance') IS NOT NULL",
-            (lifecycle_version,),
-        ).fetchone()
-        provenance_started_at = provenance_epoch_row["started_at"] if provenance_epoch_row else None
-        raw_rows = conn.execute(
-            "SELECT e.metadata_json FROM raw_events e JOIN sessions s ON s.id=e.session_id "
-            "WHERE s.lifecycle_version = ? AND (? IS NULL OR e.ts >= ?)",
-            (lifecycle_version, provenance_started_at, provenance_started_at),
-        ).fetchall()
-        provenance_available = sum(
-            isinstance(_json_dict(row["metadata_json"]).get("provenance"), dict) for row in raw_rows
-        )
-
-        retrieval_rows = conn.execute(
-            "SELECT r.context_id, r.response_json, r.query, r.goal, r.count_n, "
-            "r.response_chars, r.estimated_tokens FROM context_recall_events r "
-            "JOIN sessions s ON s.id=r.session_id WHERE s.lifecycle_version = ?",
-            (lifecycle_version,),
-        ).fetchall()
-        memory_exposures = 0
-        no_match_retrievals = 0
-        response_chars: list[int] = []
-        estimated_tokens: list[int] = []
-        procedure_exposures = 0
-        hook_procedure_exposures = 0
-        retrievals_with_procedures = 0
-        hook_retrievals_with_procedures = 0
-        hook_retrieval_ids: set[str] = set()
-        for row in retrieval_rows:
-            response = _json_dict(row["response_json"])
-            memory_exposures += len(_json_list(response.get("memory_ids")))
-            no_match_retrievals += int(row["count_n"] or 0) == 0
-            if row["response_chars"] is not None:
-                response_chars.append(int(row["response_chars"]))
-            if row["estimated_tokens"] is not None:
-                estimated_tokens.append(int(row["estimated_tokens"]))
-            procedure_ids = _json_list(response.get("procedure_ids"))
-            procedure_exposures += len(procedure_ids)
-            retrievals_with_procedures += bool(procedure_ids)
-            if procedure_ids and _is_lifecycle_hook_query(row["query"] or row["goal"] or ""):
-                hook_retrievals_with_procedures += 1
-                hook_procedure_exposures += len(procedure_ids)
-                hook_retrieval_ids.add(str(row["context_id"]))
-
-        feedback_rows = conn.execute(
-            "SELECT f.retrieval_id, f.target_kind, f.assessment, f.effect, f.status FROM feedback_events f "
-            "JOIN sessions s ON s.id=f.session_id WHERE s.lifecycle_version = ?",
-            (lifecycle_version,),
-        ).fetchall()
-        procedure_feedback = {
-            "accepted": 0,
-            "rejected": 0,
-            "used": 0,
-            "not_used": 0,
-            "helped": 0,
-            "no_effect": 0,
-            "harmed": 0,
-            "unknown": 0,
-            "non_hook_used": 0,
-            "non_hook_not_used": 0,
-            "non_hook_helped": 0,
-            "non_hook_no_effect": 0,
-            "non_hook_harmed": 0,
-            "non_hook_unknown": 0,
-        }
-        memory_feedback = {"irrelevant": 0, "stale": 0, "contradicted": 0, "accepted": 0}
-        for row in feedback_rows:
-            if row["target_kind"] == "memory" and row["status"] == "accepted":
-                memory_feedback["accepted"] += 1
-                assessment = str(row["assessment"] or "")
-                if assessment in memory_feedback:
-                    memory_feedback[assessment] += 1
-            if row["target_kind"] != "procedure":
-                continue
-            status = str(row["status"] or "rejected")
-            procedure_feedback[status if status in {"accepted", "rejected"} else "rejected"] += 1
-            if status != "accepted":
-                continue
-            assessment = str(row["assessment"] or "")
-            effect = str(row["effect"] or "unknown")
-            if assessment in {"used", "not_used"}:
-                procedure_feedback[assessment] += 1
-                if str(row["retrieval_id"]) not in hook_retrieval_ids:
-                    procedure_feedback[f"non_hook_{assessment}"] += 1
-            if effect in {"helped", "no_effect", "harmed", "unknown"}:
-                procedure_feedback[effect] += 1
-                if str(row["retrieval_id"]) not in hook_retrieval_ids:
-                    procedure_feedback[f"non_hook_{effect}"] += 1
-
-        # Truth-maintenance is measured from client feedback, not from the
-        # removed geometric/consolidation counter. Keep current status counts
-        # plus a small, inspectable sample of v9 retirement decisions.
-        status_rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM schemas GROUP BY status"
-        ).fetchall()
-        truth_status_counts = {str(row["status"]): int(row["n"]) for row in status_rows}
-        truth_rows = conn.execute(
-            "SELECT f.target_id, f.assessment, f.stale_reason, f.replacement_target_id, f.reason, "
-            "f.created_at, s.content_text AS retired_content, "
-            "r.content_text AS replacement_content "
-            "FROM feedback_events f "
-            "JOIN sessions se ON se.id=f.session_id AND se.lifecycle_version=? "
-            "LEFT JOIN schemas s ON s.id=CAST(REPLACE(f.target_id, 'sch_', '') AS INTEGER) "
-            "LEFT JOIN schemas r ON r.id=CAST(REPLACE(f.replacement_target_id, 'sch_', '') AS INTEGER) "
-            "WHERE f.target_kind='memory' AND f.status='accepted' "
-            "AND f.assessment IN ('stale','wrong') "
-            "ORDER BY f.created_at DESC, f.rowid DESC LIMIT 20",
-            (lifecycle_version,),
-        ).fetchall()
-        truth_feedback_counts = {
-            "stale": 0,
-            "contradicted": 0,
-            "superseded": 0,
-            "outdated": 0,
-            "unsupported": 0,
-            "withdrawn": 0,
-            "with_replacement": 0,
-        }
-        truth_sample = []
-        for row in truth_rows:
-            assessment = str(row["assessment"])
-            truth_feedback_counts["stale"] += 1
-            reason = str(row["stale_reason"] or "outdated")
-            if reason in truth_feedback_counts:
-                truth_feedback_counts[reason] += 1
-            if row["replacement_target_id"]:
-                truth_feedback_counts["with_replacement"] += 1
-            truth_sample.append(
-                {
-                    "memory_id": str(row["target_id"]),
-                    "assessment": assessment,
-                    "stale_reason": row["stale_reason"],
-                    "replacement_memory_id": row["replacement_target_id"],
-                    "retired_content": row["retired_content"],
-                    "replacement_content": row["replacement_content"],
-                    "reason": row["reason"],
-                    "created_at": row["created_at"],
-                }
-            )
-
-        from slowave.symbolic.procedural_memory import load_procedures
-
-        precedents = [
-            item
-            for item in load_procedures(conn)
-            if str(item["id"]).removeprefix("proc_") in session_ids
-        ]
-        return {
-            "status": "experimental",
-            "cohort": {
-                "lifecycle_version": lifecycle_version,
-                "started_at": session_rows[0]["started_ts"] if session_rows else None,
-                "sessions": len(session_rows),
-                "completed_sessions": len(completed),
-                "feedback_complete": sum(row["feedback_status"] == "complete" for row in completed),
-                "feedback_incomplete": len(incomplete),
-                "active_pending": len(active_pending),
-                "outcomes": outcomes,
-            },
-            "provenance": {
-                "epoch_started_at": provenance_started_at,
-                "available": provenance_available,
-                "eligible_events": len(raw_rows),
-            },
-            "retrieval": {
-                "retrievals": len(retrieval_rows),
-                "memory_exposures": memory_exposures,
-                "no_match_retrievals": no_match_retrievals,
-                "response_chars": {
-                    "observed": len(response_chars),
-                    "total": sum(response_chars),
-                    "average": (
-                        round(sum(response_chars) / len(response_chars)) if response_chars else None
-                    ),
-                },
-                "estimated_tokens": {
-                    "observed": len(estimated_tokens),
-                    "total": sum(estimated_tokens),
-                    "average": (
-                        round(sum(estimated_tokens) / len(estimated_tokens))
-                        if estimated_tokens
-                        else None
-                    ),
-                },
-                "latency": "not_persisted",
-                "memory_feedback": memory_feedback,
-                "retrievals_with_procedures": retrievals_with_procedures,
-                "procedure_exposures": procedure_exposures,
-                "hook_retrievals_with_procedures": hook_retrievals_with_procedures,
-                "hook_procedure_exposures": hook_procedure_exposures,
-                "non_hook_retrievals_with_procedures": (
-                    retrievals_with_procedures - hook_retrievals_with_procedures
-                ),
-                "non_hook_procedure_exposures": (procedure_exposures - hook_procedure_exposures),
-                "procedure_feedback": procedure_feedback,
-            },
-            "truth_maintenance": {
-                "schemas_by_status": truth_status_counts,
-                "v9_feedback": truth_feedback_counts,
-                "sample": truth_sample,
-            },
-            "procedures": {
-                "captured": len(precedents),
-                "capture_rate": len(precedents) / len(completed) if completed else 0.0,
             },
         }
     finally:

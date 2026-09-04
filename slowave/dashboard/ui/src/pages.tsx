@@ -25,7 +25,6 @@ import {
   DefinitionTooltip,
   EmptyState,
   ErrorState,
-  experimental,
   formatDate,
   formatDuration,
   formatRate,
@@ -2840,17 +2839,6 @@ export function DiagnosticsPage({}: PageProps) {
           <dl className="key-values wide"><dt>Tables</dt><dd>{Object.keys(database.data?.tables || {}).join(", ") || "Unavailable"}</dd><dt>Objects</dt><dd>{Object.entries(database.data?.object_counts || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || "Unavailable"}</dd></dl>
         </details>
       </Section>
-      {experimental && (
-        <Section title="Experimental tools">
-          <p>
-            Unsupported measurements and graph inspection are physically
-            separated from ordinary product questions.
-          </p>
-          <Link to="/diagnostics/labs">
-            Open Labs <Icon name="chevron" size={14} />
-          </Link>
-        </Section>
-      )}
       {selectedRun && (
         <WorkerRunDetail run={selectedRun} onClose={() => setSelectedRunId(null)} />
       )}
@@ -2950,225 +2938,42 @@ function ServiceRow({
   );
 }
 
-export function LabsPage({ location }: PageProps) {
-  const graphOnly = location.path === "/graph";
+export function GraphPage() {
   const [selectedSchema, setSelectedSchema] = useState("");
   const [graphScope, setGraphScope] = useState("");
   const [graphStatuses, setGraphStatuses] = useState(
     "active,needs_review,stale",
   );
   const [graphRelations, setGraphRelations] = useState("relates_to,coactivated_with");
-  const [connectionDir, setConnectionDir] = useState<"asc" | "desc">("desc");
-  const rollout = useApi<Json>(experimental ? "/api/labs/rollout" : null);
   const graph = useApi<Json>(
-    experimental
-      ? `/api/graph/schemas?limit=all&relations=${encodeURIComponent(graphRelations)}&scope=${encodeURIComponent(graphScope)}&statuses=${encodeURIComponent(graphStatuses)}`
-      : null,
+    `/api/graph/schemas?limit=all&relations=${encodeURIComponent(graphRelations)}&scope=${encodeURIComponent(graphScope)}&statuses=${encodeURIComponent(graphStatuses)}`,
   );
-  if (!experimental)
-    return (
-      <EmptyState title={graphOnly ? "Memory graph is disabled" : "Labs is disabled"}>
-        Restart with --experimental to inspect unsupported diagnostics.
-      </EmptyState>
-    );
-  const cohort = rollout.data?.cohort || {};
-  const retrieval = rollout.data?.retrieval || {};
   const graphData = graph.data;
   return (
     <div className="page">
       <PageHeader
-        title={graphOnly ? "Memory graph" : "Labs"}
-        description={graphOnly ? "Explore connected memory clusters. Use search for exact lookup; use the graph for browsing." : "Unsupported experiments and maintainer-only measurements."}
-        updatedAt={rollout.updatedAt}
-        refreshing={rollout.refreshing}
-        onRefresh={rollout.reload}
+        title="Memory graph"
+        description="Explore connected memory clusters. Use search for exact lookup; use the graph for browsing."
+        updatedAt={graph.updatedAt}
+        refreshing={graph.refreshing}
+        onRefresh={graph.reload}
       />
-      {!graphOnly && <div className="experimental-banner">
-        <Icon name="warning" />
-        <div>
-          <strong>Experimental — not a product metric</strong>
-          <span>
-            Definitions, populations, and thresholds may change. Nothing here is
-            required to answer ordinary Memory or Retrieval questions.
-          </span>
-        </div>
-      </div>}
       <InlineError
-        error={rollout.error || graph.error}
-        retained={Boolean(rollout.data || graphData)}
-        retry={() => {
-          void rollout.reload();
-          void graph.reload();
-        }}
+        error={graph.error}
+        retained={Boolean(graphData)}
+        retry={graph.reload}
       />
-      {graphOnly ? (
-        <Section title="Explore your memory network">
+      <Section title="Explore your memory network">
           <p className="neutral">Each dot is a memory. Vertex color shows lifecycle state (green active, yellow review, red stale); blue connections are related memories and violet connections are co-activations. Select a dot to inspect it.</p>
-          <div className="filter-bar labs-graph-controls">
+          <div className="filter-bar graph-controls">
             <label>Scope<select value={graphScope} onChange={(event) => setGraphScope(event.target.value)}><option value="">All scopes</option>{[...new Set((graphData?.nodes || []).map((node: any) => node.scope).filter(Boolean))].map((scope: any) => <option key={scope} value={scope}>{scope}</option>)}</select></label>
             <div className="toggle-group" role="group" aria-label="Memory states"><span className="toggle-label">States</span>{[["active","Active"],["needs_review","Review"],["stale","Stale"]].map(([value,label]) => <button type="button" key={value} className={`toggle-badge toggle-state-${value} ${graphStatuses.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphStatuses.split(",").includes(value)} onClick={() => setGraphStatuses((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
             <div className="toggle-group" role="group" aria-label="Edge types"><span className="toggle-label">Edges</span>{[["relates_to","Related to","related"],["coactivated_with","Co-activated","coactivated"]].map(([value,label,kind]) => <button type="button" key={value} className={`toggle-badge toggle-${kind} ${graphRelations.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphRelations.split(",").includes(value)} onClick={() => setGraphRelations((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
           </div>
           {graphData && <p className="graph-context-line">Visible memories <strong>{graphData.nodes?.length ?? 0}</strong> · Visible connections <strong>{graphData.edges?.length ?? 0}</strong> · Scopes represented <strong>{new Set((graphData.nodes || []).map((node: any) => node.scope).filter(Boolean)).size}</strong><span>Counts describe the current graph result. Configured limit: {Number(graphData.limit || 0).toLocaleString()}; {Number(graphData.nodes?.length || 0) >= Number(graphData.limit || 0) ? "limit reached" : "limit not reached"}.</span></p>}
           {graph.loading && !graphData ? <LoadingRows /> : graph.error && !graphData ? <ErrorState title="Graph unavailable" error={graph.error} retry={graph.reload} /> : graphData?.nodes?.length ? <Suspense fallback={<LoadingRows rows={3} />}><GraphExplorer data={graphData} onSelect={setSelectedSchema} /></Suspense> : <EmptyState title="No connected memories">At least two related memories are needed to draw a network.</EmptyState>}
-        </Section>
-      ) : rollout.loading && !rollout.data ? (
-        <LoadingRows />
-      ) : rollout.error && !rollout.data ? (
-        <ErrorState title="Labs data unavailable" error={rollout.error} retry={rollout.reload} />
-      ) : (
-        <>
-          <Section title="Lifecycle contract cohort">
-            <p>
-              <strong>Definition:</strong> records labelled with the current
-              lifecycle contract. <strong>Population:</strong>{" "}
-              {cohort.sessions ?? "Unavailable"} sessions. <strong>Limitation:</strong>{" "}
-              adoption and closure are not memory quality.
-            </p>
-            <dl className="key-values wide">
-              <dt>Completed sessions</dt>
-              <dd>{cohort.completed_sessions ?? "Unavailable"}</dd>
-              <dt>Feedback complete</dt>
-              <dd>{cohort.feedback_complete ?? "Unavailable"}</dd>
-              <dt>Feedback incomplete</dt>
-              <dd>{cohort.feedback_incomplete ?? "Unavailable"}</dd>
-            </dl>
-          </Section>
-          <Section title="Procedure exposure diagnostic">
-            <p>
-              <strong>Definition:</strong> recorded procedure items in retrieval
-              responses. <strong>Population:</strong>{" "}
-              {retrieval.retrievals ?? "Unavailable"} retrievals.{" "}
-              <strong>Limitation:</strong> exposure does not prove use or
-              effect.
-            </p>
-            <dl className="key-values wide">
-              <dt>Procedure exposures</dt>
-              <dd>{retrieval.procedure_exposures ?? "Unavailable"}</dd>
-              <dt>Lifecycle-hook exposures</dt>
-              <dd>{retrieval.hook_procedure_exposures ?? "Unavailable"}</dd>
-            </dl>
-          </Section>
-          <Section title="Graph explorer">
-            <p>
-              <strong>Definition:</strong> recorded relations in a bounded
-              diagnostic subset. <strong>Population:</strong> up to 100 visible
-              memories. <strong>Limitation:</strong> graph geometry has no
-              product-quality meaning.
-            </p>
-            <div className="filter-bar labs-graph-controls">
-              <label>
-                Scope
-                <select
-                  value={graphScope}
-                  onChange={(event) => setGraphScope(event.target.value)}
-                >
-                  <option value="">All scopes</option>
-                  {[
-                    ...new Set(
-                      (graphData?.nodes || [])
-                        .map((node: any) => node.scope)
-                        .filter(Boolean),
-                    ),
-                  ].map((scope: any) => (
-                    <option key={scope} value={scope}>
-                      {scope}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                States
-                <select
-                  value={graphStatuses}
-                  onChange={(event) => setGraphStatuses(event.target.value)}
-                >
-                  <option value="active,needs_review,stale">
-                    Current + review + stale
-                  </option>
-                  <option value="active,needs_review">Current + review</option>
-                  <option value="active">Current only</option>
-                </select>
-              </label>
-              <button
-                className="button secondary"
-                onClick={() => {
-                  setGraphScope("");
-                  setGraphStatuses("active,needs_review,stale");
-                }}
-              >
-                Reset
-              </button>
-            </div>
-            {graph.loading && !graphData ? (
-              <LoadingRows />
-            ) : graph.error && !graphData ? (
-              <ErrorState title="Graph data unavailable" error={graph.error} retry={graph.reload} />
-            ) : graphData?.nodes?.length ? (
-              <>
-                <Suspense fallback={<LoadingRows rows={3} />}>
-                  <GraphExplorer data={graphData} />
-                </Suspense>
-                <TableFrame label="Accessible graph node list">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Memory</th>
-                        <th>State</th>
-                        <th>Scope</th>
-                        <th className="numeric">
-                          <SortButton
-                            label="Connections"
-                            active
-                            direction={connectionDir}
-                            onClick={() =>
-                              setConnectionDir((d) => (d === "desc" ? "asc" : "desc"))
-                            }
-                          />
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...graphData.nodes]
-                        .map((node: any) => ({
-                          node,
-                          count: graphData.edges.filter(
-                            (edge: any) =>
-                              edge.source === node.id || edge.target === node.id,
-                          ).length,
-                        }))
-                        .sort((a, b) =>
-                          connectionDir === "desc"
-                            ? b.count - a.count
-                            : a.count - b.count,
-                        )
-                        .map(({ node, count }) => (
-                          <tr key={node.id}>
-                            <td className="primary-cell">
-                              <Link to={`/memory/${node.id}`}>
-                                {node.content}
-                              </Link>
-                            </td>
-                            <td>
-                              <StatusBadge value={node.status} />
-                            </td>
-                            <td title={node.scope || undefined}>{node.scope ? truncate(node.scope, 30) : "No scope"}</td>
-                            <td className="numeric">{count}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </TableFrame>
-              </>
-            ) : (
-              <EmptyState title="No graph subset">
-                At least two related memories are needed for graph inspection.
-              </EmptyState>
-            )}
-          </Section>
-        </>
-      )}
-      {graphOnly && selectedSchema && <MemoryDetail id={selectedSchema} onClose={() => setSelectedSchema("")} />}
+      </Section>
+      {selectedSchema && <MemoryDetail id={selectedSchema} onClose={() => setSelectedSchema("")} />}
     </div>
   );
 }

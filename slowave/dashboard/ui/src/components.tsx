@@ -10,7 +10,6 @@ import { createPortal } from "react-dom";
 import { navigate, useApi, type Json } from "./api";
 
 const root = document.getElementById("root")!;
-export const experimental = root.dataset.experimental === "true";
 export const allowActions = root.dataset.allowActions !== "false";
 export const refreshMs = Math.max(
   5000,
@@ -207,6 +206,7 @@ const navigation = [
   ["/retrieval", "Retrieval", "retrieval"],
   ["/activity", "Activity", "activity"],
   ["/graph", "Memory graph", "graph"],
+  ["/diagnostics", "Diagnostics", "diagnostics"],
 ] as const;
 
 export function AppShell({
@@ -252,26 +252,6 @@ export function AppShell({
             </Link>
           ))}
         </nav>
-        <div className="system-nav">
-          <span className="nav-group-label">System</span>
-          <Link
-            to="/diagnostics"
-            className={active("/diagnostics") ? "active" : ""}
-          >
-            <Icon name="diagnostics" />
-            <span>Diagnostics</span>
-          </Link>
-          {experimental && (
-            <Link
-              to="/diagnostics/labs"
-              className={path === "/diagnostics/labs" ? "active" : ""}
-            >
-              <Icon name="diagnostics" />
-              <span>Labs</span>
-              <small>Experimental</small>
-            </Link>
-          )}
-        </div>
         <div className="resources-nav">
           <span className="nav-group-label">Resources</span>
           <a href="https://github.com/mrsalty/slowave" target="_blank" rel="noreferrer">
@@ -314,13 +294,6 @@ export function AppShell({
             <span>{label}</span>
           </Link>
         ))}
-        <Link
-          to="/diagnostics"
-          className={active("/diagnostics") ? "active" : ""}
-        >
-          <Icon name="diagnostics" />
-          <span>Diagnostics</span>
-        </Link>
       </nav>
       <main id="main-content">{children}</main>
     </div>
