@@ -37,7 +37,6 @@ _logging.getLogger("transformers").setLevel(_logging.ERROR)
 import click
 
 import slowave.ops as ops
-from slowave.cli.output import safe_emoji
 from slowave.cli.setup import setup_cmd
 from slowave.core.config import DEFAULT_RECALL_TOP_K, SlowaveConfig
 from slowave.core.engine import SlowaveEngine
@@ -361,7 +360,7 @@ def _format_recall_human(payload: dict[str, Any]) -> None:
         click.echo(divider)
         click.echo(
             f"  {_status_icon(status)}  sch_{s['id']}"
-            f"  {_sal_bar(sal)}  sal={sal:.0f}"
+            f"  {_sal_bar(sal)}  sal={sal:.1f}"
             f"  {n_ep} ep{'' if n_ep == 1 else 's'}"
             f"{tag_str}{nr}"
         )
@@ -639,7 +638,7 @@ def context_cmd(
             label_str = f" [{label}]" if label else ""
             click.echo(
                 f"  [sch_{s.id}]{label_str} {item.text}"
-                f"  act={item.activation:.3f} status={s.status} sal={s.salience:.3f}"
+                f"  act={item.activation:.3f} status={s.status} sal={s.salience:.1f}"
                 f" supports={len(s.supporting_episode_ids)}"
                 f" tags={','.join(s.tags)}"
                 f" reason={item.reason}" + ("  needs_review" if s.is_labile else "")
@@ -790,7 +789,7 @@ def schema_list(ctx: click.Context, needs_review: bool, limit: int) -> None:
             label_str = f" [{label}]" if label else ""
             click.echo(
                 f"  [sch_{s.id}]{label_str} {s.content_text}"
-                f"  status={s.status} sal={s.salience:.3f} supports={len(s.supporting_episode_ids)}"
+                f"  status={s.status} sal={s.salience:.1f} supports={len(s.supporting_episode_ids)}"
                 f" tags={','.join(s.tags)}" + ("  needs_review" if s.is_labile else "")
             )
     eng.close()
@@ -972,7 +971,7 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     )
     renderer.item(
         "Salience",
-        f"median={s['salience']['median']}, "
+        f"median={float(s['salience']['median']):.1f}, "
         f"ceiling breaches={s['salience']['ceiling_breaches']}",
     )
     cd = s.get("cosine_distribution")
@@ -1041,7 +1040,8 @@ def _print_graph_health(db_path: str, renderer: Any, as_json: bool) -> None:
     renderer.item("Total", f"{e['total']:,}")
     renderer.item(
         "Salience",
-        f"avg={e['salience']['avg']}, " f"range=[{e['salience']['min']}, {e['salience']['max']}]",
+        f"avg={float(e['salience']['avg']):.1f}, "
+        f"range=[{float(e['salience']['min']):.1f}, {float(e['salience']['max']):.1f}]",
     )
     renderer.item("Episodes per schema", f"{e['episodes_per_schema']}")
 
@@ -1628,12 +1628,6 @@ def status_cmd(ctx: click.Context) -> None:
 @click.option("--port", default=8765, show_default=True, help="HTTP bind port.")
 @click.option("--refresh-ms", default=2000, show_default=True, help="Overview refresh interval.")
 @click.option(
-    "--allow-actions/--no-allow-actions",
-    default=True,
-    show_default=True,
-    help="Enable the Forget/Unforget buttons. Disable for a strictly read-only dashboard.",
-)
-@click.option(
     "--experimental/--no-experimental",
     "experimental_dashboard",
     default=False,
@@ -1648,7 +1642,6 @@ def dashboard_cmd(
     host: str,
     port: int,
     refresh_ms: int,
-    allow_actions: bool,
     experimental_dashboard: bool,
     no_open: bool,
 ) -> None:
@@ -1660,7 +1653,6 @@ def dashboard_cmd(
         host=host,
         port=port,
         refresh_ms=refresh_ms,
-        allow_actions=allow_actions,
         experimental_dashboard=experimental_dashboard,
         open_browser=not no_open,
     )
@@ -2096,199 +2088,52 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
 @cli.command("uninstall")
 @click.option("--dry-run", is_flag=True, help="Preview what would be removed.")
 def uninstall_cmd(dry_run: bool) -> None:
-    """Remove all Slowave configuration (keeps database by default).
+    """Remove Slowave integrations and services while preserving local data.
 
-    Removes ONLY Slowave-specific entries: MCP servers, lifecycle blocks,
-    hooks, and worker service. Never deletes entire files or breaks configs.
-    Database at ~/.slowave/ is preserved — remove manually if desired.
+    Removes only Slowave-owned MCP entries, generated lifecycle files or blocks,
+    enforcement hooks, and daemon, worker, and backup services. It does not remove
+    ~/.slowave, database archives, setup backups, or the installed Python package.
+    Use 'slowave purge' to also remove local data, then use the same package manager
+    used for installation (for example, 'pipx uninstall slowave') to remove Slowave.
     """
-    import platform
-    from pathlib import Path
-
-    from slowave.cli.setup import (
-        _HOOKS_MARKER,
-        _MARKER_END,
-        _MARKER_START,
-        _claude_desktop_config_path,
-        _claude_md_path,
-        _claude_settings_path,
-        _cline_mcp_settings_path,
-        _clinerules_path,
-        _home,
-        _read_json,
-        _write_json,
+    from slowave.cli.cleanup import (
+        _remove_backup_service,
+        _remove_daemon_service,
+        _remove_lifecycle_blocks,
+        _remove_mcp_configs,
+        _remove_worker_service,
+        _section,
     )
 
     click.echo(click.style("\nSlowave uninstall", bold=True))
     if dry_run:
-        click.echo(click.style("  [DRY RUN]\n", fg="yellow"))
+        click.echo(click.style("  [DRY RUN — no files will be changed]\n", fg="yellow"))
 
-    changes = []
-    errors = []
+    removed_count = 0
+    _section("1. HTTP MCP daemon service")
+    removed_count += _remove_daemon_service(dry_run)
+    _section("2. Background worker service")
+    removed_count += _remove_worker_service(dry_run)
+    _section("3. Daily database backup service")
+    removed_count += _remove_backup_service(dry_run)
+    _section("4. Lifecycle instruction blocks")
+    removed_count += _remove_lifecycle_blocks(dry_run)
+    _section("5. MCP server configurations and hooks")
+    removed_count += _remove_mcp_configs(dry_run)
 
-    def safe_remove_from_json(path: Path, remove_fn, desc: str):
-        """Safely remove Slowave config from JSON without breaking structure."""
-        if not path.exists():
-            return
-        try:
-            cfg = _read_json(path)
-            original = json.dumps(cfg, sort_keys=True)
-            modified = remove_fn(cfg)
-            if modified and json.dumps(cfg, sort_keys=True) != original:
-                if not dry_run:
-                    _write_json(path, cfg)
-                changes.append(desc)
-        except Exception as e:
-            errors.append(f"{desc}: {str(e)[:100]}")
-
-    def safe_remove_block(path: Path, desc: str):
-        """Safely remove lifecycle block between markers."""
-        if not path.exists():
-            return
-        try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            if _MARKER_START not in content or _MARKER_END not in content:
-                return
-            start_idx = content.index(_MARKER_START)
-            try:
-                end_idx = content.index(_MARKER_END, start_idx)
-            except ValueError:
-                errors.append(f"{desc}: mismatched markers")
-                return
-            new_content = content[:start_idx] + content[end_idx + len(_MARKER_END) :]
-            new_content = new_content.lstrip("\n")
-            if new_content != content and not dry_run:
-                path.write_text(new_content, encoding="utf-8")
-            if new_content != content:
-                changes.append(desc)
-        except Exception as e:
-            errors.append(f"{desc}: {str(e)[:100]}")
-
-    # Claude Code - MCP and hooks
-    def remove_cc_mcp_hooks(cfg):
-        modified = False
-        if "slowave" in cfg.get("mcpServers", {}):
-            del cfg["mcpServers"]["slowave"]
-            modified = True
-        # Remove only Slowave hooks, preserve other hooks
-        if "hooks" in cfg:
-            for event in ["UserPromptSubmit", "Stop"]:
-                if event in cfg["hooks"]:
-                    orig_len = len(cfg["hooks"][event])
-                    cfg["hooks"][event] = [
-                        g
-                        for g in cfg["hooks"][event]
-                        if not any(
-                            _HOOKS_MARKER in h.get("command", "") for h in g.get("hooks", [])
-                        )
-                    ]
-                    if len(cfg["hooks"][event]) < orig_len:
-                        modified = True
-                    # Remove empty event arrays
-                    if not cfg["hooks"][event]:
-                        del cfg["hooks"][event]
-            # Remove hooks key only if empty
-            if not cfg["hooks"]:
-                del cfg["hooks"]
-        return modified
-
-    safe_remove_from_json(_claude_settings_path(), remove_cc_mcp_hooks, "Claude Code MCP + hooks")
-    safe_remove_block(_claude_md_path(), "Claude Code lifecycle")
-
-    # Claude Desktop - use safe helper
-    def remove_cd_mcp(cfg):
-        if "slowave" in cfg.get("mcpServers", {}):
-            del cfg["mcpServers"]["slowave"]
-            return True
-        return False
-
-    safe_remove_from_json(_claude_desktop_config_path(), remove_cd_mcp, "Claude Desktop MCP")
-
-    # Cline
-    def remove_cline_mcp(cfg):
-        if "slowave" in cfg.get("mcpServers", {}):
-            del cfg["mcpServers"]["slowave"]
-            return True
-        return False
-
-    safe_remove_from_json(_cline_mcp_settings_path(), remove_cline_mcp, "Cline MCP")
-    safe_remove_block(_clinerules_path(), "Cline lifecycle")
-
-    # Worker
-    system = platform.system()
-    if not dry_run:
-        if system == "Darwin":
-            plist = _home() / "Library/LaunchAgents/com.slowave.worker.plist"
-            if plist.exists():
-                subprocess.run(
-                    ["launchctl", "unload", str(plist)],
-                    capture_output=True,
-                    check=False,
-                )
-                plist.unlink()
-                changes.append("launchd worker")
-        elif system == "Linux":
-            xdg = Path(os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config")))
-            svc = xdg / "systemd/user/slowave-worker.service"
-            if svc.exists():
-                subprocess.run(
-                    ["systemctl", "--user", "disable", "--now", "slowave-worker"],
-                    capture_output=True,
-                    check=False,
-                )
-                svc.unlink()
-                changes.append("systemd worker")
-        elif system == "Windows":
-            try:
-                subprocess.run(
-                    [
-                        "powershell",
-                        "-NonInteractive",
-                        "-Command",
-                        "Unregister-ScheduledTask -TaskName SlowaveDaemon -Confirm:$false -ErrorAction SilentlyContinue",
-                    ],
-                    capture_output=True,
-                    check=False,
-                )
-                changes.append("Task Scheduler daemon (SlowaveDaemon)")
-            except Exception:
-                pass
-            try:
-                subprocess.run(
-                    [
-                        "powershell",
-                        "-NonInteractive",
-                        "-Command",
-                        "Unregister-ScheduledTask -TaskName SlowaveWorker -Confirm:$false -ErrorAction SilentlyContinue",
-                    ],
-                    capture_output=True,
-                    check=False,
-                )
-                changes.append("Task Scheduler worker (SlowaveWorker)")
-            except Exception:
-                pass
-    else:
-        if system == "Windows":
-            changes.append("Task Scheduler daemon (SlowaveDaemon)")
-            changes.append("Task Scheduler worker (SlowaveWorker)")
-        else:
-            changes.append(f"worker ({system})")
-
-    if changes:
-        click.echo("  Removed:" if not dry_run else "  Would remove:")
-        for c in changes:
-            click.echo(f"    - {c}")
-    else:
-        click.echo("  No configuration found")
-
-    if not dry_run:
-        click.echo(f"\n  {safe_emoji('⚠️', '!!')}  Manual steps:")
-        click.echo(
-            "    - Claude Desktop Custom Instructions (delete the Slowave block if you added it manually)"
-        )
-        click.echo("    - Package: pipx uninstall slowave")
-        click.echo("    - Database (optional): rm -rf ~/.slowave")
     click.echo()
+    if dry_run:
+        click.echo(click.style("Dry run complete. No files were changed.", bold=True))
+    else:
+        click.echo(click.style(f"Uninstall complete. {removed_count} items removed.", bold=True))
+        click.echo("\nManual removal still needed:")
+        click.echo("  • Claude Desktop → Settings → General → Instructions for Claude")
+        click.echo("  • Cursor → Settings → Rules for AI")
+        click.echo("    Remove any Slowave lifecycle instructions pasted into those UIs.")
+        click.echo("\nLocal memories were preserved in ~/.slowave.")
+        click.echo(
+            "To remove the package too, use the same installer that installed it (for example: pipx uninstall slowave)."
+        )
 
 
 from slowave.cli.backup import backup_cmd, restore_cmd
@@ -2296,6 +2141,7 @@ from slowave.cli.cleanup import cleanup_cmd
 
 cli.add_command(setup_cmd)
 cli.add_command(cleanup_cmd)
+cli.add_command(cleanup_cmd, "cleanup")
 cli.add_command(backup_cmd)
 cli.add_command(restore_cmd)
 

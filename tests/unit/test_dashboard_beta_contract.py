@@ -112,6 +112,47 @@ def test_retrieval_projection_preserves_exposure_and_feedback_semantics(tmp_path
     assert detail["feedback"][0]["assessment"] == "used"
 
 
+def test_retrieval_effect_sort_matches_the_displayed_effect_priority(tmp_path: Path) -> None:
+    path = tmp_path / "effect_sort.sqlite3"
+    connection = _database(path)
+    connection.executemany(
+        "INSERT INTO context_recall_events (context_id, retrieval_type, query, count_n, created_at) "
+        "VALUES (?, 'recall', ?, 1, ?)",
+        [
+            ("ctx_unknown", "unknown effect", 100),
+            ("ctx_helped", "helped effect", 101),
+            ("ctx_no_effect", "no effect", 102),
+            ("ctx_harmed", "harmed effect", 103),
+        ],
+    )
+    connection.executemany(
+        "INSERT INTO feedback_events (event_id, retrieval_id, target_kind, target_id, effect, coverage, source_contract, status, created_at) "
+        "VALUES (?, ?, 'procedure', 'proc_1', ?, 'complete', 'slowave_feedback:v9', 'accepted', 110)",
+        [
+            ("fb_helped", "ctx_helped", "helped"),
+            ("fb_no_effect", "ctx_no_effect", "no_effect"),
+            ("fb_harmed", "ctx_harmed", "harmed"),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    descending = _retrievals_payload(str(path), {"sort": ["effect"], "dir": ["desc"]})
+    assert [item["context_id"] for item in descending["retrievals"]] == [
+        "ctx_harmed",
+        "ctx_no_effect",
+        "ctx_helped",
+        "ctx_unknown",
+    ]
+    ascending = _retrievals_payload(str(path), {"sort": ["effect"], "dir": ["asc"]})
+    assert [item["context_id"] for item in ascending["retrievals"]] == [
+        "ctx_unknown",
+        "ctx_helped",
+        "ctx_no_effect",
+        "ctx_harmed",
+    ]
+
+
 def test_memory_and_activity_lists_are_server_paginated(tmp_path: Path) -> None:
     path = tmp_path / "dashboard.sqlite3"
     connection = _database(path)
@@ -186,3 +227,23 @@ def test_home_missing_database_is_a_truthful_first_run_state(tmp_path: Path, mon
     assert payload["database"]["integrity_status"] == "unknown"
     assert payload["recent_changes"] == []
     assert payload["at_a_glance"] == {}
+
+
+def test_home_payload_supports_all_time_window(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "slowave.dashboard.app._daemon_health",
+        lambda: {"running": False, "version": None, "active_sessions": 0, "engines_loaded": []},
+    )
+    path = tmp_path / "all_time.sqlite3"
+    connection = _database(path)
+    connection.execute(
+        "INSERT INTO sessions (id, agent, started_ts) VALUES ('sess_first', 'test', 200)"
+    )
+    connection.execute(
+        "INSERT INTO raw_events (session_id, ts, type, content) VALUES ('sess_first', 200, 'note', 'first item')"
+    )
+    connection.commit()
+    connection.close()
+    payload = _home_payload(str(path), {"hours": ["all"]})
+    assert payload["window"]["from"] == 200
+    assert payload["window"]["hours"] is None

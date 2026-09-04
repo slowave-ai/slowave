@@ -93,7 +93,7 @@ export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect
       // nodes than the default fit viewport.
       graph.zoom(Math.min(graph.maxZoom(), graph.zoom() * 1.25));
       graph.on("tap", "node", (event) => onSelect?.(event.target.id()));
-      graph.on("mouseover", "node", (event) => { const n = event.target.data(); setTooltip({ x: event.renderedPosition.x, y: event.renderedPosition.y, title: n.label, detail: `${n.status} · ${n.scope || "no scope"} · salience ${Number(n.salience).toFixed(2)} · confidence ${Number(n.confidence).toFixed(2)}` }); });
+      graph.on("mouseover", "node", (event) => { const n = event.target.data(); setTooltip({ x: event.renderedPosition.x, y: event.renderedPosition.y, title: n.label, detail: `${n.status} · ${n.scope || "no scope"} · salience ${Number(n.salience).toFixed(1)} · confidence ${Number(n.confidence).toFixed(2)}` }); });
       graph.on("mouseover", "edge", (event) => { const e = event.target.data(); setTooltip({ x: event.renderedPosition.x, y: event.renderedPosition.y, title: e.relation.replaceAll("_", " "), detail: `${e.sourceLabel} → ${e.targetLabel}` }); });
       graph.on("mouseout", "node, edge", () => setTooltip(null));
     });

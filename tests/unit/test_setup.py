@@ -23,6 +23,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
+from slowave.cli.main import cli
 from slowave.cli.setup import (
     _CODEX_STOP_CMD,
     _MARKER_START,
@@ -680,6 +681,30 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr(_setup_mod, "_home", lambda: tmp_path)
     monkeypatch.setattr(_cleanup_mod, "_home", lambda: tmp_path)
     return tmp_path
+
+
+class TestRemovalCommandSurface:
+    def test_uninstall_dry_run_preserves_local_data(self, fake_home):
+        result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        assert "Slowave uninstall" in result.output
+        assert "Local data and database" not in result.output
+        assert "No files were changed" in result.output
+
+    def test_purge_dry_run_does_not_prompt(self, fake_home):
+        result = CliRunner().invoke(cli, ["purge", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        assert "Slowave purge" in result.output
+        assert "Local data and database" in result.output
+        assert "Continue?" not in result.output
+
+    def test_cleanup_is_a_purge_alias(self, fake_home):
+        result = CliRunner().invoke(cli, ["cleanup", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        assert "Slowave purge" in result.output
 
 
 class TestDetectedClients:

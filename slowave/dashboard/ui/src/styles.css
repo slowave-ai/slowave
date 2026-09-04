@@ -522,7 +522,7 @@ main {
 .metric-warning { --metric-accent: var(--warning); }
 .metric-subtle { --metric-accent: var(--border); }
 .home-metric-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.activity-metric-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.activity-metric-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric-warning-note { margin-top: 12px; }
 .evidence-notice { margin-top: 12px; border-color: var(--border); background: var(--raised); color: var(--muted); }
 .evidence-notice strong { color: var(--text); font-size: 12px; }
@@ -1483,6 +1483,9 @@ pre {
 .exposure-row > div:nth-child(2) {
   align-content: start;
   justify-items: end;
+}
+.schema-preview {
+  cursor: help;
 }
 .exposure-row span,
 .exposure-row small {

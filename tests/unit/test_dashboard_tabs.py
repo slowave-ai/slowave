@@ -69,8 +69,9 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "Evidence quality for the retrieval metrics above" not in source
     assert "Active memories is the current library denominator" not in source
     assert 'title="Assessed memories used"' in source
-    assert 'title="Demonstrated value"' in source
-    assert 'title="Helpful assessments"' in source
+    assert 'title="Utility rate"' in source
+    assert 'title="Helpful rate"' in source
+    assert 'title="Harmful rate"' in source
     assert 'title="Used context"' in source
     assert "Historical feedback is incomplete" in source
     assert "Used among assessed retrieved memories" not in source
@@ -80,7 +81,7 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "currently visible bounded subset" not in source
     assert "limit reached" in source and "limit not reached" in source
     assert ".home-metric-card-grid { grid-template-columns: repeat(3" in styles
-    assert ".activity-metric-card-grid { grid-template-columns: repeat(2" in styles
+    assert ".activity-metric-card-grid { grid-template-columns: repeat(4" in styles
     assert ".metric-card {\n  background: var(--surface-background);" in styles
     assert ".metric-card:hover," in styles
     assert "createPortal" in source

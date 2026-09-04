@@ -98,7 +98,7 @@ Before overwriting any config file, `slowave setup` creates a timestamped copy n
 
 - The backup path is printed during setup.
 - Only **one backup per file** — re-running replaces the previous backup.
-- `slowave cleanup` removes all `*.bak.*` files.
+- `slowave purge` removes all `*.bak.*` files. (`slowave cleanup` is a compatibility alias.)
 
 To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 
@@ -232,25 +232,60 @@ slowave setup --dry-run # preview without writing
 
 ---
 
-## Uninstall
+## Remove Slowave
+
+Slowave has three distinct removal operations. Choose the smallest one that
+matches your goal. Run the dry run first whenever possible.
+
+### Stop using Slowave but keep its memories
 
 ```bash
-slowave cleanup --dry-run  # preview
-slowave cleanup            # remove all config (keeps database)
-pipx uninstall slowave     # remove package
-rm -rf ~/.slowave          # optional: delete all memories
+slowave uninstall --dry-run
+slowave uninstall
 ```
 
-`slowave cleanup` removes:
-- All `"slowave"` MCP server entries from client configs
-- Lifecycle instruction blocks (between `<!-- slowave-lifecycle-start/end -->` markers)
-- Enforcement hooks (Claude Code)
-- Worker, daemon, and backup services
-- All `*.bak.*` backup files
+`slowave uninstall` removes every Slowave-managed client integration: MCP
+entries, generated lifecycle instructions and hooks, plus the HTTP daemon,
+background worker, and daily-backup services. It preserves:
 
-**Preserved:** other MCP servers, other hooks, all other config keys, the SQLite database.
+- `~/.slowave`, including the SQLite database and database archives
+- setup-created `*.bak.*` configuration backups
+- unrelated client configuration, MCP entries, hooks, and instruction content
+- the installed Slowave package
 
-Claude Desktop and Cursor: also manually clear the lifecycle block from Settings.
+Claude Desktop and Cursor lifecycle instructions are pasted into their UI and
+cannot be removed by a command. Remove the Slowave text manually from **Claude
+Desktop → Settings → General → Instructions for Claude** and **Cursor →
+Settings → Rules for AI**.
+
+### Remove integrations and local data
+
+```bash
+slowave purge --dry-run
+slowave purge
+```
+
+`slowave purge` performs `uninstall` and then removes local Slowave data from
+`~/.slowave`, including the SQLite database. It also removes setup-created
+`*.bak.*` configuration backups. This is destructive and asks for confirmation.
+
+Database archives already stored in `~/.slowave/backups` are intentionally
+retained so memories can be recovered. Delete that directory yourself only if
+you have confirmed that those archives are no longer needed.
+
+`slowave cleanup` is retained as a compatibility alias for `slowave purge`.
+Use `purge` in new scripts and documentation.
+
+### Remove the installed package
+
+Slowave does not remove its own Python package. Use the same installer used to
+install it, after `uninstall` or `purge` as appropriate:
+
+```bash
+pipx uninstall slowave
+# or, if installed with Homebrew:
+brew uninstall slowave
+```
 
 ---
 
@@ -260,7 +295,7 @@ Claude Desktop and Cursor: also manually clear the lifecycle block from Settings
 - ✅ **Idempotent** — safe to re-run
 - ✅ **Dry-run mode** — `slowave setup --dry-run`
 - ✅ **Verification** — `slowave doctor` shows state
-- ✅ **Reversible** — `slowave cleanup`
+- ✅ **Reversible setup removal** — `slowave uninstall` preserves local memories
 - ✅ **No telemetry** — no analytics, no data collection
 - ✅ **Local-first** — all data stays on your machine
 

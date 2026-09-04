@@ -20,7 +20,30 @@ from slowave.mcp import session_reaper
 from slowave.mcp.tools import register_tools
 from slowave.symbolic.encoder import TextEncoder
 
-DIM = 32
+_TOKEN_HASH_END = 32
+_TEMPORAL_CUES: tuple[tuple[str, ...], ...] = (
+    ("right now", "today", "at the moment"),
+    ("yesterday", "day before"),
+    ("a few days ago", "several days ago"),
+    (
+        "last week",
+        "week ago",
+        "la settimana scorsa",
+        "la semana pasada",
+        "la semaine dernière",
+        "letzte woche",
+        "na semana passada",
+    ),
+    ("two weeks ago", "fortnight ago"),
+    ("last month", "month ago", "recently"),
+    ("two months ago", "couple of months ago"),
+    ("three months ago", "several months ago"),
+    ("six months ago", "half a year ago"),
+    ("last year", "year ago"),
+    ("two years ago",),
+    ("a long time ago", "years ago", "long ago"),
+)
+DIM = _TOKEN_HASH_END + len(_TEMPORAL_CUES)
 
 CONCEPTS: tuple[tuple[str, ...], ...] = (
     ("database", "postgres", "postgresql", "sql", "ledger"),
@@ -49,7 +72,14 @@ class DeterministicEncoder:
                 vector[index] += 1.0
         for token in _tokens(lowered):
             digest = hashlib.blake2b(token.encode("utf-8"), digest_size=2).digest()
-            vector[8 + int.from_bytes(digest, "big") % (DIM - 8)] += 0.08
+            vector[8 + int.from_bytes(digest, "big") % (_TOKEN_HASH_END - 8)] += 0.08
+        # The compact transport encoder otherwise represents temporal language
+        # only through hash buckets. Reserve one deterministic dimension per
+        # temporal-probe band so acceptance scenarios exercise a meaningful,
+        # stable temporal anchor instead of a collision-selected interval.
+        for index, cues in enumerate(_TEMPORAL_CUES):
+            if any(cue in lowered for cue in cues):
+                vector[_TOKEN_HASH_END + index] += 4.0
         norm = float(np.linalg.norm(vector))
         if norm == 0.0:
             vector[-1] = 1.0
