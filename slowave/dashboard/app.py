@@ -2,9 +2,8 @@
 
 Dependency-free at runtime: stdlib HTTP server + SQLite read APIs + packaged
 React UI assets.
-The dashboard is local-only by default. The one mutating action (schema
-forget/unforget) is enabled by default too -- pass --no-allow-actions for a
-strictly read-only dashboard, e.g. before sharing a screen or a port.
+The dashboard is local-only by default, with its mutating schema actions
+(forget/unforget) available in the normal dashboard command.
 """
 
 from __future__ import annotations
@@ -230,7 +229,7 @@ def _make_handler(
         def do_POST(self) -> None:  # noqa: N802
             if not allow_actions:
                 self._send_json(
-                    {"error": "mutating actions disabled; restart with --allow-actions"},
+                    {"error": "mutating actions disabled for this dashboard instance"},
                     status=HTTPStatus.FORBIDDEN,
                 )
                 return
@@ -577,11 +576,16 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         - hours:    look-back window in hours  (default 2, max 8760)
         - bucket_m: bucket size in minutes     (default 5, max 10080)
     """
-    hours = min(max(_qs_int(qs, "hours", 2), 1), 8760)
+    requested_hours = (qs.get("hours") or ["2"])[0].strip().lower()
     bucket_m = min(max(_qs_int(qs, "bucket_m", 5), 1), 10080)
     bucket_s = bucket_m * 60
     now = int(time.time())
-    window_start = now - hours * 3600
+    if requested_hours == "all":
+        window_start = _earliest_memory_history_ts(db_path, fallback=now)
+        hours = max(1, (now - window_start + 3599) // 3600)
+    else:
+        hours = min(max(_qs_int(qs, "hours", 2), 1), 8760)
+        window_start = now - hours * 3600
     first_bucket = (window_start // bucket_s) * bucket_s
     last_bucket = (now // bucket_s) * bucket_s
 
@@ -636,6 +640,27 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             "total_events": sum(b["n"] for b in channels["raw_events"]),
             "max_n": max((b["n"] for b in channels["raw_events"]), default=0),
         }
+    finally:
+        conn.close()
+
+
+def _earliest_memory_history_ts(db_path: str, *, fallback: int) -> int:
+    """Return the first retained user-memory record timestamp, if available."""
+    if not os.path.exists(db_path):
+        return fallback
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT MIN(ts) AS ts FROM raw_events "
+            "UNION ALL SELECT MIN(ts) AS ts FROM episodic_memories "
+            "UNION ALL SELECT MIN(first_formed_ts) AS ts FROM schemas"
+        ).fetchall()
+        timestamps = [
+            int(row["ts"]) for row in rows if row["ts"] is not None and int(row["ts"]) > 0
+        ]
+        return min(timestamps, default=fallback)
+    except sqlite3.Error:
+        return fallback
     finally:
         conn.close()
 
@@ -1592,8 +1617,8 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
         conn.close()
 
 
-# Mutating actions below are only reachable when the server was started with
-# --allow-actions (see do_POST); the dashboard is read-only by default. Logic
+# Mutating actions below are only reachable when the server instance allows
+# actions; the standard dashboard command enables them. Logic
 # is intentionally a standalone copy of SchemaStore.forget/unforget rather than
 # importing schema_store.py, matching this module's "dependency-free: stdlib
 # HTTP server + SQLite" design (see module docstring, and VALID_SCHEMA_STATUSES
@@ -2067,13 +2092,40 @@ def _episodes_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         conn.close()
 
 
+def _activity_bucket_minutes(window_seconds: int) -> int:
+    """Choose a legible Home activity bucket size for the selected window.
+
+    Keep roughly 24–60 bars on screen: this preserves detail for short
+    histories while avoiding an unreadable wall of narrow bars for long ones.
+    """
+
+    if window_seconds <= 24 * 3600:
+        return 60  # 24 hourly bars
+    if window_seconds <= 7 * 24 * 3600:
+        return 6 * 60  # 28 six-hour bars
+    if window_seconds <= 31 * 24 * 3600:
+        return 24 * 60  # 31 daily bars
+    if window_seconds <= 366 * 24 * 3600:
+        return 7 * 24 * 60  # 53 weekly bars
+    if window_seconds <= 2 * 366 * 24 * 3600:
+        return 14 * 24 * 60  # about 52 two-week bars
+    if window_seconds <= 5 * 366 * 24 * 3600:
+        return 30 * 24 * 60  # at most about 61 monthly bars
+    return 90 * 24 * 60  # quarterly bars for longer histories
+
+
 def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     """Shape conservative Home observations without inventing lifecycle transitions."""
 
-    hours = max(1, min(24 * 365, _qs_int(qs, "hours", 3)))
+    requested_hours = (qs.get("hours") or ["all"])[0].strip().lower()
+    all_time = requested_hours == "all"
+    hours = None if all_time else max(1, min(24 * 365, _qs_int(qs, "hours", 3)))
     scope = (qs.get("scope") or [""])[0].strip()
     now = int(time.time())
-    since = now - hours * 3600
+    since = (
+        _earliest_memory_history_ts(db_path, fallback=now) if all_time else now - int(hours) * 3600
+    )
+    activity_bucket_minutes = _activity_bucket_minutes(max(1, now - since))
     exists = os.path.exists(db_path)
     status = _status_payload(db_path)
     database = _db_health(db_path)
@@ -2091,18 +2143,8 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             _pulse_payload(
                 db_path,
                 {
-                    "hours": [str(hours)],
-                    "bucket_m": [
-                        str(
-                            15
-                            if hours <= 12
-                            else (
-                                30
-                                if hours <= 24
-                                else 360 if hours <= 24 * 7 else 1440 if hours <= 24 * 30 else 10080
-                            )
-                        )
-                    ],
+                    "hours": ["all" if all_time else str(hours)],
+                    "bucket_m": [str(activity_bucket_minutes)],
                 },
             )
             if exists
@@ -2297,7 +2339,7 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             changes, key=lambda item: int(item.get("observed_at") or 0), reverse=True
         )[:30]
         effectiveness_qs = dict(qs)
-        effectiveness_qs["hours"] = [str(hours)]
+        effectiveness_qs["hours"] = ["all" if all_time else str(hours)]
         effectiveness_qs["from"] = [str(since)]
         effectiveness_qs["to"] = [str(now)]
         base["effectiveness"] = _effectiveness_payload(db_path, effectiveness_qs)
@@ -2556,6 +2598,20 @@ def _retrieval_signal_expression(key: str) -> str:
     )
 
 
+def _retrieval_effect_expression() -> str:
+    """Rank the effect badge shown in the retrieval list from unknown to harmful."""
+    return (
+        "CASE "
+        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
+        "AND f.status='accepted' AND f.effect='harmed') THEN 3 "
+        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
+        "AND f.status='accepted' AND f.effect='no_effect') THEN 2 "
+        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
+        "AND f.status='accepted' AND f.effect='helped') THEN 1 "
+        "ELSE 0 END"
+    )
+
+
 def _retrieval_sort(qs: dict[str, list[str]]) -> tuple[str, str]:
     sort = (qs.get("sort") or ["when"])[0].strip()
     allowed = {
@@ -2568,6 +2624,7 @@ def _retrieval_sort(qs: dict[str, list[str]]) -> tuple[str, str]:
         "exposed",
         "memories_retrieved",
         "procedures_retrieved",
+        "effect",
         "feedback",
     }
     allowed.update(_RETRIEVAL_SIGNAL_KEYS)
@@ -2651,6 +2708,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
         "exposed": "exposed_count",
         "memories_retrieved": "memory_count",
         "procedures_retrieved": "procedure_count",
+        "effect": "effect_rank",
         "feedback": "feedback_complete",
         **{key: f"signal_{key}" for key in _RETRIEVAL_SIGNAL_KEYS},
     }
@@ -2669,6 +2727,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1 AND i.memory_type IN ('procedure','procedural_memory')) AS procedure_count, "
             "EXISTS(SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted' AND f.coverage='complete') AS feedback_complete, "
             "EXISTS(SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted') AS feedback_observed, "
+            f"{_retrieval_effect_expression()} AS effect_rank, "
             f"{signal_select} "
             f"FROM context_recall_events r WHERE {where} "
             f"ORDER BY {sort_columns[sort]} {direction.upper()}, r.created_at DESC, r.context_id DESC LIMIT ? OFFSET ?",
@@ -2783,8 +2842,14 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         items = [
             dict(item)
             for item in conn.execute(
-                "SELECT memory_id, memory_type, rank, reason, content_text, status, pathway, admitted, created_at "
-                "FROM context_recall_items WHERE context_id = ? AND admitted = 1 ORDER BY rank",
+                "SELECT i.memory_id, i.memory_type, i.rank, i.reason, "
+                "COALESCE(s.content_text, i.content_text) AS content_text, "
+                "COALESCE(s.status, i.status) AS status, "
+                "i.pathway, i.admitted, i.created_at "
+                "FROM context_recall_items i "
+                "LEFT JOIN schemas s ON i.memory_type IN ('schema', 'related') "
+                "AND i.memory_id = 'sch_' || s.id "
+                "WHERE i.context_id = ? AND i.admitted = 1 ORDER BY i.rank",
                 (retrieval_id,),
             ).fetchall()
         ]

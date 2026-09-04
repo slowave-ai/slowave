@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -525,13 +526,32 @@ def test_remember_preserves_client_source_time_in_public_recall_evidence(tmp_pat
     _run(scenario())
 
 
-def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "query",
+    (
+        "What caused the payments incident last week?",
+        "Cosa ha causato l'incidente dei pagamenti la settimana scorsa?",
+        "¿Qué causó el incidente de pagos la semana pasada?",
+        "Qu'est-ce qui a causé l'incident de paiement la semaine dernière ?",
+        "Was hat den Zahlungszwischenfall letzte Woche verursacht?",
+        "O que causou o incidente de pagamentos na semana passada?",
+    ),
+)
+def test_temporal_recall_prefers_the_episode_matching_client_source_time(
+    tmp_path: Path, query: str
+) -> None:
     """Past-tense retrieval is time-matched; semantic retrieval returns the newer episode."""
 
     async def scenario() -> None:
         older = "The payments incident was caused by an expired certificate."
         newer = "The payments incident was caused by a gateway timeout."
         scope = "project:payments"
+        # Keep this relative to the query's "last week" anchor. Fixed 2026
+        # dates silently turn this into a wall-clock-dependent ranking test as
+        # time passes.
+        now = datetime.now(timezone.utc)
+        older_at = now - timedelta(days=7)
+        newer_at = now - timedelta(days=1)
         async with open_harness(tmp_path / "temporal-ranking.db") as harness:
             seed, _ = await harness.activate(
                 "temporal_ranking_seed",
@@ -544,7 +564,7 @@ def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_pat
                 "fact",
                 seed["session_id"],
                 scope,
-                occurred_at="2026-08-19T14:05:00Z",
+                occurred_at=older_at.isoformat().replace("+00:00", "Z"),
             )
             await harness.feedback_all(seed)
             await harness.commit(seed["session_id"], "record the earlier payments incident")
@@ -560,7 +580,7 @@ def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_pat
                 "fact",
                 newer_seed["session_id"],
                 scope,
-                occurred_at="2026-08-25T14:05:00Z",
+                occurred_at=newer_at.isoformat().replace("+00:00", "Z"),
             )
             await harness.feedback_all(newer_seed)
             await harness.commit(newer_seed["session_id"], "record the newer payments incident")
@@ -573,7 +593,7 @@ def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_pat
             )
             retrieval, _ = await harness.recall(
                 "temporal_ranking_recall",
-                "What caused the payments incident last week?",
+                query,
                 later["session_id"],
                 scope,
                 evidence="full",
@@ -581,7 +601,7 @@ def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_pat
             episodes = [item for item in retrieval["evidence"] if item["source_kind"] == "episode"]
             assert episodes, "public recall did not expose any ranked episodic evidence"
             assert older in episodes[0].get("content", "")
-            assert episodes[0]["occurred_at"] == 1787148300
+            assert episodes[0]["occurred_at"] == int(older_at.timestamp())
             await harness.feedback_all(later, used_ids={older_id})
             await harness.feedback_all(retrieval, used_ids={older_id})
             await harness.commit(later["session_id"], "retrieve last week's payments incident")
@@ -614,7 +634,7 @@ def test_temporal_recall_prefers_the_episode_matching_client_source_time(tmp_pat
                 "semantic retrieval did not expose the gateway-timeout episode: "
                 f"{current_episodes}"
             )
-            assert newer_episode["occurred_at"] == 1787666700
+            assert newer_episode["occurred_at"] == int(newer_at.timestamp())
             await harness.feedback_all(current)
             await harness.feedback_all(current_retrieval)
             await harness.commit(

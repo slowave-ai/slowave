@@ -231,3 +231,20 @@ def test_retrieval_detail_attaches_assessment_and_effect_per_item(tmp_path: Path
     assert by_id["proc_1"]["assessment"] == "used"
     assert by_id["proc_1"]["effect"] == "helped"
     assert detail["session"]["outcome"] == "success"
+
+
+def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Path) -> None:
+    path = tmp_path / "detail_current_schema.sqlite3"
+    connection = _seed(path)
+    connection.execute(
+        "UPDATE schemas SET content_text = ?, status = ? WHERE id = 1",
+        ("Current schema text", "needs_review"),
+    )
+    connection.commit()
+    connection.close()
+
+    detail = _retrieval_detail(str(path), "ctx_visible")
+    item = next(item for item in detail["items"] if item["memory_id"] == "sch_1")
+
+    assert item["content_text"] == "Current schema text"
+    assert item["status"] == "needs_review"

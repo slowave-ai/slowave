@@ -39,6 +39,23 @@ def test_status_payload_reports_the_running_slowave_version(tmp_path, monkeypatc
     assert payload["slowave_version"] == dashboard_app.__version__
 
 
+def test_home_activity_bucket_size_keeps_day_to_year_views_granular() -> None:
+    day = 24 * 3600
+
+    assert dashboard_app._activity_bucket_minutes(day) == 60
+    assert dashboard_app._activity_bucket_minutes(7 * day) == 6 * 60
+    assert dashboard_app._activity_bucket_minutes(30 * day) == 24 * 60
+    assert dashboard_app._activity_bucket_minutes(365 * day) == 7 * 24 * 60
+
+
+def test_home_activity_bucket_size_adapts_all_time_histories() -> None:
+    day = 24 * 3600
+
+    assert dashboard_app._activity_bucket_minutes(22 * day) == 24 * 60
+    assert dashboard_app._activity_bucket_minutes(2 * 365 * day) == 14 * 24 * 60
+    assert dashboard_app._activity_bucket_minutes(5 * 365 * day) == 30 * 24 * 60
+
+
 def test_react_home_separates_service_observations_and_activity_lanes() -> None:
     source_dir = Path(__file__).parents[2] / "slowave/dashboard/ui/src"
     app = "\n".join(path.read_text() for path in source_dir.glob("*.tsx"))
@@ -50,3 +67,10 @@ def test_react_home_separates_service_observations_and_activity_lanes() -> None:
     assert "Episodes" in app
     assert "Memories" in app
     assert "Since you last looked" not in app
+
+
+def test_react_activity_chart_reserves_space_for_y_axis_labels() -> None:
+    source = (Path(__file__).parents[2] / "slowave/dashboard/ui/src/pages.tsx").read_text()
+
+    assert "left = 56" in source
+    assert "right-aligned Y-axis labels remain inside the SVG viewport" in source

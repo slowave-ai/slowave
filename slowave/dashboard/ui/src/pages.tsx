@@ -53,6 +53,14 @@ import {
 
 type PageProps = { location: LocationState };
 const GraphExplorer = lazy(() => import("./GraphExplorer"));
+const sharedColumnHelp = {
+  scope: "The scope (memory boundary) this record belongs to; it keeps related data isolated.",
+  outcome: "The recorded task outcome: success, partial, or failure. It describes what happened, not a causal quality score.",
+  verification: "How strongly the recorded outcome was checked: verified, partially verified, or unverified.",
+  retrieved: "How many distinct retrieval events returned this record.",
+  used: "How many retrieval events explicitly assessed this record as used.",
+  effect: "The reported downstream effect of using this procedure: Helpful, No effect, Harmful, or Unknown. Unknown means no effect assessment was recorded.",
+};
 const formatBytes = (value: unknown) => {
   const bytes = Math.max(0, Number(value) || 0);
   if (bytes < 1024) return `${Math.round(bytes)} B`;
@@ -213,7 +221,9 @@ function ActivityLanes({ data }: { data?: Json }) {
   );
   const width = 900,
     chartHeight = 180,
-    left = 28,
+    // Reserve enough room for grouped counts (for example, "10,000") so
+    // right-aligned Y-axis labels remain inside the SVG viewport.
+    left = 56,
     right = 28,
     plotWidth = width - left - right,
     baseline = 156,
@@ -270,7 +280,17 @@ function ActivityLanes({ data }: { data?: Json }) {
   };
   return (
     <Section
-      title="Recent activity"
+      title={
+        <>
+          Recent activity
+          <DefinitionTooltip label="Recent activity definition">
+            Raw events are individual observations Slowave captures. Episodes
+            group related observations into a past interaction. Memories are
+            durable facts or guidance distilled from those episodes for future
+            retrieval.
+          </DefinitionTooltip>
+        </>
+      }
     >
       <div
         className="lane-chart"
@@ -402,7 +422,7 @@ function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) 
 }
 
 export function HomePage({ location }: PageProps) {
-  const hours = param(location, "hours", "24");
+  const hours = param(location, "hours", "all");
   const request = useApi<Json>(
     `/api/home?hours=${encodeURIComponent(hours)}`,
     { pollMs: refreshMs },
@@ -431,7 +451,7 @@ export function HomePage({ location }: PageProps) {
                 <option value="24">Last 24 hours</option>
                 <option value="168">Last week</option>
                 <option value="720">Last month</option>
-                <option value="8760">Last year</option>
+                <option value="all">All times</option>
               </select>
             </label>
           </div>
@@ -551,7 +571,7 @@ export function MemoryPage({ location }: PageProps) {
     ? decodeURIComponent(location.path.split("/")[2])
     : "";
   const scope = param(location, "scope");
-  const states = param(location, "states", "active,needs_review");
+  const states = param(location, "states");
   const sort = param(location, "sort", "changed");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
@@ -616,13 +636,12 @@ export function MemoryPage({ location }: PageProps) {
               })
             }
           >
-            <option value="active,needs_review">Active + needs review</option>
+            <option value="">All</option>
             {memoryStateOptions.map((state) => (
               <option key={state} value={state}>
                 {state.replaceAll("_", " ")}
               </option>
             ))}
-            <option value="">All states</option>
           </select>
         </label>
         <ScopeSelect
@@ -631,40 +650,34 @@ export function MemoryPage({ location }: PageProps) {
             updateParams("/memory", location, { scope: next, page: 1 })
           }
         />
-        <details className="filter-menu">
-          <summary>More filters</summary>
-          <div>
-            <ColumnsControl columns={memoryColumns} visible={visibleColumns} onChange={setVisibleColumns} />
-            <label>
-              Changed since
-              <input
-                type="date"
-                value={
-                  param(location, "from")
-                    ? new Date(Number(param(location, "from")) * 1000)
-                        .toISOString()
-                        .slice(0, 10)
-                    : ""
-                }
-                onChange={(e) =>
-                  updateParams("/memory", location, {
-                    from: e.target.value
-                      ? Math.floor(new Date(e.target.value).getTime() / 1000)
-                      : undefined,
-                    page: 1,
-                  })
-                }
-              />
-            </label>
-          </div>
-        </details>
+        <label>
+          Changed since
+          <input
+            type="date"
+            value={
+              param(location, "from")
+                ? new Date(Number(param(location, "from")) * 1000)
+                    .toISOString()
+                    .slice(0, 10)
+                : ""
+            }
+            onChange={(e) =>
+              updateParams("/memory", location, {
+                from: e.target.value
+                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
+                  : undefined,
+                page: 1,
+              })
+            }
+          />
+        </label>
       </div>
-      {states !== "active,needs_review" && (
+      {states && (
         <div className="filter-chips">
           <button
             onClick={() =>
               updateParams("/memory", location, {
-                states: "active,needs_review",
+                states: undefined,
                 page: 1,
               })
             }
@@ -712,8 +725,8 @@ export function MemoryPage({ location }: PageProps) {
                       onClick={() => changeSort("content")}
                     />
                   </th>}
-                  {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /></th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /></th>}
+                  {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /><DefinitionTooltip label="State definition">The memory's lifecycle status: active, needs review, or stale.</DefinitionTooltip></th>}
+                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("created") && <th
                     aria-sort={
                       sort === "formed"
@@ -930,7 +943,27 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <dt>Last updated</dt>
               <dd>{formatDate(memory.last_updated_ts)}</dd>
             </dl>
-            <Section title="Summary">
+            <Section
+              title="Summary"
+              actions={
+                allowActions ? (
+                  <button
+                    className={
+                      memory.status === "forgotten"
+                        ? "button secondary"
+                        : "button danger-secondary"
+                    }
+                    onClick={() => setConfirm(true)}
+                  >
+                    {memory.status === "forgotten" ? "Restore memory" : "Forget"}
+                  </button>
+                ) : (
+                  <p className="notice compact">
+                    This dashboard was launched read-only. Forget/restore is unavailable.
+                  </p>
+                )
+              }
+            >
             <dl className="key-values">
               <dt>Effect on retrieval</dt>
               <dd>
@@ -1088,7 +1121,7 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <summary>Advanced</summary>
               <dl className="key-values">
                 <dt>Importance (salience)</dt>
-                <dd>{memory.salience}</dd>
+                <dd>{memory.salience == null ? "—" : Number(memory.salience).toFixed(1)}</dd>
                 <dt>Confidence</dt>
                 <dd>{memory.confidence}</dd>
                 <dt>Availability stage</dt>
@@ -1102,27 +1135,6 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 <dt>Incoming relations</dt><dd>{data.incoming?.length || 0}</dd>
               </dl>
             </details>
-            <div className="detail-actions">
-              {allowActions ? (
-                <button
-                  className={
-                    memory.status === "forgotten"
-                      ? "button secondary"
-                      : "button danger-secondary"
-                  }
-                  onClick={() => setConfirm(true)}
-                >
-                  {memory.status === "forgotten"
-                    ? "Restore memory"
-                    : "Suppress memory"}
-                </button>
-              ) : (
-                <p className="notice compact">
-                  This dashboard was launched read-only. Suppress/restore is
-                  unavailable.
-                </p>
-              )}
-            </div>
             {confirm && (
               <div
                 className="confirmation"
@@ -1196,13 +1208,38 @@ export function RetrievalPage({ location }: PageProps) {
   ] as const;
   const retrievalColumns = [
     { id: "when", label: "When" }, { id: "task", label: "Task / query" }, { id: "type", label: "Type" }, { id: "scope", label: "Scope" },
-    { id: "result", label: "Result" }, { id: "retrieved", label: "Retrieved" }, { id: "used", label: "Used" },
+    { id: "retrieved", label: "Retrieved" }, { id: "used", label: "Used" },
     { id: "effect", label: "Effect" }, { id: "feedback", label: "Feedback" }, { id: "memories_retrieved", label: "Memories retrieved" },
     { id: "procedures_retrieved", label: "Procedures retrieved" }, { id: "not_used", label: "Not used" }, { id: "irrelevant", label: "Irrelevant" },
-    { id: "stale", label: "Stale" }, { id: "wrong", label: "Wrong" }, { id: "helped", label: "Helpful" }, { id: "no_effect", label: "No effect" },
-    { id: "harmed", label: "Harmful" }, { id: "unknown", label: "Unknown" }, { id: "session", label: "Session ID" },
+    { id: "stale", label: "Stale" }, { id: "wrong", label: "Wrong" }, { id: "unknown", label: "Unknown" }, { id: "session", label: "Session ID" },
   ];
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(["when", "task", "type", "scope", "result", "retrieved", "used", "effect", "feedback"]);
+  const retrievalColumnHelp: Record<string, string> = {
+    when: "When this retrieval was recorded.",
+    task: "The task, goal, or query that prompted the retrieval.",
+    type: "Activation retrieves context at the start of a task; Recall is an explicit later lookup.",
+    scope: sharedColumnHelp.scope,
+    retrieved: "Admitted items returned by this retrieval, split into memories and procedures.",
+    memories_retrieved: "Number of admitted memory items returned.",
+    procedures_retrieved: "Number of admitted procedure items returned.",
+    used: "Count of returned items explicitly assessed as used.",
+    not_used: "Count of returned procedures explicitly assessed as not used.",
+    irrelevant: "Count of returned memories explicitly assessed as irrelevant.",
+    stale: "Count of returned memories explicitly assessed as stale.",
+    wrong: "Count of returned memories explicitly assessed as wrong.",
+    helped: "Count of returned procedures reported to have helped.",
+    no_effect: "Count of returned procedures reported to have had no effect.",
+    harmed: "Count of returned procedures reported to have harmed the task.",
+    unknown: "Count of retrievals without an explicit accepted assessment or effect.",
+    effect: "Reported downstream effect of a retrieved procedure: Helpful, No effect, Harmful, or Unknown. Unknown means no impact assessment was reported; it is not a negative result.",
+    feedback: "Whether accepted feedback completely covered the items returned by this retrieval.",
+    session: "The session that recorded this retrieval, or Standalone when there was none.",
+  };
+  const ColumnHelp = ({ id, label }: { id: string; label: string }) => (
+    <DefinitionTooltip label={`${label} definition`}>
+      {retrievalColumnHelp[id]}
+    </DefinitionTooltip>
+  );
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "feedback"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1373,7 +1410,7 @@ export function RetrievalPage({ location }: PageProps) {
         <div className="metric-card-grid" aria-label="Retrieval summary">
           <MetricCard title="Retrievals" value={Number(summary.retrievals ?? 0).toLocaleString()} tooltip={glossary.retrievals_total} className="metric-retrieved" />
           <RateMetricCard title="Match rate" numerator={Math.max(0, Number(summary.retrievals ?? 0) - Number(summary.no_match ?? 0))} denominator={Number(summary.retrievals ?? 0)} secondary={`${Number(summary.no_match ?? 0).toLocaleString()} empty`} tooltip={glossary.retrievals_no_match} className="metric-no-match" />
-          <RateMetricCard title="Demonstrated value" numerator={Number(summary.demonstrated_value ?? 0)} denominator={Number(summary.feedback_complete ?? 0)} tooltip="Feedback-complete retrievals with at least one returned memory assessed as used or returned procedure assessed as helpful. This demonstrates recorded value, not causal impact on task success." className="metric-helpful" />
+          <RateMetricCard title="Utility rate" numerator={Number(summary.demonstrated_value ?? 0)} denominator={Number(summary.feedback_complete ?? 0)} tooltip="Percentage of feedback-complete retrievals where at least one returned memory was marked Used or one returned procedure was marked Helpful. This is an explicit feedback signal, not a measure of overall system value or task success." className="metric-helpful" />
           <RateMetricCard title="Feedback coverage" numerator={Number(summary.feedback_complete ?? 0)} denominator={Number(summary.retrievals ?? 0)} tooltip={glossary.retrievals_feedback_complete} className="metric-feedback" />
         </div>
         {Number(summary.unknown ?? 0) > 0 && <div className="notice compact evidence-notice"><Icon name="info" /><div><strong>Historical feedback is incomplete <DefinitionTooltip label="Historical feedback definition">{glossary.retrievals_unknown} It may reflect records created before feedback was available.</DefinitionTooltip></strong><span>{Number(summary.unknown).toLocaleString()} historical exposed-item records have no explicit assessment.</span></div></div>}
@@ -1395,30 +1432,33 @@ export function RetrievalPage({ location }: PageProps) {
                 <tr>
                   {visible("when") && <th aria-sort={sort === "when" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="When" active={sort === "when"} direction={dir} onClick={() => changeSort("when")} />
+                    <ColumnHelp id="when" label="When" />
                   </th>}
                   {visible("task") && <th aria-sort={sort === "task" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Task / query" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
+                    <ColumnHelp id="task" label="Task / query" />
                   </th>}
-                  {visible("type") && <th><SortButton label="Type" active={sort === "type"} direction={dir} onClick={() => changeSort("type")} /></th>}
+                  {visible("type") && <th><SortButton label="Type" active={sort === "type"} direction={dir} onClick={() => changeSort("type")} /><ColumnHelp id="type" label="Type" /></th>}
                   {visible("scope") && <th aria-sort={sort === "scope" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} />
+                    <ColumnHelp id="scope" label="Scope" />
                   </th>}
-                  {visible("result") && <th><SortButton label="Result" active={sort === "result"} direction={dir} onClick={() => changeSort("result")} /></th>}
                   {visible("retrieved") && <th className="numeric" aria-sort={sort === "exposed" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Retrieved" active={sort === "exposed"} direction={dir} onClick={() => changeSort("exposed")} /><DefinitionTooltip label="Retrieved definition">Admitted items in this retrieval event; memory and procedure split is shown when present.</DefinitionTooltip>
+                    <SortButton label="Retrieved" active={sort === "exposed"} direction={dir} onClick={() => changeSort("exposed")} /><ColumnHelp id="retrieved" label="Retrieved" />
                   </th>}
-                  {visible("memories_retrieved") && <th className="numeric"><SortButton label="Memories retrieved" active={sort === "memories_retrieved"} direction={dir} onClick={() => changeSort("memories_retrieved")} /></th>}
-                  {visible("procedures_retrieved") && <th className="numeric"><SortButton label="Procedures retrieved" active={sort === "procedures_retrieved"} direction={dir} onClick={() => changeSort("procedures_retrieved")} /></th>}
+                  {visible("memories_retrieved") && <th className="numeric"><SortButton label="Memories retrieved" active={sort === "memories_retrieved"} direction={dir} onClick={() => changeSort("memories_retrieved")} /><ColumnHelp id="memories_retrieved" label="Memories retrieved" /></th>}
+                  {visible("procedures_retrieved") && <th className="numeric"><SortButton label="Procedures retrieved" active={sort === "procedures_retrieved"} direction={dir} onClick={() => changeSort("procedures_retrieved")} /><ColumnHelp id="procedures_retrieved" label="Procedures retrieved" /></th>}
                   {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key, label]) => (
                     <th className="numeric" key={key} aria-sort={sort === key ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                       <SortButton label={label} active={sort === key} direction={dir} onClick={() => changeSort(key)} />
+                      <ColumnHelp id={key} label={label} />
                     </th>
                   ))}
-                  {visible("effect") && <th>Effect</th>}
                   {visible("feedback") && <th aria-sort={sort === "feedback" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Feedback" active={sort === "feedback"} direction={dir} onClick={() => changeSort("feedback")} />
+                    <ColumnHelp id="feedback" label="Feedback" />
                   </th>}
-                  {visible("session") && <th><SortButton label="Session ID" active={sort === "activity"} direction={dir} onClick={() => changeSort("activity")} /></th>}
+                  {visible("session") && <th><SortButton label="Session ID" active={sort === "activity"} direction={dir} onClick={() => changeSort("activity")} /><ColumnHelp id="session" label="Session ID" /></th>}
                 </tr>
               </thead>
               <tbody>
@@ -1443,8 +1483,7 @@ export function RetrievalPage({ location }: PageProps) {
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
                       </td>}
-                      {visible("result") && <td><StatusBadge value={row.result === "no_match" ? "Empty" : "Retrieved"} /></td>}
-                      {visible("retrieved") && <td className="badge-stack">{row.exposed_count ? <><StatusBadge value="memory" count={row.memory_count ?? 0} /><StatusBadge value="procedure" count={row.procedure_count ?? 0} /></> : "0"}</td>}
+                      {visible("retrieved") && <td className="badge-stack">{row.exposed_count ? <><StatusBadge value="memory" count={row.memory_count ?? 0} /><StatusBadge value="procedure" count={row.procedure_count ?? 0} /></> : <StatusBadge value="none" />}</td>}
                       {visible("memories_retrieved") && <td className="numeric">{row.memory_count ?? 0}</td>}
                       {visible("procedures_retrieved") && <td className="numeric">{row.procedure_count ?? 0}</td>}
                       {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key]) => (
@@ -1452,7 +1491,6 @@ export function RetrievalPage({ location }: PageProps) {
                           {Number(row.signal_counts?.[key] || 0).toLocaleString()}
                         </td>
                       ))}
-                      {visible("effect") && <td><StatusBadge value={row.signal_counts?.harmed ? "harmed" : row.signal_counts?.no_effect ? "no effect" : row.signal_counts?.helped ? "helped" : "unknown"} /></td>}
                       {visible("feedback") && <td><StatusBadge value={row.feedback_state} /></td>}
                       {visible("session") && <td>{row.session_id ? truncate(row.session_id, 18) : "Standalone"}</td>}
                     </tr>
@@ -1614,12 +1652,15 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                     {items.map((item: any) => (
                       <div className="exposure-row" key={item.memory_id}>
                         <div>
-                          <strong>
+                          <strong
+                            className="schema-preview"
+                            title={item.content_text || item.memory_id}
+                          >
                             {truncate(item.content_text || item.memory_id, 220)}
                           </strong>
                           <span>
                             {item.memory_type} ·{" "}
-                            {item.status || "state unavailable"}
+                            {item.status || "State not recorded"}
                           </span>
                           <small>{item.pathway_explanation}</small>
                           <span className="assessment-line">
@@ -1862,9 +1903,9 @@ export function ProceduresPage({ location }: PageProps) {
       </div>
       {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Procedure summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <div className="metric-card-grid" aria-label="Procedure summary">
         <RateMetricCard title="Retrieved procedures" numerator={request.data.summary?.retrieved_procedures ?? 0} denominator={request.data.summary?.current_procedures ?? 0} tooltip="Distinct procedures retrieved in the selected population divided by current procedures in the selected population." className="metric-retrieved" />
-        <RateMetricCard title="Used after retrieval" numerator={request.data.summary?.used_procedures ?? 0} denominator={request.data.summary?.assessed_retrieved_procedures ?? 0} secondary={Number(request.data.summary?.retrieved_procedures ?? 0) > Number(request.data.summary?.assessed_retrieved_procedures ?? 0) ? `${(Number(request.data.summary.retrieved_procedures) - Number(request.data.summary.assessed_retrieved_procedures)).toLocaleString()} unassessed` : undefined} tooltip="Distinct retrieved procedures assessed as used divided by distinct retrieved procedures with an applicable use assessment. Retrieved = 119, assessed = 108, and used = 50 are separate populations." className="metric-used" />
-        <RateMetricCard title="Helpful assessments" numerator={request.data.summary?.helpful_assessments ?? 0} denominator={request.data.summary?.effect_assessed ?? 0} tooltip="Helpful procedure assessments divided by effect-assessed procedure uses. This counts assessments, not distinct procedures, and records reported effect rather than causal impact." className="metric-helpful" />
-        <MetricCard title="Harmful" value={Number(request.data.summary?.harmful_assessments ?? 0).toLocaleString()} tooltip="Count of accepted harmful procedure assessments in the selected population." className={Number(request.data.summary?.harmful_assessments ?? 0) ? "metric-warning" : "metric-subtle"} />
+        <RateMetricCard title="Used after retrieval" numerator={request.data.summary?.used_procedures ?? 0} denominator={request.data.summary?.assessed_retrieved_procedures ?? 0} tooltip="Distinct retrieved procedures assessed as used divided by distinct retrieved procedures with an applicable use assessment." className="metric-used" />
+        <RateMetricCard title="Helpful rate" numerator={request.data.summary?.helpful_assessments ?? 0} denominator={request.data.summary?.effect_assessed ?? 0} tooltip="Percentage of procedure feedback marked Helpful." className="metric-helpful" />
+        <RateMetricCard title="Harmful rate" numerator={request.data.summary?.harmful_assessments ?? 0} denominator={request.data.summary?.effect_assessed ?? 0} tooltip="Percentage of procedure feedback marked Harmful." className="metric-warning" />
       </div> : <EmptyState title="No procedure summary available">Summary metrics will appear when the procedure service returns a result.</EmptyState>}
       <InlineError
         error={request.error}
@@ -1884,15 +1925,15 @@ export function ProceduresPage({ location }: PageProps) {
                   {visible("procedure") && <th aria-sort={sort === "summary" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Procedure" active={sort === "summary"} direction={dir} onClick={() => changeSort("summary")} />
                   </th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /></th>}
-                  {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /></th>}
-                  {visible("verification") && <th><SortButton label="Verification" active={sort === "verification"} direction={dir} onClick={() => changeSort("verification")} /></th>}
+                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
+                  {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /><DefinitionTooltip label="Outcome definition">{sharedColumnHelp.outcome}</DefinitionTooltip></th>}
+                  {visible("verification") && <th><SortButton label="Verification" active={sort === "verification"} direction={dir} onClick={() => changeSort("verification")} /><DefinitionTooltip label="Verification definition">{sharedColumnHelp.verification}</DefinitionTooltip></th>}
                   {visible("created") && <th aria-sort={sort === "recent" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Created" active={sort === "recent"} direction={dir} onClick={() => changeSort("recent")} />
                   </th>}
-                  {visible("retrieved") && <th className="numeric"><SortButton label="Retrieved" active={sort === "retrieved"} direction={dir} onClick={() => changeSort("retrieved")} /></th>}
-                  {visible("used") && <th className="numeric"><SortButton label="Used" active={sort === "used"} direction={dir} onClick={() => changeSort("used")} /></th>}
-                  {visible("effect") && <th>Effect</th>}
+                  {visible("retrieved") && <th className="numeric"><SortButton label="Retrieved" active={sort === "retrieved"} direction={dir} onClick={() => changeSort("retrieved")} /><DefinitionTooltip label="Retrieved definition">{sharedColumnHelp.retrieved}</DefinitionTooltip></th>}
+                  {visible("used") && <th className="numeric"><SortButton label="Used" active={sort === "used"} direction={dir} onClick={() => changeSort("used")} /><DefinitionTooltip label="Used definition">{sharedColumnHelp.used}</DefinitionTooltip></th>}
+                  {visible("effect") && <th>Effect <DefinitionTooltip label="Effect definition">{sharedColumnHelp.effect}</DefinitionTooltip></th>}
                   {visible("last_used") && <th><SortButton label="Last used" active={sort === "last_used"} direction={dir} onClick={() => changeSort("last_used")} /></th>}
                   {visible("use_rate") && <th className="numeric"><SortButton label="Use rate" active={sort === "use_rate"} direction={dir} onClick={() => changeSort("use_rate")} /></th>}
                   {visible("helped") && <th className="numeric"><SortButton label="Helpful count" active={sort === "helped"} direction={dir} onClick={() => changeSort("helped")} /></th>}
@@ -2169,7 +2210,7 @@ function ProcedureDetail({ id, onClose }: { id: string; onClose: () => void }) {
             </Section>
             <details className="advanced" open>
               <summary>Advanced</summary>
-              <dl className="key-values wide"><dt>Lifecycle version</dt><dd>{source?.lifecycle_version || "Not recorded"}</dd>{Object.entries(p.evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value)}</dd></Fragment>)}</dl>
+              <dl className="key-values wide">{Object.entries(p.evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value)}</dd></Fragment>)}</dl>
             </details>
           </>
         ) : <EmptyState title="Procedure not found">This procedure no longer exists or is not available in the current database.</EmptyState>
@@ -2344,7 +2385,7 @@ export function ActivityPage({ location }: PageProps) {
                   {visible("task") && <th aria-sort={sort === "task" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Task / goal" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
                   </th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /></th>}
+                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /></th>}
                   {visible("closure") && <th><SortButton label="Closure" active={sort === "closure"} direction={dir} onClick={() => changeSort("closure")} /><DefinitionTooltip label="Closure definition">Whether the session's feedback loop closed. Pending means the session is still open.</DefinitionTooltip></th>}
                   {visible("duration") && <th className="numeric"><SortButton label="Duration" active={sort === "duration"} direction={dir} onClick={() => changeSort("duration")} /></th>}

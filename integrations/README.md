@@ -14,11 +14,16 @@ slowave doctor
 
 `slowave setup` auto-configures every client it detects, injects the same Slowave lifecycle instructions into each client's instruction surface, installs the background worker, and starts the HTTP MCP daemon. It is idempotent — safe to re-run.
 
-**Uninstall:**
+**Remove Slowave:**
 ```bash
-slowave cleanup         # remove all configuration
-pipx uninstall slowave  # remove package
+slowave uninstall       # remove integrations and services; keep memories
+slowave purge           # remove integrations, services, and local data
+pipx uninstall slowave  # remove the installed package
 ```
+
+Run `--dry-run` first. `purge` is destructive; see the [complete removal
+guide](../docs/install.md#remove-slowave) for preserved database archives and
+the manual Claude Desktop and Cursor steps.
 
 > **Claude Desktop & Cursor:** after `slowave setup`, paste the lifecycle block into the client UI — see [docs/install.md#lifecycle-instruction-block](../docs/install.md#lifecycle-instruction-block).
 

@@ -87,6 +87,109 @@ _TEMPORAL_PROBES: tuple[tuple[str, int], ...] = (
     ("a long time ago, years ago, long ago", -3 * 365 * _DAY),
 )
 
+# Equivalent landmark phrases for the bundled multilingual encoder.  Each
+# tuple is aligned with _TEMPORAL_PROBES.  We take the best similarity within
+# a band (rather than treating every translation as an independent landmark),
+# so adding a language cannot bias the softmax toward that time interval.
+_TEMPORAL_PROBE_VARIANTS: tuple[tuple[str, ...], ...] = (
+    (
+        "right now, today, at the moment",
+        "adesso, oggi, in questo momento",
+        "ahora, hoy, en este momento",
+        "maintenant, aujourd’hui, en ce moment",
+        "jetzt, heute, im moment",
+        "agora, hoje, neste momento",
+    ),
+    (
+        "yesterday, the day before",
+        "ieri, il giorno prima",
+        "ayer, el día anterior",
+        "hier, la veille",
+        "gestern, am tag davor",
+        "ontem, no dia anterior",
+    ),
+    (
+        "a few days ago, several days ago",
+        "qualche giorno fa, alcuni giorni fa",
+        "hace unos días, hace varios días",
+        "il y a quelques jours, il y a plusieurs jours",
+        "vor ein paar tagen, vor mehreren tagen",
+        "há alguns dias, há vários dias",
+    ),
+    (
+        "last week, a week ago",
+        "la settimana scorsa, una settimana fa",
+        "la semana pasada, hace una semana",
+        "la semaine dernière, il y a une semaine",
+        "letzte woche, vor einer woche",
+        "na semana passada, há uma semana",
+    ),
+    (
+        "two weeks ago, a fortnight ago",
+        "due settimane fa",
+        "hace dos semanas",
+        "il y a deux semaines",
+        "vor zwei wochen",
+        "há duas semanas",
+    ),
+    (
+        "last month, a month ago, recently",
+        "il mese scorso, un mese fa, di recente",
+        "el mes pasado, hace un mes, recientemente",
+        "le mois dernier, il y a un mois, récemment",
+        "letzten monat, vor einem monat, kürzlich",
+        "no mês passado, há um mês, recentemente",
+    ),
+    (
+        "two months ago, a couple of months ago",
+        "due mesi fa, un paio di mesi fa",
+        "hace dos meses, un par de meses",
+        "il y a deux mois, quelques mois",
+        "vor zwei monaten, vor ein paar monaten",
+        "há dois meses, alguns meses atrás",
+    ),
+    (
+        "three months ago, several months ago",
+        "tre mesi fa, diversi mesi fa",
+        "hace tres meses, hace varios meses",
+        "il y a trois mois, il y a plusieurs mois",
+        "vor drei monaten, vor mehreren monaten",
+        "há três meses, há vários meses",
+    ),
+    (
+        "six months ago, half a year ago",
+        "sei mesi fa, mezzo anno fa",
+        "hace seis meses, hace medio año",
+        "il y a six mois, il y a un semestre",
+        "vor sechs monaten, vor einem halben jahr",
+        "há seis meses, há meio ano",
+    ),
+    (
+        "last year, a year ago",
+        "l’anno scorso, un anno fa",
+        "el año pasado, hace un año",
+        "l’année dernière, il y a un an",
+        "letztes jahr, vor einem jahr",
+        "no ano passado, há um ano",
+    ),
+    (
+        "two years ago",
+        "due anni fa",
+        "hace dos años",
+        "il y a deux ans",
+        "vor zwei jahren",
+        "há dois anos",
+    ),
+    (
+        "a long time ago, years ago, long ago",
+        "molto tempo fa, anni fa",
+        "hace mucho tiempo, hace años",
+        "il y a longtemps, il y a des années",
+        "vor langer zeit, vor jahren",
+        "há muito tempo, há anos",
+    ),
+)
+
 
 # Scales chosen to span the relevant brain-time bands:
 #   minute  - intra-conversation drift
@@ -248,14 +351,22 @@ class TemporalProbe:
         # no observed overlap in the calibration set.
         self._atemporal_margin = float(atemporal_margin)
 
-        # Pre-compute and L2-normalise probe embeddings once.
-        raw: list[np.ndarray] = []
-        for phrase, _ in probes:
-            v = np.asarray(encode_fn(phrase), dtype=np.float32).reshape(-1)
-            n = float(np.linalg.norm(v))
-            raw.append(v / n if n > 0.0 else v)
-        # shape: (n_probes, dim)
-        self._probe_matrix = np.stack(raw, axis=0)
+        # Pre-compute and L2-normalise probe embeddings once. Custom probe
+        # sets keep their historical one-phrase-per-band behavior for tests
+        # and callers that supply a specialized encoder.
+        variants = (
+            _TEMPORAL_PROBE_VARIANTS
+            if probes == _TEMPORAL_PROBES
+            else tuple((phrase,) for phrase, _ in probes)
+        )
+        self._probe_matrices: list[np.ndarray] = []
+        for phrases in variants:
+            raw: list[np.ndarray] = []
+            for phrase in phrases:
+                v = np.asarray(encode_fn(phrase), dtype=np.float32).reshape(-1)
+                n = float(np.linalg.norm(v))
+                raw.append(v / n if n > 0.0 else v)
+            self._probe_matrices.append(np.stack(raw, axis=0))
         # Index of the "now / today" probe — always first in _TEMPORAL_PROBES.
         # Stored explicitly so the dead-zone check is O(1) and doesn't depend
         # on probe ordering staying stable.
@@ -296,8 +407,10 @@ class TemporalProbe:
         if qn > 0.0:
             q = q / qn
 
-        # (n_probes,) cosine similarities
-        sims = self._probe_matrix @ q
+        # One maximum cosine similarity per temporal band. This preserves the
+        # original 12-way softmax even though each band has multilingual
+        # paraphrases.
+        sims = np.asarray([float((matrix @ q).max()) for matrix in self._probe_matrices])
 
         # --- Dead-zone gate -------------------------------------------
         # The "now" probe must be beaten by a past probe by at least

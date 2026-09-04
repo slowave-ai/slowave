@@ -16,7 +16,6 @@ from slowave.utils.vec import dumps_json, loads_json, pack_f32, to_f32, unpack_f
 class EpisodicStoreConfig:
     dim: int
     db_path: str = "slowwave.db"
-    faiss_index_path: str = "episodic.faiss"
 
 
 class EpisodicStore:
@@ -24,39 +23,26 @@ class EpisodicStore:
 
     Storage:
       - relational fields in SQLite
-      - vector similarity via FAISS index (inner product on normalized vectors)
+      - vector similarity via an in-memory FAISS index (inner product on
+        normalized vectors)
+
+    SQLite is the durable source of truth for embeddings.  The FAISS index is
+    rebuilt from it when the engine starts; it must never be persisted relative
+    to the caller's current working directory.
     """
 
     def __init__(self, db: SQLiteDB, cfg: EpisodicStoreConfig):
         self.db = db
         self.cfg = cfg
 
-        self._index = self._load_or_create_index(dim=cfg.dim)
+        self._index = self._create_index(dim=cfg.dim)
         # FAISS doesn't store external IDs by default; we use an IDMap.
         # Keys are SQLite episode IDs.
 
-    def _load_or_create_index(self, dim: int) -> faiss.Index:
+    def _create_index(self, dim: int) -> faiss.Index:
         # Use cosine similarity as inner product on L2-normalized vectors.
         base = faiss.IndexFlatIP(dim)
-        index = faiss.IndexIDMap2(base)
-        # Try loading persisted index first; fall back to DB rebuild
-        path = getattr(self.cfg, "faiss_index_path", "")
-        if path:
-            try:
-                loaded = faiss.read_index(path)
-                if loaded.d == dim and loaded.ntotal > 0:
-                    return loaded
-            except Exception:
-                pass
-        return index
-
-    def _save_index(self) -> None:
-        path = getattr(self.cfg, "faiss_index_path", "")
-        if path and self._index.ntotal > 0:
-            try:
-                faiss.write_index(self._index, path)
-            except Exception:
-                pass
+        return faiss.IndexIDMap2(base)
 
     def reset_faiss_from_db(self) -> None:
         """Rebuild FAISS index by scanning SQLite."""
@@ -73,7 +59,6 @@ class EpisodicStore:
         faiss.normalize_L2(X)
         self._index.reset()
         self._index.add_with_ids(X, np.asarray(ids, dtype=np.int64))
-        self._save_index()
 
     def add(
         self,

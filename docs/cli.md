@@ -151,12 +151,20 @@ run. It writes gzip-compressed database snapshots, retaining seven by default.
 database as `slowave.db.bak`, then restarts the worker. Review the target
 backup carefully; add `--yes` only in an unattended script.
 
-Two removal commands have deliberately different scopes:
+Slowave and its package manager have separate responsibilities. Slowave removes
+the client integrations and local state it owns; the package manager removes the
+installed executable and its dependencies. Two Slowave removal commands have
+deliberately different scopes:
 
 | Command | What it removes |
 |---|---|
-| `slowave uninstall [--dry-run]` | Slowave configuration, hooks, and worker service. It keeps the database. |
-| `slowave cleanup [--dry-run]` | Configuration **and** local data, including `~/.slowave`. This is destructive; it asks for confirmation unless `--yes` is supplied. |
+| `slowave uninstall [--dry-run]` | Slowave MCP entries, generated lifecycle instructions, hooks, and daemon, worker, and backup services. It preserves `~/.slowave`, database archives, setup backups, and the installed package. |
+| `slowave purge [--dry-run]` | Everything removed by `uninstall`, plus local data in `~/.slowave` and setup-created `*.bak.*` configuration backups. Database archives in `~/.slowave/backups` are retained. This is destructive and asks for confirmation. |
+
+`slowave cleanup` remains a compatibility alias for `slowave purge`; use
+`purge` in new scripts and documentation. To remove the Python application
+after either command, use the same installer that installed it, for example
+`pipx uninstall slowave`.
 
 ## Environment variables
 

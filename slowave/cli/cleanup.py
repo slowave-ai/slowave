@@ -1,4 +1,4 @@
-"""slowave cleanup — remove all configuration and data."""
+"""Removal commands for Slowave-managed configuration, services, and data."""
 
 from __future__ import annotations
 
@@ -371,7 +371,9 @@ def _remove_mcp_configs(dry_run: bool) -> int:
                                 del cfg["instructions"]
                             if not dry_run:
                                 _write_json(mcp_file, cfg)
-                            _ok(f"Removed slowave instructions entry from: {mcp_file}")
+                                _ok(f"Removed slowave instructions entry from: {mcp_file}")
+                            else:
+                                _ok(f"Would remove slowave instructions entry from: {mcp_file}")
             elif "mcpServers" not in cfg or "slowave" not in cfg["mcpServers"]:
                 _skip(f"{spec.label}: no slowave entry in {mcp_file}")
             else:
@@ -440,28 +442,35 @@ def _remove_setup_backups(dry_run: bool) -> int:
     return count
 
 
-@click.command("cleanup")
-@click.option("--dry-run", is_flag=True, help="Preview what would be cleaned without removing.")
+@click.command("purge")
+@click.option(
+    "--dry-run", is_flag=True, help="Preview what would be removed without changing files."
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-@click.confirmation_option(prompt="This will remove all slowave configuration and data. Continue?")
-def cleanup_cmd(dry_run: bool, as_json: bool = False) -> None:
-    """Remove all slowave configuration and data from this system.
+@click.option("--yes", is_flag=True, help="Confirm permanent removal without prompting.")
+def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None:
+    """Permanently remove all Slowave configuration and local data.
 
-    This command cleans up everything that 'slowave setup' installed:
-    - MCP server configs (Claude Code, Claude Desktop, Cline, Cursor)
-    - Lifecycle blocks (.clinerules, CLAUDE.md)
-    - Background worker service
-    - Daily database backup service
-    - Local database and data (~/.slowave)
+    This command removes everything that 'slowave setup' installed:
+    - MCP server configs, lifecycle blocks, and enforcement hooks for every supported client
+    - HTTP daemon, background worker, and daily backup services
+    - Local database and data in ~/.slowave (database archives in ~/.slowave/backups are retained)
+    - Setup-created *.bak.* configuration backups
 
-    Use this before uninstalling slowave or when you want a fresh start.
+    Use 'slowave uninstall' instead to remove integrations while keeping memories.
 
     \\b
     Example:
-      slowave cleanup              # interactive confirmation
-      slowave cleanup --dry-run    # preview without removing
+      slowave purge              # interactive confirmation
+      slowave purge --dry-run    # preview without removing
     """
-    click.echo(click.style("\nSlowave cleanup", bold=True))
+    if not dry_run and not yes:
+        click.confirm(
+            "This will permanently remove Slowave configuration and local data. Continue?",
+            abort=True,
+        )
+
+    click.echo(click.style("\nSlowave purge", bold=True))
     if dry_run:
         click.echo(click.style("  [DRY RUN — no files will be removed]\n", fg="yellow"))
 
@@ -539,7 +548,7 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False) -> None:
                 _warn(
                     f"Could not clean {slowave_dir}: {exc.strerror}.\n"
                     "  The database may still be in use by a running worker or MCP process.\n"
-                    "  Stop those processes, then re-run 'slowave cleanup'."
+                    "  Stop those processes, then re-run 'slowave purge'."
                 )
             else:
                 if backups_exist:
@@ -563,8 +572,8 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False) -> None:
     if dry_run:
         click.echo(click.style("Dry run complete. No files were removed.", bold=True))
     else:
-        click.echo(click.style(f"Cleanup complete. {removed_count} items removed.", bold=True))
-        click.echo("\nManual cleanup still needed:")
+        click.echo(click.style(f"Purge complete. {removed_count} items removed.", bold=True))
+        click.echo("\nManual removal still needed:")
         click.echo("  • Claude Desktop → Settings → General → Instructions for Claude")
         click.echo("    (Remove any slowave lifecycle instructions)")
         click.echo("\nYou can now safely run: pipx uninstall slowave")

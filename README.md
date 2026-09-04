@@ -93,6 +93,8 @@ slowave doctor            # verify the installation
 
 Configure one client with `slowave setup --client <name>`. See [supported clients](#supported-clients) and the [installation reference](docs/install.md).
 
+To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
+
 
 ## Long-term value
 
@@ -206,7 +208,7 @@ works, limitations, and exact local reproduction commands.
 
 - [design.md](docs/design.md): design rationale, boundaries, and positioning
 - [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
-- [install.md](docs/install.md): install and setup reference, lifecycle block, files modified
+- [install.md](docs/install.md): installation, setup, lifecycle instructions, modified files, and removal
 - [benchmarks.md](docs/benchmarks.md): benchmark results, methodology, and reproduction
 - [troubleshooting.md](docs/troubleshooting.md): daemon, worker, dashboard, client integration, database, backup/restore
 

@@ -62,6 +62,33 @@ def test_recall_raises_without_encoder(tmp_path):
         engine.close()
 
 
+def test_engine_never_persists_faiss_index_to_working_directory(tmp_path, monkeypatch):
+    """The SQLite database is durable; FAISS must remain an in-memory cache.
+
+    Reopening an engine with episodes used to write ``episodic.faiss`` to the
+    process cwd because the episodic-store default was a relative path.
+    """
+    db_dir = tmp_path / "data"
+    db_dir.mkdir()
+    work_dir = tmp_path / "working-directory"
+    work_dir.mkdir()
+    monkeypatch.chdir(work_dir)
+
+    db_path = str(db_dir / "slowave.db")
+    engine = SlowaveEngine(SlowaveConfig(db_path=db_path, dim=32, disable_encoder=True))
+    engine.encoder = _StubEncoder(32)
+    engine.remember(content="FAISS persistence must not create cwd files", type="fact")
+    engine.close()
+
+    # A restart rebuilds the index from the durable SQLite embeddings.  This is
+    # where the former relative ``episodic.faiss`` write occurred.
+    restarted = SlowaveEngine(SlowaveConfig(db_path=db_path, dim=32, disable_encoder=True))
+    try:
+        assert list(work_dir.iterdir()) == []
+    finally:
+        restarted.close()
+
+
 def test_recall_result_has_expected_fields(eng):
     eng.remember(content="I prefer dark mode", type="preference")
     r = eng.recall("I prefer dark mode", top_k=5)
