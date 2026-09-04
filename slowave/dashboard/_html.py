@@ -14,7 +14,7 @@ _HTML_TEMPLATE = """<!doctype html>
 <title>Slowave Dashboard</title>
 </head>
 <body>
-<div id="root" data-experimental="__EXPERIMENTAL__" data-refresh-ms="__REFRESH_MS__" data-allow-actions="__ALLOW_ACTIONS__" data-version="__SLOWAVE_VERSION__" data-lifecycle-version="__LIFECYCLE_VERSION__"></div>
+<div id="root" data-refresh-ms="__REFRESH_MS__" data-allow-actions="__ALLOW_ACTIONS__" data-version="__SLOWAVE_VERSION__" data-lifecycle-version="__LIFECYCLE_VERSION__"></div>
 <script type="module" src="/assets/index.js"></script>
 </body>
 </html>"""
@@ -22,6 +22,6 @@ _HTML_TEMPLATE = """<!doctype html>
 _INDEX_HTML = _HTML_TEMPLATE
 
 
-def render_index_html(*, experimental: bool = False) -> str:
+def render_index_html() -> str:
     """Render the minimal dashboard bootstrap shell."""
-    return _HTML_TEMPLATE.replace("__EXPERIMENTAL__", "true" if experimental else "false")
+    return _HTML_TEMPLATE

@@ -1627,14 +1627,6 @@ def status_cmd(ctx: click.Context) -> None:
 @click.option("--host", default="127.0.0.1", show_default=True, help="HTTP bind host.")
 @click.option("--port", default=8765, show_default=True, help="HTTP bind port.")
 @click.option("--refresh-ms", default=2000, show_default=True, help="Overview refresh interval.")
-@click.option(
-    "--experimental/--no-experimental",
-    "experimental_dashboard",
-    default=False,
-    envvar="SLOWAVE_DASHBOARD_EXPERIMENTAL",
-    show_default=True,
-    help="Show unsupported exploratory metrics in the Labs tab.",
-)
 @click.option("--no-open", is_flag=True, help="Do not open the browser automatically.")
 @click.pass_context
 def dashboard_cmd(
@@ -1642,7 +1634,6 @@ def dashboard_cmd(
     host: str,
     port: int,
     refresh_ms: int,
-    experimental_dashboard: bool,
     no_open: bool,
 ) -> None:
     """Run the local Slowave web dashboard."""
@@ -1653,7 +1644,6 @@ def dashboard_cmd(
         host=host,
         port=port,
         refresh_ms=refresh_ms,
-        experimental_dashboard=experimental_dashboard,
         open_browser=not no_open,
     )
 

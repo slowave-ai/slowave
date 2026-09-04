@@ -9,7 +9,6 @@ STATIC_INDEX = ROOT / "slowave" / "dashboard" / "static" / "index.html"
 
 def test_python_shell_is_a_small_static_react_bootstrap() -> None:
     assert 'id="root"' in _INDEX_HTML
-    assert 'data-experimental="__EXPERIMENTAL__"' in _INDEX_HTML
     assert "/assets/index.js" in _INDEX_HTML
     assert "cytoscape" not in _INDEX_HTML.lower()
 
@@ -23,7 +22,7 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
         "Procedures",
         "Activity",
         "Diagnostics",
-        "Graph explorer",
+        "Memory graph",
     ):
         assert label in source
     for endpoint in (
@@ -37,7 +36,6 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
         "/api/procedural-memory",
         "/api/graph/schemas",
         "/api/db/health",
-        "/api/labs/rollout",
     ):
         assert endpoint in source
     assert "allowActions" in source
@@ -94,9 +92,3 @@ def test_built_static_index_is_present_and_has_hashed_assets() -> None:
     assert STATIC_INDEX.is_file()
     html = STATIC_INDEX.read_text()
     assert "/assets/index-" in html
-    assert "__EXPERIMENTAL__" in html
-
-
-def test_experimental_flag_is_encoded_in_fallback_shell() -> None:
-    assert 'data-experimental="false"' in render_index_html()
-    assert 'data-experimental="true"' in render_index_html(experimental=True)

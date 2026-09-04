@@ -223,7 +223,6 @@ textarea {
   text-overflow: ellipsis;
 }
 .side-nav nav,
-.system-nav,
 .resources-nav {
   display: grid;
   gap: 2px;
@@ -232,7 +231,6 @@ textarea {
   margin-top: 24px;
 }
 .side-nav nav a,
-.system-nav a,
 .resources-nav a,
 .nav-footer button {
   display: flex;
@@ -245,23 +243,16 @@ textarea {
   text-decoration: none;
 }
 .side-nav nav a:hover,
-.system-nav a:hover,
 .resources-nav a:hover,
 .nav-footer button:hover {
   background: var(--canvas);
   color: var(--text);
 }
-.side-nav nav a.active,
-.system-nav a.active {
+.side-nav nav a.active {
   background: var(--canvas);
   color: var(--text);
   font-weight: 600;
   box-shadow: inset 2px 0 var(--link);
-}
-.system-nav {
-  margin-top: 24px;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
 }
 .resources-nav {
   margin-top: 16px;
@@ -275,11 +266,6 @@ textarea {
 }
 .nav-group-label {
   padding: 0 10px 6px;
-}
-.system-nav small {
-  margin-left: auto;
-  color: var(--warning);
-  font-size: 10px;
 }
 .nav-footer {
   display: flex;
@@ -803,7 +789,7 @@ main {
   background: var(--raised) !important;
   opacity: 0.72;
 }
-.labs-graph-controls .toggle-badge {
+.graph-controls .toggle-badge {
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -811,7 +797,7 @@ main {
   font: inherit;
   font-size: 12px;
 }
-.labs-graph-controls .toggle-badge::before {
+.graph-controls .toggle-badge::before {
   display: inline-block;
   width: 8px;
   height: 8px;
@@ -820,10 +806,10 @@ main {
   background: currentColor;
   content: "";
 }
-.labs-graph-controls .toggle-badge[aria-pressed="true"] {
+.graph-controls .toggle-badge[aria-pressed="true"] {
   background: transparent;
 }
-.labs-graph-controls .toggle-badge[aria-pressed="false"] {
+.graph-controls .toggle-badge[aria-pressed="false"] {
   background: var(--raised);
   opacity: 0.72;
 }
@@ -1593,21 +1579,6 @@ pre {
 .service-row small {
   grid-column: 2 / -1;
 }
-.experimental-banner {
-  display: flex;
-  gap: 10px;
-  margin-top: 20px;
-  border: 1px solid var(--warning);
-  background: var(--warning-bg);
-  color: var(--warning);
-  padding: 12px;
-}
-.experimental-banner div {
-  display: grid;
-}
-.experimental-banner span {
-  font-size: 12px;
-}
 .graph-explorer-wrap { position: relative; }
 .graph-explorer {
   height: min(62vh, 680px);
@@ -1692,8 +1663,6 @@ pre {
   .global-scope span,
   .global-scope option:not(:checked),
   .side-nav nav span,
-  .system-nav span,
-  .system-nav small,
   .resources-nav span,
   .resources-nav small,
   .nav-footer span {
@@ -1705,7 +1674,6 @@ pre {
     color: transparent;
   }
   .side-nav nav a,
-  .system-nav a,
   .resources-nav a,
   .nav-footer button {
     justify-content: center;
