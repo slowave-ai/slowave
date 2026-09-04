@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.3...slowave-v0.17.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* remove labs section ([#135](https://github.com/slowave-ai/slowave/issues/135)) ([5bb1875](https://github.com/slowave-ai/slowave/commit/5bb1875ac0f364ffcf1675b71d62d25d43e845c2))
+
 ## [0.17.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.2...slowave-v0.17.3) (2026-09-04)
 
 
