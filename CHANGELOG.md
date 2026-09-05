@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.5...slowave-v0.18.0) (2026-09-05)
+
+
+### Features
+
+* isolate per user runtime data ([#138](https://github.com/slowave-ai/slowave/issues/138)) ([cc52878](https://github.com/slowave-ai/slowave/commit/cc52878584406918229abde9a962475866cfe563))
+
+
+### Bug Fixes
+
+* declare platformdirs runtime dependency ([cd4e905](https://github.com/slowave-ai/slowave/commit/cd4e90517057e60c42bae5d4e3d8e29d289e066d))
+
 ## [0.17.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.4...slowave-v0.17.5) (2026-09-05)
 
 
