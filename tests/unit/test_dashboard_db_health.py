@@ -53,8 +53,10 @@ def test_db_health_is_progressively_disclosed_in_diagnostics() -> None:
     assert 'title="Storage"' in app
     assert "/api/db/health" in app
     assert "integrity_status" in app
-    assert "object_counts" in app
-    assert "Database details" in app
+    assert "formatBytes(status.data.db_size_bytes)" in app
+    assert "formatBytes(status.data.wal_size_bytes)" in app
+    assert "object_counts" not in app
+    assert "Database details" not in app
     assert "LoadingRows" in app and "InlineError" in app and "EmptyState" in app
     assert "Checking…" in app
     assert "Stale · refresh failed" in app
