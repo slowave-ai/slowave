@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.18.0...slowave-v0.18.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* multi user data leakage ([#140](https://github.com/slowave-ai/slowave/issues/140)) ([6b1bbe9](https://github.com/slowave-ai/slowave/commit/6b1bbe95f1aba82efa84927f9938beb9eeb9eec9))
+
 ## [0.18.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.5...slowave-v0.18.0) (2026-09-05)
 
 
