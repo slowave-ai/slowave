@@ -2657,6 +2657,7 @@ export function DiagnosticsPage({}: PageProps) {
   const [runSort, setRunSort] = useState("started");
   const [runDir, setRunDir] = useState<"asc" | "desc">("desc");
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const [maintenanceExpanded, setMaintenanceExpanded] = useState(false);
   const runColumns = [
     { id: "started", label: "Started" }, { id: "duration", label: "Duration" }, { id: "result", label: "Result" },
     { id: "episodes", label: "Episodes processed" }, { id: "formed", label: "Formed" }, { id: "reinforced", label: "Reinforced" },
@@ -2667,7 +2668,7 @@ export function DiagnosticsPage({}: PageProps) {
     "started", "duration", "result", "episodes", "formed", "reinforced", "retired", "errors",
   ]);
   const runVisible = (id: string) => visibleRunColumns.includes(id);
-  const workers = useApi<Json>(`/api/worker/runs?limit=50&range=1m&sort=${runSort}&dir=${runDir}`, {
+  const workers = useApi<Json>(`/api/worker/runs?limit=${maintenanceExpanded ? 50 : 10}&range=1m&sort=${runSort}&dir=${runDir}`, {
     pollMs: refreshMs,
   });
   const status = useApi<Json>("/api/status", { pollMs: refreshMs });
@@ -2718,11 +2719,53 @@ export function DiagnosticsPage({}: PageProps) {
       ? database.data.foreign_key_check.length ? `${database.data.foreign_key_check.length} issues` : "No issues observed"
       : "Unavailable"
     : database.loading ? "Checking…" : "Unavailable";
+  const recentRuns = workers.data?.summary?.recent_7d;
+  const needsReview = Number(status.data?.schema_health?.needs_review_schemas || 0);
+  const duplicateRows = Number(status.data?.schema_health?.active_exact_duplicate_rows || 0);
+  const completedRunAt = Number(status.data?.last_consolidation_ts || 0);
+  const maintenanceIsStale = completedRunAt > 0 && Date.now() / 1000 - completedRunAt > 7 * 86400;
+  const attentionItems = [
+    !daemon.data?.running && {
+      title: "MCP daemon is unavailable",
+      detail: "Start the local daemon to make Slowave available to connected clients.",
+      href: "/diagnostics#services",
+    },
+    (!status.data?.db_exists || database.data?.integrity_status === "needs_attention") && {
+      title: "Database integrity needs attention",
+      detail: "Inspect database health before relying on this installation.",
+      href: "/diagnostics#database",
+    },
+    maintenanceIsStale && {
+      title: "Maintenance has not completed recently",
+      detail: `Last completed run ${relativeDate(completedRunAt)}. Check the worker if this installation has ongoing activity.`,
+      href: "/diagnostics#maintenance",
+    },
+    Number(recentRuns?.failed || 0) > 0 && {
+      title: `${Number(recentRuns.failed).toLocaleString()} maintenance run${Number(recentRuns.failed) === 1 ? "" : "s"} failed in the last 7 days`,
+      detail: "Open maintenance history to inspect the failure details.",
+      href: "/diagnostics#maintenance",
+    },
+    Number(recentRuns?.incomplete || 0) > 0 && {
+      title: `${Number(recentRuns.incomplete).toLocaleString()} maintenance run${Number(recentRuns.incomplete) === 1 ? " is" : "s are"} incomplete`,
+      detail: "An incomplete run may still be in progress; investigate if it remains unchanged.",
+      href: "/diagnostics#maintenance",
+    },
+    needsReview > 0 && {
+      title: `${needsReview.toLocaleString()} memor${needsReview === 1 ? "y needs" : "ies need"} review`,
+      detail: "Review-state memories are retained but should be assessed before relying on them.",
+      href: "/memory?states=needs_review",
+    },
+    duplicateRows > 0 && {
+      title: `${duplicateRows.toLocaleString()} exact duplicate memory row${duplicateRows === 1 ? "" : "s"} detected`,
+      detail: "Duplicates are an operational signal to investigate, not an automatic data-loss condition.",
+      href: "/memory",
+    },
+  ].filter(Boolean) as { title: string; detail: string; href: string }[];
   return (
     <div className="page">
       <PageHeader
         title="Diagnostics"
-        description="Operational observations for the local installation and maintenance pipeline—not measures of memory value."
+        description="Operational health, maintenance, and investigation for this local Slowave installation."
         updatedAt={updated}
         refreshing={
           daemon.refreshing || database.refreshing || workers.refreshing
@@ -2734,20 +2777,44 @@ export function DiagnosticsPage({}: PageProps) {
         retained={Boolean(daemon.data || database.data || workers.data)}
         retry={refreshAll}
       />
-      <Section title="Performance overview">
-        {!status.data || !workers.data ? status.error || workers.error ? <ErrorState title="Operational health unavailable" error={status.error || workers.error} retry={refreshAll} /> : <MetricCardsSkeleton count={4} /> : <div className="metric-card-grid" aria-label="Operational health summary">
-          <MetricCard title="Database integrity" value={database.data?.integrity_status === "ok" ? "Passed" : database.data?.integrity_status === "needs_attention" ? "Failed" : databaseHealthValue(database.data?.integrity_status)} secondary={databaseHealthSecondary} tooltip="The latest database integrity check status. This is an operational check, not a memory-quality measure." className={database.data?.integrity_status === "ok" ? "metric-active" : database.data?.integrity_status === "needs_attention" ? "metric-warning" : "metric-subtle"} />
-          <MetricCard title="Last consolidation" value={statusValue} secondary={statusSecondary} tooltip="Most recent completed consolidation run, shown as relative age and exact timestamp. The warning threshold is seven days." className={status.data?.last_consolidation_ts && (Date.now() / 1000 - Number(status.data.last_consolidation_ts) > 7 * 86400) ? "metric-warning" : "metric-subtle"} />
-          <RateMetricCard title="Recent run reliability" numerator={workers.data.summary?.recent_7d?.successful ?? 0} denominator={workers.data.summary?.recent_7d?.runs ?? 0} secondary={<>{Number(workers.data.summary?.recent_7d?.failed ?? 0).toLocaleString()} failed · last 7 days{workers.error && <span className="diagnostic-stale"> · stale</span>}</>} tooltip="Successful consolidation runs divided by consolidation runs started in the last seven days. Incomplete runs are included in the denominator and failures are shown separately." className="metric-feedback" />
-          <MetricCard title="Typical run duration" value={workers.data.summary?.recent_7d?.duration_ms != null ? formatDuration(Number(workers.data.summary.recent_7d.duration_ms) / 1000) : "Unavailable"} secondary={<>{workers.data.summary?.recent_7d?.duration_stat === "p95" ? "p95" : "Median"} of successful runs · last 7 days{workers.error && <span className="diagnostic-stale"> · stale</span>}</>} tooltip="The p95 duration when at least four successful runs are available; otherwise the median, over successful consolidation runs started in the last seven days." className="metric-retrieved" />
+      <Section title="System health" id="services">
+        {!status.data || !workers.data || !database.data ? status.error || workers.error || database.error ? <ErrorState title="Operational health unavailable" error={status.error || workers.error || database.error} retry={refreshAll} /> : <MetricCardsSkeleton count={4} /> : <>
+          <div className={`diagnostics-health-banner ${attentionItems.length ? "needs-attention" : "healthy"}`} role="status">
+            <div>
+              <strong>{attentionItems.length ? `${attentionItems.length} item${attentionItems.length === 1 ? "" : "s"} need attention` : "No active issues detected"}</strong>
+              <span>{attentionItems.length ? "Start with the items below; detailed operational evidence remains available on this page." : "Daemon, database, and recently observed maintenance signals are healthy."}</span>
+            </div>
+          </div>
+          {attentionItems.length > 0 && <div className="diagnostics-attention-list" aria-label="Items needing attention">
+            {attentionItems.map((item) => <Link className="diagnostics-attention-item" to={item.href} key={item.title}>
+              <strong>{item.title}</strong>
+              <span>{item.detail}</span>
+              <small>Inspect</small>
+            </Link>)}
+          </div>}
+          <div className="metric-card-grid" aria-label="Operational health summary">
+            <MetricCard title="MCP daemon" value={daemon.data?.running ? "Available" : "Unavailable"} secondary={daemon.data?.running ? `Version ${daemon.data?.version || status.data?.slowave_version || "unknown"}` : "No reachable process observed"} tooltip="Whether the local HTTP MCP daemon responded to a health probe." className={daemon.data?.running ? "metric-active" : "metric-warning"} />
+            <MetricCard title="Database integrity" value={database.data?.integrity_status === "ok" ? "Passed" : database.data?.integrity_status === "needs_attention" ? "Failed" : databaseHealthValue(database.data?.integrity_status)} secondary={databaseHealthSecondary} tooltip="The latest database integrity check status. This is an operational check, not a memory-quality measure." className={database.data?.integrity_status === "ok" ? "metric-active" : database.data?.integrity_status === "needs_attention" ? "metric-warning" : "metric-subtle"} />
+            <MetricCard title="Maintenance freshness" value={statusValue} secondary={statusSecondary} tooltip="Most recent completed maintenance run. A run older than seven days is highlighted only when ongoing activity may warrant investigation." className={maintenanceIsStale ? "metric-warning" : "metric-subtle"} />
+            <MetricCard title="Memory review" value={needsReview ? `${needsReview.toLocaleString()} pending` : "Clear"} secondary={needsReview ? "Memories retained for review" : "No memories currently need review"} tooltip="Memories can be retained in a review state when their reliability needs assessment. This is a memory-management signal, not a system failure." href="/memory?states=needs_review" className={needsReview ? "metric-warning" : "metric-active"} />
+          </div>
+        </>}
+      </Section>
+      <Section title="Pipeline behavior">
+        <p className="neutral">Recent maintenance behavior helps explain whether the local pipeline is keeping up. These are operational signals, not memory-value scores.</p>
+        {!workers.data ? workers.error ? <ErrorState title="Pipeline behavior unavailable" error={workers.error} retry={workers.reload} /> : <MetricCardsSkeleton count={3} /> : <div className="metric-card-grid pipeline-metric-grid">
+          <RateMetricCard title="Run reliability" numerator={recentRuns?.successful ?? 0} denominator={recentRuns?.runs ?? 0} secondary={<>{Number(recentRuns?.failed ?? 0).toLocaleString()} failed · last 7 days{workers.error && <span className="diagnostic-stale"> · stale</span>}</>} tooltip="Successful maintenance runs divided by all runs started in the last seven days. Incomplete runs remain in the denominator." className="metric-feedback" />
+          <MetricCard title="Typical duration" value={recentRuns?.duration_ms != null ? formatDuration(Number(recentRuns.duration_ms) / 1000) : "Unavailable"} secondary={<>{recentRuns?.duration_stat === "p95" ? "p95" : "Median"} of successful runs · last 7 days</>} tooltip="The p95 duration with four or more successful runs; otherwise the median." className="metric-retrieved" />
+          <MetricCard title="Worker process" value={workers.data.worker?.running ? "Running" : "Not observed"} secondary={workers.data.worker?.running ? `${Number(workers.data.worker?.process_count || 0).toLocaleString()} process${Number(workers.data.worker?.process_count || 0) === 1 ? "" : "es"} observed` : "No background worker process observed"} tooltip="Whether a local Slowave worker process was observed. An idle installation may intentionally have no worker process." className={workers.data.worker?.running ? "metric-active" : "metric-subtle"} />
         </div>}
+        <details className="advanced diagnostics-inventory">
+          <summary>Operational inventory</summary>
+          <p className="neutral">These retained record totals are useful for diagnostics, but they do not measure memory quality.</p>
+          <div className="lifetime-totals">{[["Sessions", status.data?.stats?.sessions], ["Raw events", status.data?.stats?.raw_events], ["Episodes", status.data?.stats?.episodes], ["Memories", status.data?.stats?.schemas]].map(([label, value]) => <span key={String(label)}><strong>{status.data ? value == null ? "Unavailable" : Number(value).toLocaleString() : status.loading ? "Checking…" : "Unavailable"}</strong>{label}</span>)}</div>
+        </details>
       </Section>
-      <Section title="Lifetime totals">
-        <p className="neutral">Operational record totals retained for diagnostics; these are not headline quality metrics.</p>
-        <div className="lifetime-totals">{[["Sessions", status.data?.stats?.sessions], ["Raw events", status.data?.stats?.raw_events], ["Episodes", status.data?.stats?.episodes], ["Memories", status.data?.stats?.schemas]].map(([label, value]) => <span key={String(label)}><strong>{status.data ? value == null ? "Unavailable" : Number(value).toLocaleString() : status.loading ? "Checking…" : "Unavailable"}</strong>{label}</span>)}</div>
-      </Section>
-      <Section title="Consolidation runs" id="maintenance">
-        <p className="neutral">Recorded maintenance passes that consolidate activity into durable memory. Service availability remains on Home.</p>
+      <Section title="Consolidation history" id="maintenance" actions={<button className="button secondary" onClick={() => setMaintenanceExpanded((expanded) => !expanded)}>{maintenanceExpanded ? "Show recent 10" : "Show 50 runs"}</button>}>
+        <p className="neutral">Showing the {maintenanceExpanded ? "50 most recent" : "10 most recent"} recorded passes. Open a row to inspect counts, configuration, and any error details.</p>
         <div className="filter-bar">
           <details className="filter-menu">
             <summary>Columns</summary>
@@ -2823,21 +2890,17 @@ export function DiagnosticsPage({}: PageProps) {
           </dd>
           <dt>Database size</dt>
           <dd>
-            {storageValue(status.data?.db_size_bytes)}
+            {status.data?.db_size_bytes != null ? formatBytes(status.data.db_size_bytes) : storageValue(status.data?.db_size_bytes)}
           </dd>
           <dt>WAL size</dt>
           <dd>
-            {storageValue(status.data?.wal_size_bytes)}
+            {status.data?.wal_size_bytes != null ? formatBytes(status.data.wal_size_bytes) : storageValue(status.data?.wal_size_bytes)}
           </dd>
           <dt>Integrity</dt>
           <dd>{database.data?.integrity_status === "ok" ? "ok" : database.data?.integrity_status === "needs_attention" ? "needs attention" : databaseHealthValue(database.data?.integrity_status)}</dd>
           <dt>Foreign keys</dt>
           <dd>{foreignKeyValue}</dd>
         </dl>
-        <details className="advanced" open>
-          <summary>Database details</summary>
-          <dl className="key-values wide"><dt>Tables</dt><dd>{Object.keys(database.data?.tables || {}).join(", ") || "Unavailable"}</dd><dt>Objects</dt><dd>{Object.entries(database.data?.object_counts || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || "Unavailable"}</dd></dl>
-        </details>
       </Section>
       {selectedRun && (
         <WorkerRunDetail run={selectedRun} onClose={() => setSelectedRunId(null)} />

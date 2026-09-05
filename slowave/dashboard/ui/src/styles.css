@@ -500,6 +500,48 @@ main {
   padding: 12px 14px;
 }
 .metric-card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.pipeline-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.diagnostics-health-banner {
+  display: flex;
+  align-items: center;
+  min-height: 54px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--success);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--success) 5%, var(--canvas));
+}
+.diagnostics-health-banner.needs-attention {
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 6%, var(--canvas));
+}
+.diagnostics-health-banner > div { display: grid; gap: 3px; }
+.diagnostics-health-banner strong { font-size: 14px; }
+.diagnostics-health-banner span { color: var(--muted); font-size: 12px; line-height: 16px; }
+.diagnostics-attention-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.diagnostics-attention-item {
+  position: relative;
+  display: grid;
+  min-height: 74px;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  padding: 10px 38px 10px 12px;
+  background: var(--canvas);
+  color: var(--text);
+  text-decoration: none;
+}
+.diagnostics-attention-item:hover { border-color: var(--warning); text-decoration: none; transform: translateY(-1px); }
+.diagnostics-attention-item strong { font-size: 13px; line-height: 18px; }
+.diagnostics-attention-item span { color: var(--muted); font-size: 12px; line-height: 16px; }
+.diagnostics-attention-item small { position: absolute; top: 12px; right: 12px; color: var(--warning); font-size: 11px; }
+.diagnostics-inventory { margin-top: 14px; }
 .metric-card-link { display: block; min-width: 0; color: inherit; text-decoration: none; }
 .metric-card { box-sizing: border-box; height: 96px; min-height: 96px; justify-content: center; }
 .metric-card-link:hover { text-decoration: none; }
