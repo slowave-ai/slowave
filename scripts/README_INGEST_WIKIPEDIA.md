@@ -55,7 +55,9 @@ python scripts/ingest_wikipedia.py \
 - `url` (required): Wikipedia article URL
 - `--scope SCOPE`: Custom scope for memories (default: `wikipedia:<page_title>`)
 - `--min-words N`: Minimum word count for paragraphs (default: 10)
-- `--db PATH`: Database path override (default: `~/.slowave/slowave.db`)
+- `--db PATH`: Exact database path override. Without it, the script uses the
+  same per-user runtime database as Slowave (`SLOWAVE_HOME` relocates that
+  complete runtime tree; legacy `SLOWAVE_DB` is also honored).
 - `-v, --verbose`: Enable verbose output with progress
 
 ## Examples
@@ -85,13 +87,8 @@ slowave recall "what is machine learning"
 # Or in Python
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.symbolic.encoder import EncoderConfig
 
-cfg = SlowaveConfig(
-    db_path="~/.slowave/slowave.db",
-    dim=384,
-    encoder=EncoderConfig()
-)
+cfg = SlowaveConfig()  # uses the same resolved per-user runtime database
 eng = SlowaveEngine(cfg)
 result = eng.recall("neural networks", top_k=5)
 

@@ -157,7 +157,7 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
 >
-> Memory is stored in plaintext at `~/.slowave/slowave.db`. Slowave does not send it to a hosted memory service. Protect sensitive data with OS permissions or full-disk encryption.
+> Memory is stored in plaintext in the current OS user's application-data directory (`~/Library/Application Support/slowave` on macOS, normally `~/.local/share/slowave` on Linux, and `%LOCALAPPDATA%\slowave` on Windows). Slowave does not send it to a hosted memory service. Protect sensitive data with OS permissions or full-disk encryption. See [runtime data and migration](docs/install.md#runtime-data-location-and-migration).
 
 
 ## How Slowave memory works

@@ -1,6 +1,6 @@
 """RebuildService: auto-migrates derived memory state on a logic_version bump.
 
-When Sibill ships a change to ingest/replay/consolidation logic that would
+When we ship a change to ingest/replay/consolidation logic that would
 produce different output for already-ingested raw_events, it bumps
 SlowaveConfig.current_logic_version. Every customer's local Slowave instance
 notices this on its own next startup (SlowaveEngine.__init__ calls into this

@@ -40,7 +40,7 @@ import slowave.ops as ops
 from slowave.cli.setup import setup_cmd
 from slowave.core.config import DEFAULT_RECALL_TOP_K, SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.core.paths import default_db_path
+from slowave.core.paths import RuntimePathError, default_db_path, runtime_paths
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.symbolic.encoder import EncoderConfig
 
@@ -87,7 +87,7 @@ def _print(obj: Any, as_json: bool) -> None:
 @click.option(
     "--db",
     default=DEFAULT_DB,
-    show_default="SLOWAVE_DB or ~/.slowave/slowave.db",
+    show_default="resolved user-data root/slowave.db",
     help="SQLite db path override.",
 )
 @click.option("--json", "as_json", is_flag=True, help="JSON output.")
@@ -95,7 +95,12 @@ def _print(obj: Any, as_json: bool) -> None:
 def cli(ctx: click.Context, db: str, as_json: bool) -> None:
     """Slowave: brain-inspired memory for AI agents."""
     ctx.ensure_object(dict)
-    ctx.obj["db"] = _resolve_db_path(db)
+    try:
+        paths = runtime_paths()
+        ctx.obj["db"] = str(paths.database) if db == DEFAULT_DB else _resolve_db_path(db)
+        ctx.obj["paths"] = paths
+    except RuntimePathError as exc:
+        raise click.ClickException(str(exc)) from exc
     ctx.obj["json"] = as_json
 
 
@@ -1875,7 +1880,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         # JSON mode
         result = {"status": "ok", "version": __version__, "runtime": {}}
 
-        runtime = get_runtime_info(__version__)
+        runtime = get_runtime_info(__version__, ctx.obj["db"])
         result["runtime_info"] = {
             "python_version": runtime.python_version,
             "executable": runtime.python_executable,
@@ -1915,7 +1920,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         # Client checks
         clients = get_client_statuses()
         result["clients"] = {}
-        warnings = []
+        warnings = [{"code": "RUNTIME_ROOT", "message": warning} for warning in runtime.warnings]
         for source, health in (
             ("WORKER_HEALTH", worker),
             ("SESSION_LIFECYCLE_HEALTH", session_lifecycle),
@@ -1961,7 +1966,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             sys.exit(1)
     else:
         # Human-readable mode
-        runtime = get_runtime_info(__version__)
+        runtime = get_runtime_info(__version__, ctx.obj["db"])
         renderer.title("Slowave Doctor", f"v{__version__}")
 
         renderer.section("Environment")
@@ -2034,9 +2039,10 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             for warning in health.get("warnings", []):
                 operational_warnings.append((label, str(warning)))
 
-        if warnings_list or operational_warnings:
+        runtime_warnings = [("Runtime root", warning) for warning in runtime.warnings]
+        if warnings_list or operational_warnings or runtime_warnings:
             renderer.section("Warnings")
-            for label, warning in operational_warnings:
+            for label, warning in runtime_warnings + operational_warnings:
                 remediation = None
                 if label == "Worker":
                     remediation = "Run: slowave worker --once, or configure the worker service if you want automatic consolidation."
@@ -2062,14 +2068,18 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
 
         # Summary
         has_fail = any(c.status == Status.FAIL for c in checks)
-        has_warn = bool(warnings_list) or bool(operational_warnings)
+        has_warn = bool(warnings_list) or bool(operational_warnings) or bool(runtime_warnings)
 
         if has_fail:
             msg = f"Setup required. {len([c for c in checks if c.status == Status.FAIL])} check(s) failed."
             renderer.summary(False, msg)
             sys.exit(1)
         elif has_warn:
-            msg = f"Usable with {len(warnings_list) + len(operational_warnings)} warning(s)."
+            msg = (
+                "Usable with "
+                f"{len(warnings_list) + len(operational_warnings) + len(runtime_warnings)} "
+                "warning(s)."
+            )
             renderer.summary(True, msg)
         else:
             renderer.summary(True, "All systems ready.")
@@ -2082,7 +2092,7 @@ def uninstall_cmd(dry_run: bool) -> None:
 
     Removes only Slowave-owned MCP entries, generated lifecycle files or blocks,
     enforcement hooks, and daemon, worker, and backup services. It does not remove
-    ~/.slowave, database archives, setup backups, or the installed Python package.
+    the effective runtime root, database archives, setup backups, or the installed Python package.
     Use 'slowave purge' to also remove local data, then use the same package manager
     used for installation (for example, 'pipx uninstall slowave') to remove Slowave.
     """
@@ -2120,7 +2130,7 @@ def uninstall_cmd(dry_run: bool) -> None:
         click.echo("  • Claude Desktop → Settings → General → Instructions for Claude")
         click.echo("  • Cursor → Settings → Rules for AI")
         click.echo("    Remove any Slowave lifecycle instructions pasted into those UIs.")
-        click.echo("\nLocal memories were preserved in ~/.slowave.")
+        click.echo(f"\nLocal memories were preserved in {runtime_paths().root}.")
         click.echo(
             "To remove the package too, use the same installer that installed it (for example: pipx uninstall slowave)."
         )
@@ -2128,12 +2138,14 @@ def uninstall_cmd(dry_run: bool) -> None:
 
 from slowave.cli.backup import backup_cmd, restore_cmd
 from slowave.cli.cleanup import cleanup_cmd
+from slowave.cli.migrate_data import migrate_data_cmd
 
 cli.add_command(setup_cmd)
 cli.add_command(cleanup_cmd)
 cli.add_command(cleanup_cmd, "cleanup")
 cli.add_command(backup_cmd)
 cli.add_command(restore_cmd)
+cli.add_command(migrate_data_cmd)
 
 
 def main() -> None:

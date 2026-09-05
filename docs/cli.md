@@ -7,8 +7,9 @@ manual experiments. Its JSON output makes it useful in scripts and CI:
 slowave --json status
 ```
 
-Slowave stores data in a local SQLite database. Set `SLOWAVE_DB` to use a
-different database; otherwise it uses `~/.slowave/slowave.db`.
+Slowave stores data in a local SQLite database beneath the OS user's native
+application-data directory. Set `SLOWAVE_HOME` to move the complete runtime
+tree. Legacy `SLOWAVE_DB` selects an exact database file; do not set both.
 
 > [!IMPORTANT]
 > The database is plaintext by default. Store it on an encrypted volume or
@@ -116,6 +117,7 @@ workflow and returns a retrieval ID for `reinforce`.
 | `slowave worker --once` | Run one consolidation pass; omit `--once` for the background loop. |
 | `slowave dedup-schemas` | Preview exact duplicate schemas; add `--apply` to merge them. |
 | `slowave rebuild --force` | Force a rebuild of derived state from raw events. Support/debugging only; normal version upgrades rebuild automatically. |
+| `slowave migrate-data [--dry-run] [--yes]` | Explicitly migrate legacy `~/.slowave` runtime data to the native per-user root; preserves the source for rollback. |
 
 Use `slowave dashboard --no-allow-actions` when the dashboard must be
 strictly read-only. The dashboard's Forget and Unforget buttons are enabled by
@@ -141,8 +143,9 @@ listens at `http://127.0.0.1:8766/mcp`.
 ## Backups, removal, and recovery
 
 ```bash
-slowave backup --dir ~/.slowave/backups --keep 14
-slowave restore ~/.slowave/backups/slowave-YYYYMMDD_HHMMSS.db.gz
+slowave backup --keep 14
+slowave restore /path/to/runtime/backups/slowave-YYYYMMDD_HHMMSS.db.gz
+slowave migrate-data --dry-run
 ```
 
 `backup` uses SQLite's online backup API and is safe while Slowave services
@@ -151,6 +154,10 @@ run. It writes gzip-compressed database snapshots, retaining seven by default.
 database as `slowave.db.bak`, then restarts the worker. Review the target
 backup carefully; add `--yes` only in an unattended script.
 
+`migrate-data` explicitly moves an older `~/.slowave` installation to the
+native per-user root through a staged SQLite online backup and integrity check.
+It refuses a non-empty destination and preserves the legacy tree for rollback.
+
 Slowave and its package manager have separate responsibilities. Slowave removes
 the client integrations and local state it owns; the package manager removes the
 installed executable and its dependencies. Two Slowave removal commands have
@@ -158,8 +165,8 @@ deliberately different scopes:
 
 | Command | What it removes |
 |---|---|
-| `slowave uninstall [--dry-run]` | Slowave MCP entries, generated lifecycle instructions, hooks, and daemon, worker, and backup services. It preserves `~/.slowave`, database archives, setup backups, and the installed package. |
-| `slowave purge [--dry-run]` | Everything removed by `uninstall`, plus local data in `~/.slowave` and setup-created `*.bak.*` configuration backups. Database archives in `~/.slowave/backups` are retained. This is destructive and asks for confirmation. |
+| `slowave uninstall [--dry-run]` | Slowave MCP entries, generated lifecycle instructions, hooks, and daemon, worker, and backup services. It preserves the runtime root, database archives, setup backups, and the installed package. |
+| `slowave purge [--dry-run]` | Everything removed by `uninstall`, plus local data in the runtime root and setup-created `*.bak.*` configuration backups. Database archives in `backups/` are retained. This is destructive and asks for confirmation. With legacy `SLOWAVE_DB`, only known Slowave artifacts are removed from its potentially shared parent directory. |
 
 `slowave cleanup` remains a compatibility alias for `slowave purge`; use
 `purge` in new scripts and documentation. To remove the Python application
@@ -170,12 +177,13 @@ after either command, use the same installer that installed it, for example
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `SLOWAVE_DB` | `~/.slowave/slowave.db` | SQLite database path |
+| `SLOWAVE_HOME` | Native per-user application-data root | Complete runtime-data root |
+| `SLOWAVE_DB` | — | Legacy exact SQLite database override |
 | `SLOWAVE_MCP_HTTP_PORT` | `8766` | HTTP MCP daemon port |
 | `SLOWAVE_MCP_HOST` | `127.0.0.1` | HTTP MCP bind host |
-| `SLOWAVE_DAEMON_PID` | `~/.slowave/daemon.pid` | Daemon PID-file path |
+| `SLOWAVE_DAEMON_PID` | `<runtime-root>/daemon.pid` | Exact daemon PID-file override |
 | `SLOWAVE_SESSION_IDLE_TIMEOUT` | `3600` | Idle-session timeout in seconds |
-| `SLOWAVE_BACKUP_DIR` | `~/.slowave/backups` | Default backup directory |
+| `SLOWAVE_BACKUP_DIR` | `<runtime-root>/backups` | Exact backup-directory override |
 | `SLOWAVE_BACKUP_KEEP` | `7` | Number of backups retained |
 | `KMP_DUPLICATE_LIB_OK` | — | Set to `TRUE` on macOS only if FAISS and ONNX otherwise segfault |
 

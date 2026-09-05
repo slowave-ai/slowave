@@ -3,7 +3,8 @@
 Handles PID file creation/cleanup and single-instance enforcement so that
 ``slowave serve start`` can guarantee only ONE backend process is running.
 
-PID file location: ~/.slowave/daemon.pid  (or SLOWAVE_DAEMON_PID env var)
+PID file location comes from ``RuntimePaths`` (or the legacy exact-path
+``SLOWAVE_DAEMON_PID`` override).
 """
 
 from __future__ import annotations
@@ -14,31 +15,33 @@ import signal
 import sys
 from pathlib import Path
 
+from slowave.core.paths import runtime_paths
+
 log = logging.getLogger(__name__)
 
-DEFAULT_PID_FILE = Path.home() / ".slowave" / "daemon.pid"
 
-
-def _pid_file_path() -> Path:
+def _pid_file_path(pid_file: Path | None = None) -> Path:
+    if pid_file is not None:
+        return Path(pid_file)
     env = os.environ.get("SLOWAVE_DAEMON_PID")
-    return Path(env) if env else DEFAULT_PID_FILE
+    return Path(env).expanduser() if env else runtime_paths().pid_file
 
 
-def write_pid() -> Path:
+def write_pid(pid_file: Path | None = None) -> Path:
     """Write current process PID to the PID file.
 
-    Creates ~/.slowave/ if it does not exist. Returns the PID file path.
+    Creates its parent if it does not exist. Returns the PID file path.
     """
-    pid_path = _pid_file_path()
+    pid_path = _pid_file_path(pid_file)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()))
     log.info("PID file written: %s (pid=%d)", pid_path, os.getpid())
     return pid_path
 
 
-def remove_pid() -> None:
+def remove_pid(pid_file: Path | None = None) -> None:
     """Remove the PID file if it belongs to this process."""
-    pid_path = _pid_file_path()
+    pid_path = _pid_file_path(pid_file)
     try:
         if pid_path.exists():
             stored = int(pid_path.read_text().strip())
@@ -49,9 +52,9 @@ def remove_pid() -> None:
         log.warning("Could not remove PID file: %s", e)
 
 
-def read_pid() -> int | None:
+def read_pid(pid_file: Path | None = None) -> int | None:
     """Return the PID stored in the PID file, or None if not found / unreadable."""
-    pid_path = _pid_file_path()
+    pid_path = _pid_file_path(pid_file)
     try:
         if pid_path.exists():
             return int(pid_path.read_text().strip())
@@ -60,9 +63,9 @@ def read_pid() -> int | None:
     return None
 
 
-def _cleanup_stale_pid_file() -> None:
+def _cleanup_stale_pid_file(pid_file: Path | None = None) -> None:
     """Remove the PID file when the stored PID no longer exists or isn't a slowave process."""
-    pid_path = _pid_file_path()
+    pid_path = _pid_file_path(pid_file)
     try:
         if pid_path.exists():
             pid_path.unlink()
@@ -148,31 +151,31 @@ def _is_slowave_process(pid: int) -> bool:
         return True
 
 
-def is_running() -> bool:
+def is_running(pid_file: Path | None = None) -> bool:
     """Return True if a daemon process with the stored PID is alive *and* is a slowave process."""
-    pid = read_pid()
+    pid = read_pid(pid_file)
     if pid is None:
         return False
 
     if not _pid_exists(pid):
-        _cleanup_stale_pid_file()
+        _cleanup_stale_pid_file(pid_file)
         return False
 
     # PID exists, but verify it's actually a slowave process (not a PID-reuse
     # collision from a SIGKILL'd daemon whose PID was reassigned).
     if not _is_slowave_process(pid):
-        _cleanup_stale_pid_file()
+        _cleanup_stale_pid_file(pid_file)
         return False
     return True
 
 
-def stop_daemon() -> bool:
+def stop_daemon(pid_file: Path | None = None) -> bool:
     """Send SIGTERM (or terminate on Windows) to the running daemon.
 
     Returns True if a signal was sent, False if no daemon was found.
     Cleans up the stale PID file when the stored process is already gone.
     """
-    pid = read_pid()
+    pid = read_pid(pid_file)
     if pid is None:
         return False
     try:
@@ -193,7 +196,7 @@ def stop_daemon() -> bool:
         return True
     except ProcessLookupError:
         log.warning("Daemon pid=%d not found — removing stale PID file.", pid)
-        _cleanup_stale_pid_file()
+        _cleanup_stale_pid_file(pid_file)
         return False
     except PermissionError as e:
         log.error("Cannot stop daemon pid=%d: %s", pid, e)
@@ -203,12 +206,12 @@ def stop_daemon() -> bool:
         return False
 
 
-def daemon_status() -> dict:
+def daemon_status(pid_file: Path | None = None) -> dict:
     """Return a dict describing daemon state for `slowave serve status`."""
-    pid = read_pid()
-    running = is_running()
+    pid = read_pid(pid_file)
+    running = is_running(pid_file)
     return {
         "running": running,
         "pid": pid if running else None,
-        "pid_file": str(_pid_file_path()),
+        "pid_file": str(_pid_file_path(pid_file)),
     }

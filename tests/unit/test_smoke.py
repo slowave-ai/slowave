@@ -35,6 +35,7 @@ def test_cli_uses_default_db_from_env_without_db_arg(
 ) -> None:
     """CLI commands should not require --db for normal local usage."""
     db_path = tmp_path / "nested" / "slowave.db"
+    monkeypatch.delenv("SLOWAVE_HOME", raising=False)
     monkeypatch.setenv("SLOWAVE_DB", str(db_path))
 
     runner = CliRunner()

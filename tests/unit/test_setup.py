@@ -725,6 +725,16 @@ class TestDetectedClients:
 
         assert {change.client for change in summary.changes} == {"Claude Code", "Cline"}
 
+    def test_macos_worker_summary_formats_runtime_placeholders(self, fake_home, monkeypatch):
+        monkeypatch.setattr(_setup_mod, "SYSTEM", "Darwin")
+
+        summary = _build_summary("all", worker=True, install_hooks=True, slowave_bin="slowave")
+
+        assert any(
+            change.change_type.value == "worker_service" and change.client == "macOS"
+            for change in summary.changes
+        )
+
     def test_setup_output_omits_undetected_clients_and_telemetry(self, fake_home):
         (fake_home / ".claude").mkdir()
 

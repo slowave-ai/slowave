@@ -9,9 +9,9 @@ import sys
 # startup with no trace. Rebind them to a log file so services survive and
 # stay diagnosable.
 if sys.stdout is None or sys.stderr is None:
-    from pathlib import Path
+    from slowave.core.paths import runtime_paths
 
-    _log_dir = Path.home() / ".slowave" / "logs"
+    _log_dir = runtime_paths().logs_dir
     _log_dir.mkdir(parents=True, exist_ok=True)
     _cmd = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].isalnum() else "cli"
     _stream = open(

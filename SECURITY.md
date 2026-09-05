@@ -21,7 +21,13 @@ Alternatively, use [GitHub's private vulnerability reporting](https://github.com
 
 ## Scope
 
-Slowave stores all memory locally in a plain SQLite file (`~/.slowave/slowave.db`). The file is unencrypted. If you store sensitive information, protect it using OS-level permissions or full-disk encryption — this is by design and documented in the README.
+Slowave stores memory locally in plaintext beneath the current OS user's native
+application-data directory. The runtime root contains the SQLite database,
+SQLite sidecars, logs, backups, and daemon state. `slowave doctor` prints the
+effective root and database path. The default root is per OS user;
+`SLOWAVE_HOME` may intentionally select another complete runtime tree, while
+legacy `SLOWAVE_DB` selects an exact database file. The data is unencrypted, so
+protect sensitive information with OS-level permissions or full-disk encryption.
 
 The MCP server listens on localhost only (`127.0.0.1`) and is not intended to be exposed to a network.
 

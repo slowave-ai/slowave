@@ -13,9 +13,12 @@ from typing import Any
 
 
 def _log_path() -> str:
-    return os.path.expanduser(
-        os.environ.get("SLOWAVE_DEBUG_JUDGE_LOG_PATH", "~/.slowave/judge_debug.jsonl")
-    )
+    configured = os.environ.get("SLOWAVE_DEBUG_JUDGE_LOG_PATH")
+    if configured:
+        return os.path.expanduser(configured)
+    from slowave.core.paths import runtime_paths
+
+    return str(runtime_paths().judge_debug_log)
 
 
 def emit_judge_signal(record: dict[str, Any]) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -26,8 +27,32 @@ from slowave.cli.setup import (
     _write_json,
     _write_toml,
 )
+from slowave.core.paths import runtime_paths
 
 SYSTEM = platform.system()
+
+
+def _runtime_cleanup_targets() -> tuple[Path, list[Path], bool]:
+    """Return root, removable targets, and whether the root is dedicated.
+
+    A legacy ``SLOWAVE_DB`` may live in an arbitrary directory (including a
+    project or ``/tmp``), so purge must never sweep that parent wholesale.
+    """
+    paths = runtime_paths()
+    dedicated_root = "SLOWAVE_DB" not in os.environ
+    if dedicated_root:
+        targets = [item for item in paths.root.iterdir()] if paths.root.is_dir() else []
+    else:
+        targets = [
+            paths.database,
+            *(Path(f"{paths.database}{suffix}") for suffix in ("-wal", "-shm", "-journal", ".bak")),
+            paths.pid_file,
+            paths.logs_dir,
+            paths.setup_sentinel,
+            paths.judge_debug_log,
+            paths.root / "config.toml",
+        ]
+    return paths.root, targets, dedicated_root
 
 
 def _remove_daemon_service(dry_run: bool) -> int:
@@ -454,7 +479,7 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
     This command removes everything that 'slowave setup' installed:
     - MCP server configs, lifecycle blocks, and enforcement hooks for every supported client
     - HTTP daemon, background worker, and daily backup services
-    - Local database and data in ~/.slowave (database archives in ~/.slowave/backups are retained)
+    - Local database and data in the effective runtime root (database archives are retained)
     - Setup-created *.bak.* configuration backups
 
     Use 'slowave uninstall' instead to remove integrations while keeping memories.
@@ -498,10 +523,13 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
 
     # 7. Remove data directory
     _section("6. Local data and database")
-    slowave_dir = _home() / ".slowave"
+    slowave_dir, cleanup_targets, dedicated_root = _runtime_cleanup_targets()
     if slowave_dir.exists():
         if dry_run:
-            _ok(f"Would remove: {slowave_dir}")
+            if dedicated_root:
+                _ok(f"Would remove runtime data in: {slowave_dir}")
+            else:
+                _ok(f"Would remove only known Slowave artifacts in: {slowave_dir}")
         else:
             # On Windows the DB may still be held open by a running worker or MCP
             # process even after the scheduler task was deleted.  Attempt to kill
@@ -536,8 +564,12 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
                     backup_list = f"... and {len(backup_files) - 5} more\n    " + backup_list
 
             try:
-                # Remove content selectively: delete everything except backups/.
-                for item in sorted(slowave_dir.iterdir()):
+                # Remove a dedicated SLOWAVE_HOME/default tree wholesale, but
+                # only known Slowave artifacts when legacy SLOWAVE_DB makes an
+                # arbitrary parent directory the coherence root.
+                for item in sorted(cleanup_targets):
+                    if not item.exists():
+                        continue
                     if item.name == "backups" and backups_exist:
                         continue
                     if item.is_dir():
@@ -558,10 +590,15 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
                         f"  To remove them, delete the directory manually:\n"
                         f"    rm -rf {backups_dir}"
                     )
-                _ok(f"Cleaned: {slowave_dir}")
+                if dedicated_root:
+                    try:
+                        slowave_dir.rmdir()
+                    except OSError:
+                        pass
+                _ok(f"Cleaned Slowave runtime data in: {slowave_dir}")
                 removed_count += 1
     else:
-        _skip("No ~/.slowave directory found")
+        _skip(f"No runtime data directory found at {slowave_dir}")
 
     # 7. Remove setup backup files
     _section("7. Setup backup files")
