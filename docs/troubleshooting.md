@@ -22,8 +22,10 @@ or SSE. It runs as a user service.
 
 ### Daemon won't start
 
-**Port already in use.** The daemon binds to `127.0.0.1:8766` by default.
-If something else is on that port:
+**Port already in use.** Setup assigns the first available loopback port from
+8766 upward and stores it in the per-user runtime directory as `daemon.port`.
+`slowave doctor` and `slowave serve status` print the effective URL. If an
+explicitly configured port is occupied:
 
 ```bash
 lsof -i :8766
@@ -67,7 +69,7 @@ slowave serve status
 ```
 
 ```bash
-curl http://127.0.0.1:8766/health
+curl "$(slowave serve status --json | python -c 'import json,sys; print(json.load(sys.stdin)["mcp_url"].replace("/mcp", "/health"))')"
 ```
 
 A `200 OK` means the daemon is alive. If the health endpoint hangs, the engine
@@ -162,7 +164,9 @@ The dashboard is a local web UI on `127.0.0.1:8765`.
 
 ### Dashboard won't start
 
-**Port conflict.** Port 8765 is the default. If something else is on it:
+**Port conflict.** The first dashboard run assigns an available port from 8765
+upward and persists it as `dashboard.port` in the per-user runtime directory.
+An explicit `--port` or `SLOWAVE_DASHBOARD_PORT` override still takes precedence.
 
 ```bash
 lsof -i :8765

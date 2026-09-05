@@ -1630,20 +1630,26 @@ def status_cmd(ctx: click.Context) -> None:
 
 @cli.command("dashboard")
 @click.option("--host", default="127.0.0.1", show_default=True, help="HTTP bind host.")
-@click.option("--port", default=8765, show_default=True, help="HTTP bind port.")
+@click.option(
+    "--port", type=int, default=None, help="HTTP bind port (defaults to the per-user assignment)."
+)
 @click.option("--refresh-ms", default=2000, show_default=True, help="Overview refresh interval.")
 @click.option("--no-open", is_flag=True, help="Do not open the browser automatically.")
 @click.pass_context
 def dashboard_cmd(
     ctx: click.Context,
     host: str,
-    port: int,
+    port: int | None,
     refresh_ms: int,
     no_open: bool,
 ) -> None:
     """Run the local Slowave web dashboard."""
     from slowave.dashboard.app import run_dashboard
 
+    if port is None:
+        from slowave.core.paths import assign_dashboard_port
+
+        port = assign_dashboard_port()
     run_dashboard(
         db_path=ctx.obj["db"],
         host=host,
@@ -1887,6 +1893,8 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
             "db_path": runtime.db_path,
             "config_path": runtime.config_path,
             "slowave_dir": runtime.slowave_dir,
+            "daemon_port": runtime.daemon_port,
+            "mcp_url": runtime.mcp_url,
         }
 
         # Run checks
@@ -1973,6 +1981,7 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         renderer.item("Python", runtime.python_version)
         renderer.item("Data dir", runtime.slowave_dir, dim=True)
         renderer.item("Config", runtime.config_path, dim=True)
+        renderer.item("MCP URL", runtime.mcp_url)
 
         # Runtime checks
         renderer.section("Runtime")
@@ -2174,9 +2183,9 @@ def serve_cmd() -> None:
 )
 @click.option(
     "--port",
-    default=8766,
-    show_default=True,
-    help="Bind port for the HTTP MCP daemon.",
+    type=int,
+    default=None,
+    help="Bind port for the HTTP MCP daemon (defaults to the per-user assignment).",
 )
 @click.option(
     "--log-level",
@@ -2192,7 +2201,7 @@ def serve_cmd() -> None:
 )
 def serve_start(
     host: str,
-    port: int,
+    port: int | None,
     log_level: str,
     foreground: bool,
 ) -> None:
@@ -2209,6 +2218,11 @@ def serve_start(
     """
     from slowave.mcp.daemon import is_running, read_pid
     from slowave.mcp.http_server import main as http_main
+
+    if port is None:
+        from slowave.core.paths import assign_daemon_port
+
+        port = assign_daemon_port()
 
     if is_running():
         click.echo(
@@ -2251,11 +2265,13 @@ def serve_status(as_json: bool) -> None:
     import urllib.error
     import urllib.request
 
+    from slowave.core.paths import daemon_port
     from slowave.mcp.daemon import daemon_status
 
     status = daemon_status()
-    mcp_url = "http://127.0.0.1:8766/mcp"
-    health_url = "http://127.0.0.1:8766/health"
+    port = daemon_port()
+    mcp_url = f"http://127.0.0.1:{port}/mcp"
+    health_url = f"http://127.0.0.1:{port}/health"
 
     # Try to fetch live health from running daemon
     health: dict = {}
@@ -2303,14 +2319,21 @@ def serve_status(as_json: bool) -> None:
 
 @serve_cmd.command("restart")
 @click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", default=8766, show_default=True)
+@click.option(
+    "--port", type=int, default=None, help="Bind port (defaults to the per-user assignment)."
+)
 @click.option("--log-level", default="INFO", show_default=True)
-def serve_restart(host: str, port: int, log_level: str) -> None:
+def serve_restart(host: str, port: int | None, log_level: str) -> None:
     """Restart the Slowave HTTP MCP daemon."""
     import time as _time
 
     from slowave.mcp.daemon import is_running, read_pid, stop_daemon
     from slowave.mcp.http_server import main as http_main
+
+    if port is None:
+        from slowave.core.paths import assign_daemon_port
+
+        port = assign_daemon_port()
 
     if is_running():
         pid = read_pid()

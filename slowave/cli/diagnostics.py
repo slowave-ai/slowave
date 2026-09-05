@@ -21,6 +21,8 @@ class RuntimeInfo:
     config_path: str
     slowave_dir: str
     version: str
+    daemon_port: int
+    mcp_url: str
     warnings: tuple[str, ...]
 
 
@@ -43,6 +45,9 @@ def get_runtime_info(version: str, db_path: str | None = None) -> RuntimeInfo:
         except OSError:
             pass
 
+    from slowave.core.paths import daemon_port
+
+    port = daemon_port(paths)
     return RuntimeInfo(
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         python_executable=sys.executable,
@@ -50,6 +55,8 @@ def get_runtime_info(version: str, db_path: str | None = None) -> RuntimeInfo:
         config_path=str(Path(slowave_dir) / "config.toml"),
         slowave_dir=slowave_dir,
         version=version,
+        daemon_port=port,
+        mcp_url=f"http://127.0.0.1:{port}/mcp",
         warnings=tuple(warnings),
     )
 
@@ -155,12 +162,16 @@ def check_mcp_server() -> CheckResult:
         return CheckResult(label="slowave binary", status=Status.FAIL, detail=str(e)[:100])
 
 
-def check_http_daemon(host: str = "127.0.0.1", port: int = 8766) -> CheckResult:
+def check_http_daemon(host: str = "127.0.0.1", port: int | None = None) -> CheckResult:
     """Check whether the Slowave HTTP MCP daemon is reachable."""
     import json as _json
     import urllib.error
     import urllib.request
 
+    if port is None:
+        from slowave.core.paths import daemon_port
+
+        port = daemon_port()
     url = f"http://{host}:{port}/health"
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:

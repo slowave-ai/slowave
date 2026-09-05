@@ -284,8 +284,11 @@ def get_client_statuses() -> dict[str, ClientStatus]:
     import urllib.request
 
     http_daemon_running = False
+    from slowave.core.paths import daemon_port
+
+    port = daemon_port()
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8766/health", timeout=1) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
             http_daemon_running = resp.status == 200
     except Exception:
         pass
@@ -298,11 +301,7 @@ def summarize_client_status(client: ClientStatus) -> tuple[Status, str]:
     if "http mcp daemon" in client.name.lower():
         return (
             Status.OK if client.running else Status.SKIP,
-            (
-                "running on :8766"
-                if client.running
-                else "not running (start with: slowave serve start)"
-            ),
+            ("running" if client.running else "not running (start with: slowave serve start)"),
         )
     if "worker" in client.name.lower():
         return (

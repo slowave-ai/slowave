@@ -1252,7 +1252,7 @@ _LAUNCHD_PLIST = """\
   <dict>
     <key>Label</key><string>com.slowave.worker</string>
     <key>EnvironmentVariables</key>
-    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
+    <dict>{runtime_environment}</dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -1276,7 +1276,7 @@ _LAUNCHD_DAEMON_PLIST = """\
   <dict>
     <key>Label</key><string>com.slowave.daemon</string>
     <key>EnvironmentVariables</key>
-    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
+    <dict>{runtime_environment}</dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -1297,7 +1297,7 @@ Description=Slowave background consolidation worker
 After=network.target
 
 [Service]
-Environment="{runtime_env_key}={runtime_env_value}"
+{runtime_environment}
 ExecStart={bin} worker --interval 300
 Restart=always
 RestartSec=10
@@ -1312,7 +1312,7 @@ Description=Slowave HTTP MCP daemon
 After=network.target
 
 [Service]
-Environment="{runtime_env_key}={runtime_env_value}"
+{runtime_environment}
 ExecStart={bin} serve start
 Restart=always
 RestartSec=5
@@ -1322,24 +1322,45 @@ WantedBy=default.target
 """
 
 
-def _runtime_service_env() -> tuple[str, str]:
-    """Return the one explicit override a generated service must retain."""
-    from slowave.core.paths import runtime_paths
+def _runtime_service_env() -> dict[str, str]:
+    """Return the explicit per-user runtime settings baked into services."""
+    from slowave.core.paths import daemon_port, runtime_paths
 
     paths = runtime_paths()
     if "SLOWAVE_DB" in os.environ:
-        return "SLOWAVE_DB", str(paths.database)
-    return "SLOWAVE_HOME", str(paths.root)
+        runtime = {"SLOWAVE_DB": str(paths.database)}
+    else:
+        runtime = {"SLOWAVE_HOME": str(paths.root)}
+    runtime["SLOWAVE_MCP_HTTP_PORT"] = str(daemon_port(paths))
+    return runtime
+
+
+def _launchd_runtime_environment() -> str:
+    from xml.sax.saxutils import escape
+
+    return "".join(
+        f"<key>{escape(key)}</key><string>{escape(value)}</string>"
+        for key, value in _runtime_service_env().items()
+    )
+
+
+def _systemd_runtime_environment() -> str:
+    lines = []
+    for key, value in _runtime_service_env().items():
+        escaped = value.replace("%", "%%").replace('"', '\\"')
+        lines.append(f'Environment="{key}={escaped}"')
+    return "\n".join(lines)
 
 
 def _windows_runtime_action(slowave_bin: str, arguments: str) -> tuple[str, str]:
     """Build a hidden PowerShell task action with an explicit runtime root."""
-    env_key, env_value = _runtime_service_env()
+    environment = _runtime_service_env()
     pythonw = _find_pythonw()
     program = pythonw or slowave_bin
     command_args = f"-m slowave {arguments}" if pythonw else arguments
     command = (
-        f"$env:{env_key}='{_ps_squote(env_value)}'; " f"& '{_ps_squote(program)}' {command_args}"
+        " ".join(f"$env:{key}='{_ps_squote(value)}';" for key, value in environment.items())
+        + f" & '{_ps_squote(program)}' {command_args}"
     )
     escaped_command = command.replace('"', '`"')
     return (
@@ -1357,11 +1378,9 @@ def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
     plist_path = plist_dir / "com.slowave.worker.plist"
     paths = runtime_paths()
     ensure_runtime_dirs(paths)
-    env_key, env_value = _runtime_service_env()
     content = _LAUNCHD_PLIST.format(
         bin=escape(slowave_bin),
-        runtime_env_key=env_key,
-        runtime_env_value=escape(env_value),
+        runtime_environment=_launchd_runtime_environment(),
         worker_log=escape(str(paths.logs_dir / "worker.log")),
         worker_err=escape(str(paths.logs_dir / "worker.err")),
     )
@@ -1383,10 +1402,8 @@ def _install_worker_linux(slowave_bin: str) -> tuple[str, bool]:
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-worker.service"
-    env_key, env_value = _runtime_service_env()
-    value = env_value.replace("%", "%%").replace('"', '\\"')
     content = _SYSTEMD_SERVICE.format(
-        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
     )
     if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1531,11 +1548,9 @@ def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
     plist_path = plist_dir / "com.slowave.daemon.plist"
     paths = runtime_paths()
     ensure_runtime_dirs(paths)
-    env_key, env_value = _runtime_service_env()
     content = _LAUNCHD_DAEMON_PLIST.format(
         bin=escape(slowave_bin),
-        runtime_env_key=env_key,
-        runtime_env_value=escape(env_value),
+        runtime_environment=_launchd_runtime_environment(),
         daemon_log=escape(str(paths.logs_dir / "daemon.log")),
         daemon_err=escape(str(paths.logs_dir / "daemon.err")),
     )
@@ -1558,10 +1573,8 @@ def _install_daemon_linux(slowave_bin: str) -> tuple[str, bool]:
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-daemon.service"
-    env_key, env_value = _runtime_service_env()
-    value = env_value.replace("%", "%%").replace('"', '\\"')
     content = _SYSTEMD_DAEMON_SERVICE.format(
-        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
     )
     if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1597,7 +1610,7 @@ def _install_daemon_windows(slowave_bin: str) -> tuple[bool, str]:
 _DAEMON_HEALTH_TIMEOUT = 45.0 if SYSTEM == "Windows" else 15.0
 
 
-def _verify_daemon_health(timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
+def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
     """Poll the daemon /health endpoint until it responds or *timeout* elapses.
 
     Setup previously claimed success as soon as the service files were written;
@@ -1609,7 +1622,7 @@ def _verify_daemon_health(timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8766/health", timeout=1) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
                 if resp.status == 200:
                     return True
         except Exception:
@@ -1624,6 +1637,7 @@ def _build_summary(
     install_hooks: bool,
     slowave_bin: str,
     specs: list[ClientSpec] | None = None,
+    mcp_url: str = "http://127.0.0.1:8766/mcp",
 ) -> Summary:
     """Build a summary of changes without modifying any files."""
     summary = Summary()
@@ -1639,17 +1653,20 @@ def _build_summary(
             slowave_mcp_bin = _find_mcp_binary(slowave_bin)
             _, changed_mcp = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
         elif spec.key == "opencode":
-            cfg, changed_mcp_only = _patch_opencode_mcp(cfg)
+            cfg, changed_mcp_only = _patch_opencode_mcp(cfg, mcp_url)
             # Also check instructions registration
             _, changed_instructions = _patch_opencode_instructions(
                 cfg, str(_opencode_instructions_path().resolve())
             )
             changed_mcp = changed_mcp_only or changed_instructions
         elif spec.key == "codex":
-            _, changed_mcp = _patch_codex_mcp(cfg)
+            _, changed_mcp = _patch_codex_mcp(cfg, mcp_url)
         else:
             _, changed_mcp = _patch_mcp_servers(
-                cfg, include_type=spec.key == "claude-code", use_sse=spec.key == "cline"
+                cfg,
+                mcp_url,
+                include_type=spec.key == "claude-code",
+                use_sse=spec.key == "cline",
             )
         summary.add_change(
             Change(
@@ -1704,11 +1721,9 @@ def _build_summary(
             plist_dir = _home() / "Library" / "LaunchAgents"
             plist_path = plist_dir / "com.slowave.worker.plist"
             paths = runtime_paths()
-            env_key, env_value = _runtime_service_env()
             plist_content = _LAUNCHD_PLIST.format(
                 bin=escape(slowave_bin),
-                runtime_env_key=env_key,
-                runtime_env_value=escape(env_value),
+                runtime_environment=_launchd_runtime_environment(),
                 worker_log=escape(str(paths.logs_dir / "worker.log")),
                 worker_err=escape(str(paths.logs_dir / "worker.err")),
             )
@@ -1728,7 +1743,9 @@ def _build_summary(
         elif SYSTEM == "Linux":
             xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
             svc_path = Path(xdg) / "systemd" / "user" / "slowave-worker.service"
-            svc_content = _SYSTEMD_SERVICE.format(bin=slowave_bin)
+            svc_content = _SYSTEMD_SERVICE.format(
+                bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+            )
             changed = not (
                 svc_path.exists() and svc_path.read_text(encoding="utf-8") == svc_content
             )
@@ -1896,11 +1913,17 @@ def setup_cmd(
                 "'slowave migrate-data', then run setup again."
             )
 
+    from slowave.core.paths import assign_daemon_port, daemon_port, runtime_paths
+
+    paths = runtime_paths()
+    selected_daemon_port = daemon_port(paths) if dry_run else assign_daemon_port(paths)
+    mcp_url = f"http://127.0.0.1:{selected_daemon_port}/mcp"
+
     # 1. Binaries
     _section("1. Locating binaries")
     slowave_bin = _find_slowave_binary()
     _ok(f"slowave: {slowave_bin}")
-    _ok("MCP endpoint: http://127.0.0.1:8766/mcp  (daemon auto-starts via system service)")
+    _ok(f"MCP endpoint: {mcp_url}  (daemon auto-starts via system service)")
 
     # Quick detection pass — show which clients were found
     _section("2. Detecting clients")
@@ -1909,7 +1932,9 @@ def setup_cmd(
         _ok(f"Found: {', '.join(spec.label for spec in detected_specs)}")
 
     # Build and display summary
-    summary = _build_summary(client, worker, install_hooks, slowave_bin, detected_specs)
+    summary = _build_summary(
+        client, worker, install_hooks, slowave_bin, detected_specs, mcp_url=mcp_url
+    )
     click.echo(summary.format())
 
     # Confirm unless dry-run — skip if nothing to do
@@ -1942,7 +1967,7 @@ def setup_cmd(
             # would leave the retained *.bak.* as the post-MCP-patch state instead of
             # the true pre-Slowave original.
             cfg = _read_toml(mcp_file)
-            cfg, mcp_changed = _patch_codex_mcp(cfg)
+            cfg, mcp_changed = _patch_codex_mcp(cfg, mcp_url)
             if mcp_changed:
                 (
                     _ok(f"Would set MCP server (HTTP) → {mcp_file}")
@@ -1976,7 +2001,7 @@ def setup_cmd(
                 cfg, changed = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
                 transport_label = "stdio"
             elif spec.key == "opencode":
-                cfg, mcp_changed = _patch_opencode_mcp(cfg)
+                cfg, mcp_changed = _patch_opencode_mcp(cfg, mcp_url)
                 transport_label = "remote"
                 # Also register the instructions file in the config
                 instructions_path = str(_opencode_instructions_path().resolve())
@@ -1985,6 +2010,7 @@ def setup_cmd(
             else:
                 cfg, changed = _patch_mcp_servers(
                     cfg,
+                    mcp_url,
                     include_type=spec.key == "claude-code",
                     use_sse=spec.key == "cline",
                 )
@@ -2073,11 +2099,11 @@ def setup_cmd(
                     _warn("Start manually: slowave serve start")
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave serve start")
-            if _verify_daemon_health():
-                _ok("Daemon is live: http://127.0.0.1:8766/health")
+            if _verify_daemon_health(selected_daemon_port):
+                _ok(f"Daemon is live: http://127.0.0.1:{selected_daemon_port}/health")
             else:
                 _err(
-                    f"Daemon did not respond on http://127.0.0.1:8766/health "
+                    f"Daemon did not respond on http://127.0.0.1:{selected_daemon_port}/health "
                     f"within {_DAEMON_HEALTH_TIMEOUT:g}s."
                 )
                 if SYSTEM == "Windows":
