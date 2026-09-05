@@ -174,6 +174,29 @@ A **background worker** consolidates relevant memories and procedures.
 
 See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for more details.
 
+### Slowave MCP lifecycle
+
+```mermaid
+flowchart LR
+    A[Agent task] --> B[1. <i>activate</i><br/>start session]
+    B --> C[Scoped retrieval<br/>and session]
+    C --> D[Agent reasoning]
+    D --> E[2. <i>remember</i><br/>durable claims]
+    D --> F[3. <i>recall</i><br/>mid-task lookup]
+    C --> G[4. <i>feedback</i><br/>target assessments]
+    F --> G
+    E --> H[5. <i>commit</i><br/>outcome and verification]
+    G --> H
+    H --> I[(Local SQLite<br/>raw events and evidence)]
+    I --> J[Offline consolidation]
+    J --> K[(Episodes, prototypes,<br/>schemas, relations)]
+    K --> C
+```
+
+**Mandatory:** <i>activate</i> → <i>feedback</i> → <i>commit</i>. **Optional:** <i>remember</i>, <i>recall</i> (only when the situation calls for them). The numbered ordering is per task; a task may call <i>remember</i>/<i>recall</i> many times.
+
+See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for details.
+
 
 ## Boundaries
 
