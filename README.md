@@ -11,17 +11,15 @@
 
 ---
 
-Slowave gives your AI agents one local memory that persists across sessions, tools, and models.
+One local memory for your AI agents across sessions, tools, and models.
 
-- Relevant context is maintained across your sessions and tools.
-- Useful memories are reinforced. Irrelevant memories fade.
-- Past solutions and failures can become reusable procedures.
-- Fully local. Memory is stored in SQLite. No data leaves your machine.
-- Memory maintenance and retrieval require no LLM calls or LLM API key.
-- Works via 5 simple MCP tools for your agent to call.
-- Inspect and manage your growing memory through the local dashboard.
+- **Evolves with use:** Useful memories strengthen, irrelevant ones lose priority, and stale knowledge can be suppressed or superseded.
+- **Learns from experience:** Decisions, outcomes, and multi-step approaches can become reusable memories and procedures.
+- **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
+- **No separate LLM required:** The memory core performs maintenance and retrieval without separate model calls or an LLM API key.
+- **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
 
-Works on Claude Code, Codex, Cursor, Cline, Windsurf, OpenCode, and Claude Desktop.
+Works with Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop.
 
 ## Day 1 demo
 
@@ -31,39 +29,36 @@ Works on Claude Code, Codex, Cursor, Cline, Windsurf, OpenCode, and Claude Deskt
 
 ## Why Slowave?
 
-Most agent memory systems treat memory as a retrieval problem: they save conversations or extracted facts, search them later, and add the results back to the prompt. Over time that accumulates noise — new decisions conflict with old ones, and irrelevant information pollutes the context window.
+Most agent memory systems treat memory mainly as a retrieval problem: they accumulate information in storage, search it, and then add the results back to the prompt. Over time, this creates noise: new decisions conflict with old ones, and irrelevant information pollutes the context window.
 
-A common fix is an LLM-driven maintenance layer that summarizes content and detects signals such as contradiction or supersession. That works, but it adds cost and latency and puts memory management behind a second reasoning layer. Slowave avoids this by letting the connected agent provide the judgment while it maintains memory locally.
-
-Inspired by how biological memory keeps memory processes separate from reasoning, Slowave does not treat memory as a search problem. It maintains a compact store whose relevance self-regulates through use: recalled memories gain salience, memories returned together strengthen their associations, useful memories are reinforced, and stale ones decay. The payoff is a task primed with a small, current working-memory brief — not an ever-growing replay of everything that was ever saved.
+A common fix is an additional LLM layer that summarizes content and detects semantic signals such as contradiction or supersession. This adds significant token cost and latency while hiding memory management behind a second reasoning model.
 
 Slowave implements a different paradigm:
 
-> Use language models for reasoning and judgment.
+> Your LLM agent is fully responsible for reasoning over the task and the retrieved memories.
+>
+> Slowave applies your agent signals to evolve memory through deterministic mechanisms.
 
-> Use latent-space mechanisms for memory maintenance.
+The connected agent records durable knowledge and evaluates whether retrieved context is useful, irrelevant, or stale.
+
+Slowave evolves that memory locally using embeddings, scopes, salience, associations, reinforcement, decay.
 
 ### Key features
 
 - **One memory across all tools**: Claude Code, Codex, Cursor, and other tools can access the same local memory. You can change the client or model without starting over.
 
-- **Your agent reasons, Slowave remembers what's relevant**: Your agent provides reasoning and judgment: it decides what is worth remembering and reports whether recalled context was useful, irrelevant, or stale. Slowave uses those signals to maintain memory without a separate LLM.
+- **Memory evolves with use**: Directly recalled memories gain salience, and memories used together get co-activated, allowing related context to surface even when it does not literally match your query. Useful feedback reinforces memories, irrelevant ones lose priority, and stale information can be suppressed or superseded.
 
-- **Memory evolves with use**: Directly recalled memories gain salience, and memories you use together become **co-activated** — linked so a related one surfaces even when it doesn't literally match your query. Useful feedback reinforces them further, irrelevant memories lose priority, and stale information can be suppressed or superseded.
+- **No extra LLM layer**: Slowave makes no LLM calls to summarize, merge, rewrite, or rerank memory. This avoids the extra model-token cost and latency. No LLM API key is required.
 
-- **No LLM calls**: Slowave uses local embeddings, scopes, time, salience, associations, reinforcement, decay, and offline consolidation. It makes no LLM calls to summarize, merge, rewrite, or rerank memory, avoiding additional token cost and latency.
+- **Fully local**: Slowave uses local embeddings and stores memory in SQLite. It does not send memory to a hosted memory service.
 
-- **Learn from past experience**: Task outcomes and multi-step methods can preserve structured procedures with context, steps, and caveats. When a similar task appears, the agent can retrieve what was tried before, whether it worked, and what to avoid.
+- **Learn from past experience**: Multi-step agent executions can become structured procedures in memory with context, steps, and caveats. When a similar task appears, the agent can retrieve what was tried, whether it worked or not, learning from past experiences.
 
-- **Compact relevant context**: Slowave retrieves a compact set of relevant memories instead of replaying an expanding transcript or loading an ever-growing collection of files.
+- **Compact, flexible scoped context**: Slowave retrieves a small set of relevant memories instead of replaying an expanding transcript. Memories remain scoped until broader reuse is justified.
 
-- **Flexible scoping**: Memories are initially siloed within the scope where they were learned. When a pattern proves useful across distinct scopes and sessions, Slowave can make it available more broadly with relevance safeguards.
+- **Local dashboard**: Inspect what was stored and retrieved, the source evidence and retrieval paths behind each memory, and the feedback submitted by your agents. You can also review procedures and lifecycle state, or reversibly suppress a memory without deleting its evidence.
 
-- **Observable and actionable**: Memories, source evidence, retrieval paths, feedback, procedures, and lifecycle state are visible in the local dashboard. You can reversibly suppress a memory without deleting its evidence.
-
-- **100% local**: Memory is stored in a local SQLite database. The default embedding model downloads once on first use and is cached locally; Slowave does not send memory to a hosted memory service.
-
-The result is one local memory layer that works across agents, improves through use, and remains independent of any model provider.
 
 ## Installation
 
@@ -118,7 +113,7 @@ Start the local dashboard:
 slowave dashboard
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765) to inspect memories, retrievals, procedures, activity, and system health.
+Open the dashboard to inspect memories, retrievals, procedures, activity, and system health.
 
 <p align="center">
   <a href="img/overview.jpg">
@@ -157,7 +152,7 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
 >
-> Memory is stored in plaintext in the current OS user's application-data directory (`~/Library/Application Support/slowave` on macOS, normally `~/.local/share/slowave` on Linux, and `%LOCALAPPDATA%\slowave` on Windows). Slowave does not send it to a hosted memory service. Protect sensitive data with OS permissions or full-disk encryption. See [runtime data and migration](docs/install.md#runtime-data-location-and-migration).
+> Memory is stored in plaintext in the current OS user's application-data directory. Slowave does not send it to a hosted memory service. See [runtime data and migration](docs/install.md#runtime-data-location-and-migration).
 
 
 ## How Slowave memory works
@@ -193,18 +188,16 @@ flowchart LR
     K --> C
 ```
 
-**Mandatory:** <i>activate</i> → <i>feedback</i> → <i>commit</i>. **Optional:** <i>remember</i>, <i>recall</i> (only when the situation calls for them). The numbered ordering is per task; a task may call <i>remember</i>/<i>recall</i> many times.
-
 See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for details.
 
 
 ## Boundaries
 
-Slowave is a memory layer, not a reasoning engine.
-
+- Slowave is a memory layer, not a reasoning engine.
 - It cannot recall information that was never recorded.
 - It supplies relevant context, but the connected agent decides how to interpret and use it.
 - Memory quality depends on the client agent and the feedback it provides.
+- Slowave adds token overhead from tool calls and retrieved context.
 - Slowave is in public beta. APIs, storage formats, and retrieval behavior may change before a stable release.
 
 ## Benchmarks
