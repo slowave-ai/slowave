@@ -205,7 +205,9 @@ def _home() -> Path:
 
 
 def _setup_sentinel_path() -> Path:
-    return _home() / ".slowave" / ".setup_done"
+    from slowave.core.paths import runtime_paths
+
+    return runtime_paths().setup_sentinel
 
 
 def is_setup_done() -> bool:
@@ -1249,6 +1251,8 @@ _LAUNCHD_PLIST = """\
 <plist version="1.0">
   <dict>
     <key>Label</key><string>com.slowave.worker</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -1258,8 +1262,8 @@ _LAUNCHD_PLIST = """\
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/slowave-worker.log</string>
-    <key>StandardErrorPath</key><string>/tmp/slowave-worker.err</string>
+    <key>StandardOutPath</key><string>{worker_log}</string>
+    <key>StandardErrorPath</key><string>{worker_err}</string>
   </dict>
 </plist>
 """
@@ -1271,6 +1275,8 @@ _LAUNCHD_DAEMON_PLIST = """\
 <plist version="1.0">
   <dict>
     <key>Label</key><string>com.slowave.daemon</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -1279,8 +1285,8 @@ _LAUNCHD_DAEMON_PLIST = """\
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/slowave-daemon.log</string>
-    <key>StandardErrorPath</key><string>/tmp/slowave-daemon.err</string>
+    <key>StandardOutPath</key><string>{daemon_log}</string>
+    <key>StandardErrorPath</key><string>{daemon_err}</string>
   </dict>
 </plist>
 """
@@ -1291,6 +1297,7 @@ Description=Slowave background consolidation worker
 After=network.target
 
 [Service]
+Environment="{runtime_env_key}={runtime_env_value}"
 ExecStart={bin} worker --interval 300
 Restart=always
 RestartSec=10
@@ -1305,6 +1312,7 @@ Description=Slowave HTTP MCP daemon
 After=network.target
 
 [Service]
+Environment="{runtime_env_key}={runtime_env_value}"
 ExecStart={bin} serve start
 Restart=always
 RestartSec=5
@@ -1314,10 +1322,49 @@ WantedBy=default.target
 """
 
 
+def _runtime_service_env() -> tuple[str, str]:
+    """Return the one explicit override a generated service must retain."""
+    from slowave.core.paths import runtime_paths
+
+    paths = runtime_paths()
+    if "SLOWAVE_DB" in os.environ:
+        return "SLOWAVE_DB", str(paths.database)
+    return "SLOWAVE_HOME", str(paths.root)
+
+
+def _windows_runtime_action(slowave_bin: str, arguments: str) -> tuple[str, str]:
+    """Build a hidden PowerShell task action with an explicit runtime root."""
+    env_key, env_value = _runtime_service_env()
+    pythonw = _find_pythonw()
+    program = pythonw or slowave_bin
+    command_args = f"-m slowave {arguments}" if pythonw else arguments
+    command = (
+        f"$env:{env_key}='{_ps_squote(env_value)}'; " f"& '{_ps_squote(program)}' {command_args}"
+    )
+    escaped_command = command.replace('"', '`"')
+    return (
+        "powershell.exe",
+        f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{escaped_command}"',
+    )
+
+
 def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
+    from xml.sax.saxutils import escape
+
+    from slowave.core.paths import ensure_runtime_dirs, runtime_paths
+
     plist_dir = _home() / "Library" / "LaunchAgents"
     plist_path = plist_dir / "com.slowave.worker.plist"
-    content = _LAUNCHD_PLIST.format(bin=slowave_bin)
+    paths = runtime_paths()
+    ensure_runtime_dirs(paths)
+    env_key, env_value = _runtime_service_env()
+    content = _LAUNCHD_PLIST.format(
+        bin=escape(slowave_bin),
+        runtime_env_key=env_key,
+        runtime_env_value=escape(env_value),
+        worker_log=escape(str(paths.logs_dir / "worker.log")),
+        worker_err=escape(str(paths.logs_dir / "worker.err")),
+    )
     if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
@@ -1331,10 +1378,16 @@ def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
 
 
 def _install_worker_linux(slowave_bin: str) -> tuple[str, bool]:
+    from slowave.core.paths import runtime_paths
+
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-worker.service"
-    content = _SYSTEMD_SERVICE.format(bin=slowave_bin)
+    env_key, env_value = _runtime_service_env()
+    value = env_value.replace("%", "%%").replace('"', '\\"')
+    content = _SYSTEMD_SERVICE.format(
+        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+    )
     if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
     svc_dir.mkdir(parents=True, exist_ok=True)
@@ -1464,19 +1517,28 @@ def _install_worker_windows(slowave_bin: str) -> tuple[bool, str]:
     visible console window.  Falls back to ``slowave_bin`` if pythonw.exe is not
     found (rare custom installs without the no-console launcher).
     """
-    pythonw = _find_pythonw()
-    if pythonw:
-        execute, argument = pythonw, "-m slowave worker --interval 300"
-    else:
-        execute, argument = slowave_bin, "worker --interval 300"
+    execute, argument = _windows_runtime_action(slowave_bin, "worker --interval 300")
     return _register_windows_task("SlowaveWorker", execute, argument)
 
 
 def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
     """Install the HTTP MCP daemon as a launchd user agent (macOS)."""
+    from xml.sax.saxutils import escape
+
+    from slowave.core.paths import ensure_runtime_dirs, runtime_paths
+
     plist_dir = _home() / "Library" / "LaunchAgents"
     plist_path = plist_dir / "com.slowave.daemon.plist"
-    content = _LAUNCHD_DAEMON_PLIST.format(bin=slowave_bin)
+    paths = runtime_paths()
+    ensure_runtime_dirs(paths)
+    env_key, env_value = _runtime_service_env()
+    content = _LAUNCHD_DAEMON_PLIST.format(
+        bin=escape(slowave_bin),
+        runtime_env_key=env_key,
+        runtime_env_value=escape(env_value),
+        daemon_log=escape(str(paths.logs_dir / "daemon.log")),
+        daemon_err=escape(str(paths.logs_dir / "daemon.err")),
+    )
     if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
@@ -1491,10 +1553,16 @@ def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
 
 def _install_daemon_linux(slowave_bin: str) -> tuple[str, bool]:
     """Install the HTTP MCP daemon as a systemd user service (Linux)."""
+    from slowave.core.paths import runtime_paths
+
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-daemon.service"
-    content = _SYSTEMD_DAEMON_SERVICE.format(bin=slowave_bin)
+    env_key, env_value = _runtime_service_env()
+    value = env_value.replace("%", "%%").replace('"', '\\"')
+    content = _SYSTEMD_DAEMON_SERVICE.format(
+        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+    )
     if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
     svc_dir.mkdir(parents=True, exist_ok=True)
@@ -1517,11 +1585,7 @@ def _install_daemon_windows(slowave_bin: str) -> tuple[bool, str]:
     Uses ``pythonw.exe -m slowave serve start`` so the daemon runs without a
     visible console window (closing that window would kill the daemon).
     """
-    pythonw = _find_pythonw()
-    if pythonw:
-        execute, argument = pythonw, "-m slowave serve start"
-    else:
-        execute, argument = slowave_bin, "serve start"
+    execute, argument = _windows_runtime_action(slowave_bin, "serve start")
     return _register_windows_task("SlowaveDaemon", execute, argument)
 
 
@@ -1633,9 +1697,21 @@ def _build_summary(
     # Worker service
     if worker:
         if SYSTEM == "Darwin":
+            from xml.sax.saxutils import escape
+
+            from slowave.core.paths import runtime_paths
+
             plist_dir = _home() / "Library" / "LaunchAgents"
             plist_path = plist_dir / "com.slowave.worker.plist"
-            plist_content = _LAUNCHD_PLIST.format(bin=slowave_bin)
+            paths = runtime_paths()
+            env_key, env_value = _runtime_service_env()
+            plist_content = _LAUNCHD_PLIST.format(
+                bin=escape(slowave_bin),
+                runtime_env_key=env_key,
+                runtime_env_value=escape(env_value),
+                worker_log=escape(str(paths.logs_dir / "worker.log")),
+                worker_err=escape(str(paths.logs_dir / "worker.err")),
+            )
             changed = not (
                 plist_path.exists() and plist_path.read_text(encoding="utf-8") == plist_content
             )
@@ -1786,6 +1862,39 @@ def setup_cmd(
     click.echo(click.style("\nSlowave setup", bold=True))
     if dry_run:
         click.echo(click.style("  [DRY RUN — no files will be changed]\n", fg="yellow"))
+
+    # Migration must be offered before services or doctor can populate the new
+    # root; once populated, the migration command intentionally refuses to merge.
+    from slowave.cli.migrate_data import (
+        _destination_is_empty,
+        execute_migration,
+        plan_migration,
+    )
+
+    migration = plan_migration()
+    has_runtime_override = "SLOWAVE_HOME" in os.environ or "SLOWAVE_DB" in os.environ
+    if (
+        not has_runtime_override
+        and migration.needed
+        and _destination_is_empty(migration.destination_root)
+    ):
+        _section("0. Legacy runtime data")
+        if dry_run:
+            _ok(
+                f"Would offer migration: {migration.source_root} → " f"{migration.destination_root}"
+            )
+        elif click.confirm(
+            f"Migrate legacy data from {migration.source_root} to "
+            f"{migration.destination_root} now?",
+            default=True,
+        ):
+            execute_migration(migration)
+            _ok("Legacy data migrated; source preserved for rollback")
+        else:
+            raise click.ClickException(
+                "Setup stopped before creating the new runtime root. Run "
+                "'slowave migrate-data', then run setup again."
+            )
 
     # 1. Binaries
     _section("1. Locating binaries")
@@ -1977,11 +2086,15 @@ def setup_cmd(
                         "5 minutes if it isn't already running. Check: "
                         "Get-ScheduledTask -TaskName SlowaveDaemon"
                     )
-                    _warn("Check logs: ~/.slowave/logs/pythonw-serve.log")
+                    from slowave.core.paths import runtime_paths
+
+                    _warn(f"Check logs: {runtime_paths().logs_dir / 'pythonw-serve.log'}")
                 elif SYSTEM == "Linux":
                     _warn("Check logs: journalctl --user -u slowave-daemon")
                 else:
-                    _warn("Check logs: /tmp/slowave-daemon.err")
+                    from slowave.core.paths import runtime_paths
+
+                    _warn(f"Check logs: {runtime_paths().logs_dir / 'daemon.err'}")
     else:
         _skip("Skipped (--no-worker). Run manually: slowave serve start")
 
@@ -2091,6 +2204,8 @@ _LAUNCHD_BACKUP_PLIST = """\
 <plist version="1.0">
   <dict>
     <key>Label</key><string>com.slowave.backup</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -2101,8 +2216,8 @@ _LAUNCHD_BACKUP_PLIST = """\
       <key>Hour</key><integer>3</integer>
       <key>Minute</key><integer>0</integer>
     </dict>
-    <key>StandardOutPath</key><string>/tmp/slowave-backup.log</string>
-    <key>StandardErrorPath</key><string>/tmp/slowave-backup.err</string>
+    <key>StandardOutPath</key><string>{backup_log}</string>
+    <key>StandardErrorPath</key><string>{backup_err}</string>
   </dict>
 </plist>
 """
@@ -2113,6 +2228,7 @@ Description=Slowave daily database backup
 
 [Service]
 Type=oneshot
+Environment="{runtime_env_key}={runtime_env_value}"
 ExecStart={bin} backup
 """
 
@@ -2134,9 +2250,22 @@ def _install_backup_macos(slowave_bin: str) -> tuple[str, bool]:
 
     Uses StartCalendarInterval to run once per day at 03:00.
     """
+    from xml.sax.saxutils import escape
+
+    from slowave.core.paths import ensure_runtime_dirs, runtime_paths
+
     plist_dir = _home() / "Library" / "LaunchAgents"
     plist_path = plist_dir / "com.slowave.backup.plist"
-    content = _LAUNCHD_BACKUP_PLIST.format(bin=slowave_bin)
+    paths = runtime_paths()
+    ensure_runtime_dirs(paths)
+    env_key, env_value = _runtime_service_env()
+    content = _LAUNCHD_BACKUP_PLIST.format(
+        bin=escape(slowave_bin),
+        runtime_env_key=env_key,
+        runtime_env_value=escape(env_value),
+        backup_log=escape(str(paths.logs_dir / "backup.log")),
+        backup_err=escape(str(paths.logs_dir / "backup.err")),
+    )
     if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
@@ -2151,11 +2280,17 @@ def _install_backup_macos(slowave_bin: str) -> tuple[str, bool]:
 
 def _install_backup_linux(slowave_bin: str) -> tuple[str, bool]:
     """Install the daily database backup as a systemd timer + oneshot service (Linux)."""
+    from slowave.core.paths import runtime_paths
+
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-backup.service"
     timer_path = svc_dir / "slowave-backup.timer"
-    svc_content = _SYSTEMD_BACKUP_SERVICE.format(bin=slowave_bin)
+    env_key, env_value = _runtime_service_env()
+    value = env_value.replace("%", "%%").replace('"', '\\"')
+    svc_content = _SYSTEMD_BACKUP_SERVICE.format(
+        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+    )
     timer_content = _SYSTEMD_BACKUP_TIMER
     svc_changed = not svc_path.exists() or svc_path.read_text(encoding="utf-8") != svc_content
     timer_changed = (
@@ -2181,6 +2316,7 @@ def _install_backup_linux(slowave_bin: str) -> tuple[str, bool]:
 def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
     """Register a daily database backup as a Windows Scheduled Task."""
     task_name = "SlowaveBackup"
+    execute, argument = _windows_runtime_action(slowave_bin, "backup")
     already_registered = False
     try:
         check = subprocess.run(
@@ -2199,8 +2335,8 @@ def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
         if existing:
             existing_exe, _, existing_args = existing.partition("|")
             if (
-                existing_exe.strip().lower() == slowave_bin.lower()
-                and "backup" in existing_args.lower()
+                existing_exe.strip().lower() == execute.lower()
+                and existing_args.strip().lower() == argument.lower()
             ):
                 already_registered = True
     except FileNotFoundError:
@@ -2211,7 +2347,8 @@ def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
 
     # Daily trigger at 03:00
     ps = (
-        f"$a=New-ScheduledTaskAction -Execute '{slowave_bin}' -Argument 'backup';"
+        f"$a=New-ScheduledTaskAction -Execute '{_ps_squote(execute)}' "
+        f"-Argument '{_ps_squote(argument)}';"
         f"$t=New-ScheduledTaskTrigger -Daily -At 03:00;"
         f"$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0;"
         f"$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;"

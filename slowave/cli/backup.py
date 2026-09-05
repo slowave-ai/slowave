@@ -22,6 +22,7 @@ from typing import Any
 import click
 
 from slowave.cli.output import safe_emoji
+from slowave.core.paths import runtime_paths
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ DEFAULT_KEEP = 7
 def _default_backup_dir() -> Path:
     if ENV_BACKUP_DIR in os.environ:
         return Path(os.environ[ENV_BACKUP_DIR]).expanduser()
-    return Path.home() / ".slowave" / "backups"
+    return runtime_paths().backups_dir
 
 
 def _resolve_keep(keep: int | None) -> int:
@@ -169,7 +170,7 @@ def run_backup(
     "--dir",
     "backup_dir",
     default=None,
-    help=f"Backup directory (default: ~/.slowave/backups; env: {ENV_BACKUP_DIR}).",
+    help=f"Backup directory (default: runtime root/backups; env: {ENV_BACKUP_DIR}).",
 )
 @click.option(
     "--keep",
@@ -254,8 +255,8 @@ def restore_cmd(
 
     \\b
     Examples:
-      slowave restore ~/.slowave/backups/slowave-20260615_120000.db.gz
-      slowave restore ~/.slowave/backups/slowave-20260615_120000.db.gz --yes
+      slowave restore /path/to/runtime/backups/slowave-20260615_120000.db.gz
+      slowave restore /path/to/runtime/backups/slowave-20260615_120000.db.gz --yes
     """
     db_path = ctx.obj["db"]
     dest = Path(db_path).expanduser().resolve()

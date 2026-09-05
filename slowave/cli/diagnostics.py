@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slowave.cli.output import CheckResult, Status
-from slowave.core.paths import default_db_path
+from slowave.core.paths import runtime_paths
 
 
 @dataclass
@@ -21,17 +21,36 @@ class RuntimeInfo:
     config_path: str
     slowave_dir: str
     version: str
+    warnings: tuple[str, ...]
 
 
-def get_runtime_info(version: str) -> RuntimeInfo:
-    slowave_dir = str(Path(default_db_path()).parent)
+def get_runtime_info(version: str, db_path: str | None = None) -> RuntimeInfo:
+    paths = runtime_paths()
+    effective_db = str(paths.database) if db_path is None else db_path
+    slowave_dir = str(paths.root)
+    warnings: list[str] = []
+    try:
+        paths.root.relative_to(Path.home())
+    except ValueError:
+        warnings.append(f"Runtime root is outside the current user's home/profile: {paths.root}")
+    if os.name != "nt" and paths.root.exists():
+        try:
+            mode = paths.root.stat().st_mode & 0o777
+            if mode & 0o022:
+                warnings.append(
+                    f"Runtime root is group/world writable (mode {mode:04o}): {paths.root}"
+                )
+        except OSError:
+            pass
+
     return RuntimeInfo(
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         python_executable=sys.executable,
-        db_path=str(default_db_path()),
+        db_path=effective_db,
         config_path=str(Path(slowave_dir) / "config.toml"),
         slowave_dir=slowave_dir,
         version=version,
+        warnings=tuple(warnings),
     )
 
 

@@ -37,12 +37,14 @@ kill <PID>
 slowave serve start
 ```
 
-**Stale PID file.** If the daemon was killed ungracefully, a stale PID file at
-`~/.slowave/daemon.pid` may prevent it from restarting. `slowave serve start`
-detects and cleans stale entries automatically, but you can remove it manually:
+**Stale PID file.** If the daemon was killed ungracefully, the `daemon.pid`
+file beneath the effective runtime root may prevent it from restarting.
+`slowave serve start` detects and cleans stale entries automatically. Use
+`slowave serve status` to print the exact PID-file path before removing it
+manually.
 
 ```bash
-rm ~/.slowave/daemon.pid
+slowave serve status
 ```
 
 ```bash
@@ -50,8 +52,8 @@ slowave serve start
 ```
 
 **Slow Python import.** On Windows the health check waits up to 45 seconds for
-imports to finish. If it still fails, check the log at `/tmp/slowave-daemon.err`
-(or equivalent supervisor stderr path).
+imports to finish. If it still fails, inspect `logs/daemon.err` beneath the
+runtime root shown by `slowave doctor`.
 
 **Missing dependencies.** Run `slowave doctor` — it validates that all required
 packages are installed and the embedding model can load.
@@ -201,7 +203,7 @@ Open the browser's developer console. API fetch errors indicate the dashboard's
 DB connection may be failing. Check the database path:
 
 ```bash
-echo $SLOWAVE_DB
+slowave doctor
 ```
 
 ```bash
@@ -293,8 +295,25 @@ across sessions.
 
 ## Database
 
-Slowave uses a local SQLite database at `~/.slowave/slowave.db` (or
-`$SLOWAVE_DB`).
+Slowave uses a local SQLite database beneath the OS user's native application-
+data directory. `slowave doctor` prints the exact path. `SLOWAVE_HOME` moves
+the complete runtime tree; legacy `SLOWAVE_DB` selects an exact database path.
+Do not set both.
+
+### Runtime root or migration issues
+
+Use these commands to inspect the effective paths and safely plan a legacy
+data migration:
+
+```bash
+slowave doctor
+slowave migrate-data --dry-run
+```
+
+`SLOWAVE_HOME` and `SLOWAVE_DB` cannot be set together. Unset one of them, then
+use `SLOWAVE_HOME` for a complete relocated runtime tree or `SLOWAVE_DB` only
+when an integration needs an exact legacy database path. Migration refuses a
+non-empty destination and leaves `~/.slowave` intact for rollback.
 
 ### Database integrity
 

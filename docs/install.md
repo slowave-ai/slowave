@@ -200,13 +200,50 @@ Runs consolidation offline — transforms raw events into searchable schemas.
 
 ### Daily backup
 
-Gzip snapshot of the SQLite database. Keeps the last 7 backups in `~/.slowave/backups/`.
+Gzip snapshot of the SQLite database. Keeps the last 7 backups in the effective
+runtime root's `backups/` directory.
 
 | Platform | Service | Verify |
 |---|---|---|
 | macOS | `~/Library/LaunchAgents/com.slowave.backup.plist` | `launchctl list com.slowave.backup` |
 | Linux | `~/.config/systemd/user/slowave-backup.timer` | `systemctl --user status slowave-backup.timer` |
 | Windows | Task Scheduler: `SlowaveBackup` | `Get-ScheduledTask -TaskName SlowaveBackup` |
+
+### Runtime data location and migration
+
+Slowave isolates runtime data by operating-system user. The default root is
+the native application-data directory selected by `platformdirs`:
+
+| Platform | Typical default runtime root |
+|---|---|
+| macOS | `~/Library/Application Support/slowave` |
+| Linux/Unix | `$XDG_DATA_HOME/slowave`, normally `~/.local/share/slowave` |
+| Windows | `%LOCALAPPDATA%\slowave` |
+
+The database, SQLite sidecars, daemon PID, logs, backups, setup sentinel, and
+diagnostic logs stay beneath that root. `slowave doctor` prints the effective
+root and database path.
+
+Set `SLOWAVE_HOME` to relocate the complete runtime tree for CI, containers,
+portable installs, or an intentionally shared operator-managed deployment.
+`SLOWAVE_DB` remains a legacy exact-database override; its parent becomes the
+runtime root. Setting both variables is an error. A shared root is not
+multi-tenant isolation: run one daemon under the intended service account and
+protect the directory with OS permissions.
+
+After upgrading an installation that used `~/.slowave`, migrate explicitly:
+
+```bash
+slowave migrate-data --dry-run
+slowave migrate-data
+slowave doctor
+```
+
+Migration stops a legacy daemon if necessary, copies SQLite through its online
+backup API, validates `PRAGMA integrity_check`, and promotes a staged directory.
+It refuses to merge into a non-empty destination and preserves `~/.slowave` for
+rollback. To roll back, stop the new daemon and run commands with
+`SLOWAVE_HOME=~/.slowave` (or point `SLOWAVE_DB` at the exact legacy database).
 
 ---
 
@@ -248,7 +285,7 @@ slowave uninstall
 entries, generated lifecycle instructions and hooks, plus the HTTP daemon,
 background worker, and daily-backup services. It preserves:
 
-- `~/.slowave`, including the SQLite database and database archives
+- the effective runtime root, including the SQLite database and archives
 - setup-created `*.bak.*` configuration backups
 - unrelated client configuration, MCP entries, hooks, and instruction content
 - the installed Slowave package
@@ -266,10 +303,10 @@ slowave purge
 ```
 
 `slowave purge` performs `uninstall` and then removes local Slowave data from
-`~/.slowave`, including the SQLite database. It also removes setup-created
+the effective runtime root, including the SQLite database. It also removes setup-created
 `*.bak.*` configuration backups. This is destructive and asks for confirmation.
 
-Database archives already stored in `~/.slowave/backups` are intentionally
+Database archives already stored in the runtime root's `backups/` directory are intentionally
 retained so memories can be recovered. Delete that directory yourself only if
 you have confirmed that those archives are no longer needed.
 

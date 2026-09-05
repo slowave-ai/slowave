@@ -9,7 +9,8 @@ concurrently to the same memory backend.
   Env vars :
     SLOWAVE_MCP_HOST          bind host (default 127.0.0.1)
     SLOWAVE_MCP_HTTP_PORT     bind port (default 8766)
-    SLOWAVE_DB                database path (default ~/.slowave/slowave.db)
+    SLOWAVE_HOME              complete runtime-data root override
+    SLOWAVE_DB                legacy exact database path override
     SLOWAVE_MCP_IDLE_TIMEOUT  process watchdog idle timeout in seconds
                               (default 0 = disabled for the HTTP daemon;
                                unlike stdio, HTTP clients reconnect freely)
@@ -51,7 +52,7 @@ from mcp.server.fastmcp import FastMCP
 
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.core.paths import default_db_path
+from slowave.core.paths import RuntimePaths, ensure_runtime_dirs, runtime_paths
 from slowave.mcp import session_reaper
 from slowave.mcp.daemon import remove_pid, write_pid
 from slowave.mcp.tools import register_tools
@@ -61,7 +62,16 @@ log = logging.getLogger(__name__)
 
 DEFAULT_HOST = os.environ.get("SLOWAVE_MCP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("SLOWAVE_MCP_HTTP_PORT", "8766"))
-DEFAULT_DB = default_db_path()
+_SERVER_PATHS: RuntimePaths | None = None
+
+
+def _server_paths() -> RuntimePaths:
+    """Resolve once on first daemon use, after callers have configured env."""
+    global _SERVER_PATHS
+    if _SERVER_PATHS is None:
+        _SERVER_PATHS = runtime_paths()
+    return _SERVER_PATHS
+
 
 # ---------------------------------------------------------------------------
 # Engine singleton cache (same pattern as stdio server)
@@ -80,11 +90,12 @@ def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
     eng = _ENGINES.get(key)
     if eng is not None:
         return eng
-    db_dir = os.path.dirname(os.path.abspath(DEFAULT_DB))
+    database = str(_server_paths().database)
+    db_dir = os.path.dirname(os.path.abspath(database))
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
     cfg = SlowaveConfig(
-        db_path=DEFAULT_DB,
+        db_path=database,
         dim=384,
         encoder=EncoderConfig(),
         disable_encoder=disable_encoder,
@@ -114,8 +125,7 @@ def _wrap_no_double_send(app):
     """Return *app* wrapped so a response is never sent twice on one request.
 
     uvicorn's h11 protocol aborts with ``RuntimeError: Expected ASGI message
-    'http.response.body', but got 'http.response.start'`` (the crash signature
-    repeatedly seen in /tmp/slowave-daemon.err) whenever Starlette's
+    'http.response.body', but got 'http.response.start'`` whenever Starlette's
     ``ServerErrorMiddleware`` emits a second ``http.response.start`` after a
     response has already begun streaming.
 
@@ -198,7 +208,7 @@ def _make_app():
                 "version": __version__,
                 "host": DEFAULT_HOST,
                 "port": DEFAULT_PORT,
-                "db": str(DEFAULT_DB),
+                "db": str(_server_paths().database),
                 "active_sessions": len([s for s in sessions.values() if s.get("fresh")]),
                 "engines_loaded": list(_ENGINES.keys()),
             }
@@ -237,7 +247,7 @@ def main(
     Binds to *host*:*port* (default 127.0.0.1:8766) and serves all Slowave
     memory tools over HTTP (MCP streamable-HTTP transport).
 
-    Enforces single-instance via PID file (~/.slowave/daemon.pid).
+    Enforces single-instance via the effective runtime root's PID file.
     Installs SIGTERM/SIGINT/SIGHUP handlers for graceful shutdown.
     """
     logging.basicConfig(
@@ -248,17 +258,19 @@ def main(
     # -- single-instance guard -----------------------------------------------
     from slowave.mcp.daemon import is_running
 
-    if is_running():
+    paths = _server_paths()
+    if is_running(paths.pid_file):
         from slowave.mcp.daemon import read_pid
 
         log.error(
             "Slowave HTTP daemon is already running (pid=%d). "
             "Run 'slowave serve stop' to stop it first.",
-            read_pid(),
+            read_pid(paths.pid_file),
         )
         sys.exit(1)
 
-    write_pid()
+    ensure_runtime_dirs(paths)
+    write_pid(paths.pid_file)
 
     # -- cleanup helpers -----------------------------------------------------
     def _cleanup() -> None:
@@ -270,7 +282,7 @@ def main(
                 except Exception as exc:
                     log.warning("Error closing engine %s: %s", key, exc)
             _ENGINES.clear()
-        remove_pid()
+        remove_pid(paths.pid_file)
 
     atexit.register(_cleanup)
 
@@ -298,7 +310,7 @@ def main(
     def _warm_engine() -> None:
         try:
             _build_engine()
-            log.info("Engine warmed up; DB ready at %s", DEFAULT_DB)
+            log.info("Engine warmed up; DB ready at %s", paths.database)
         except Exception:
             log.warning(
                 "Engine warm-up failed; will retry lazily on first tool call", exc_info=True
@@ -312,7 +324,7 @@ def main(
         host,
         port,
         os.getpid(),
-        DEFAULT_DB,
+        paths.database,
     )
 
     try:

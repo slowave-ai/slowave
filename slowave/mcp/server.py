@@ -54,14 +54,23 @@ from mcp.server.fastmcp import FastMCP
 
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.core.paths import default_db_path
+from slowave.core.paths import RuntimePaths, ensure_runtime_dirs, runtime_paths
 from slowave.mcp import session_reaper
 from slowave.mcp.tools import register_tools
 from slowave.symbolic.encoder import EncoderConfig
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DB = default_db_path()
+_SERVER_PATHS: RuntimePaths | None = None
+
+
+def _server_paths() -> RuntimePaths:
+    """Resolve once on first server use, after callers have configured env."""
+    global _SERVER_PATHS
+    if _SERVER_PATHS is None:
+        _SERVER_PATHS = runtime_paths()
+    return _SERVER_PATHS
+
 
 # ---------------------------------------------------------------------------
 # Engine singleton cache
@@ -85,11 +94,12 @@ def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
     eng = _ENGINES.get(key)
     if eng is not None:
         return eng
-    db_dir = os.path.dirname(os.path.abspath(DEFAULT_DB))
+    database = str(_server_paths().database)
+    db_dir = os.path.dirname(os.path.abspath(database))
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
     cfg = SlowaveConfig(
-        db_path=DEFAULT_DB,
+        db_path=database,
         dim=384,
         encoder=EncoderConfig(),
         disable_encoder=disable_encoder,
@@ -126,16 +136,15 @@ def main() -> None:
     Logging note: stdio MCP transport requires that stdout/stderr carry only
     JSON-RPC messages.  Any stray text (including Python log output) corrupts
     the protocol and prevents clients (Claude Desktop, etc.) from detecting the
-    server.  All log output is therefore redirected to a rotating file at
-    ~/.slowave/logs/mcp-stdio.log so it is never mixed into the MCP stream.
+    server. All log output is therefore redirected below the effective runtime
+    root so it is never mixed into the MCP stream.
     """
     # ---------------------------------------------------------------------------
     # Redirect ALL logging to a file — stdout/stderr must stay clean for JSON-RPC
     # ---------------------------------------------------------------------------
-    import pathlib
-
-    _log_dir = pathlib.Path.home() / ".slowave" / "logs"
-    _log_dir.mkdir(parents=True, exist_ok=True)
+    paths = _server_paths()
+    ensure_runtime_dirs(paths)
+    _log_dir = paths.logs_dir
     _log_file = _log_dir / "mcp-stdio.log"
     logging.basicConfig(
         level=logging.INFO,
