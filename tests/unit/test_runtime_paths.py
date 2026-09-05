@@ -8,6 +8,8 @@ from slowave.cli import setup
 from slowave.cli.cleanup import _runtime_cleanup_targets
 from slowave.core.paths import (
     RuntimePathError,
+    assign_daemon_port,
+    daemon_port,
     ensure_runtime_dirs,
     resolve_runtime_paths,
 )
@@ -34,6 +36,8 @@ def test_platform_defaults_are_per_user(platform, env, suffix, tmp_path):
         paths.backups_dir,
         paths.setup_sentinel,
         paths.judge_debug_log,
+        paths.daemon_port_file,
+        paths.dashboard_port_file,
     ):
         assert artifact.is_relative_to(paths.root)
 
@@ -113,6 +117,7 @@ def test_generated_launchd_service_pins_and_escapes_runtime_root(monkeypatch, tm
     content = Path(plist_path).read_text()
     assert changed is True
     assert "<key>SLOWAVE_HOME</key>" in content
+    assert "<key>SLOWAVE_MCP_HTTP_PORT</key><string>8766</string>" in content
     assert "data &amp; state" in content
     assert str(root / "logs" / "daemon.log").replace("&", "&amp;") in content
 
@@ -121,8 +126,9 @@ def test_generated_service_preserves_legacy_exact_db_override(monkeypatch, tmp_p
     database = tmp_path / "custom name.sqlite"
     monkeypatch.delenv("SLOWAVE_HOME", raising=False)
     monkeypatch.setenv("SLOWAVE_DB", str(database))
-    key, value = setup._runtime_service_env()
-    assert (key, value) == ("SLOWAVE_DB", str(database))
+    environment = setup._runtime_service_env()
+    assert environment["SLOWAVE_DB"] == str(database)
+    assert environment["SLOWAVE_MCP_HTTP_PORT"] == "8766"
 
 
 def test_windows_task_action_sets_runtime_environment(monkeypatch, tmp_path):
@@ -133,6 +139,7 @@ def test_windows_task_action_sets_runtime_environment(monkeypatch, tmp_path):
     execute, argument = setup._windows_runtime_action("slowave.exe", "serve start")
     assert execute == "powershell.exe"
     assert f"$env:SLOWAVE_HOME='{root}'" in argument
+    assert "$env:SLOWAVE_MCP_HTTP_PORT='8766'" in argument
     assert "pythonw.exe' -m slowave serve start" in argument
 
 
@@ -149,3 +156,32 @@ def test_legacy_db_cleanup_never_sweeps_arbitrary_parent(monkeypatch, tmp_path):
     assert dedicated is False
     assert database in targets
     assert unrelated not in targets
+
+
+def test_daemon_port_assignment_skips_busy_port_and_is_stable(monkeypatch, tmp_path):
+    paths = resolve_runtime_paths(env={"SLOWAVE_HOME": str(tmp_path / "one")})
+    monkeypatch.delenv("SLOWAVE_MCP_HTTP_PORT", raising=False)
+    monkeypatch.setattr("slowave.core.paths._port_is_free", lambda port: port == 8768)
+
+    assert assign_daemon_port(paths) == 8768
+    assert paths.daemon_port_file.read_text() == "8768\n"
+    monkeypatch.setattr("slowave.core.paths._port_is_free", lambda port: False)
+    assert assign_daemon_port(paths) == 8768
+    assert daemon_port(paths) == 8768
+
+
+def test_daemon_port_environment_override_precedes_persisted(monkeypatch, tmp_path):
+    paths = resolve_runtime_paths(env={"SLOWAVE_HOME": str(tmp_path / "one")})
+    paths.root.mkdir(parents=True)
+    paths.daemon_port_file.write_text("8768\n")
+    monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "9999")
+    assert daemon_port(paths) == 9999
+    assert assign_daemon_port(paths) == 9999
+
+
+@pytest.mark.parametrize("value", ["", "abc", "0", "65536"])
+def test_invalid_daemon_port_override_is_rejected(monkeypatch, tmp_path, value):
+    paths = resolve_runtime_paths(env={"SLOWAVE_HOME": str(tmp_path / "one")})
+    monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", value)
+    with pytest.raises(RuntimePathError):
+        daemon_port(paths)

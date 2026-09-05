@@ -849,15 +849,18 @@ def _daemon_health() -> dict[str, Any]:
         import urllib.error
         import urllib.request
 
-        with urllib.request.urlopen("http://127.0.0.1:8766/health", timeout=2) as resp:
+        from slowave.core.paths import daemon_port
+
+        port = daemon_port()
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
             data = _json.loads(resp.read())
         return {
             "running": True,
             "version": data.get("version", "?"),
             "active_sessions": data.get("active_sessions", 0),
             "engines_loaded": data.get("engines_loaded", []),
-            "url": "http://127.0.0.1:8766/mcp",
-            "health_url": "http://127.0.0.1:8766/health",
+            "url": f"http://127.0.0.1:{port}/mcp",
+            "health_url": f"http://127.0.0.1:{port}/health",
         }
     except Exception:
         return {
@@ -865,8 +868,8 @@ def _daemon_health() -> dict[str, Any]:
             "version": None,
             "active_sessions": 0,
             "engines_loaded": [],
-            "url": "http://127.0.0.1:8766/mcp",
-            "health_url": "http://127.0.0.1:8766/health",
+            "url": f"http://127.0.0.1:{daemon_port()}/mcp",
+            "health_url": f"http://127.0.0.1:{daemon_port()}/health",
         }
 
 

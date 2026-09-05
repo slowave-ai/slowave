@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform as platform_module
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -32,6 +33,8 @@ class RuntimePaths:
     backups_dir: Path
     setup_sentinel: Path
     judge_debug_log: Path
+    daemon_port_file: Path
+    dashboard_port_file: Path
 
 
 def _normalized_path(value: str, *, home: Path | None = None) -> Path:
@@ -132,6 +135,103 @@ def resolve_runtime_paths(
         backups_dir=root / "backups",
         setup_sentinel=root / ".setup_done",
         judge_debug_log=root / "judge_debug.jsonl",
+        daemon_port_file=root / "daemon.port",
+        dashboard_port_file=root / "dashboard.port",
+    )
+
+
+DAEMON_BASE_PORT = 8766
+DASHBOARD_BASE_PORT = 8765
+_MAX_PORT_ATTEMPTS = 100
+
+
+def _parse_port(value: str, source: str) -> int:
+    try:
+        port = int(value.strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimePathError(f"{source} must be an integer TCP port") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimePathError(f"{source} must be between 1 and 65535")
+    return port
+
+
+def _port_is_free(port: int, host: str = "127.0.0.1") -> bool:
+    """Return whether a TCP port can currently be bound on loopback."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _effective_port(*, env_key: str, port_file: Path, base: int) -> int:
+    configured = os.environ.get(env_key)
+    if configured is not None:
+        if not configured.strip():
+            raise RuntimePathError(f"{env_key} is set but empty; unset it or provide a port")
+        return _parse_port(configured, env_key)
+    try:
+        persisted = port_file.read_text(encoding="ascii")
+    except FileNotFoundError:
+        return base
+    except OSError as exc:
+        raise RuntimePathError(f"Cannot read persisted TCP port {port_file}: {exc}") from exc
+    return _parse_port(persisted, str(port_file))
+
+
+def daemon_port(paths: RuntimePaths | None = None) -> int:
+    selected = runtime_paths() if paths is None else paths
+    return _effective_port(
+        env_key="SLOWAVE_MCP_HTTP_PORT", port_file=selected.daemon_port_file, base=DAEMON_BASE_PORT
+    )
+
+
+def dashboard_port(paths: RuntimePaths | None = None) -> int:
+    selected = runtime_paths() if paths is None else paths
+    return _effective_port(
+        env_key="SLOWAVE_DASHBOARD_PORT",
+        port_file=selected.dashboard_port_file,
+        base=DASHBOARD_BASE_PORT,
+    )
+
+
+def _assign_port(*, env_key: str, port_file: Path, base: int) -> int:
+    """Persist the first available port, retaining explicit and prior choices."""
+    if env_key in os.environ:
+        return _effective_port(env_key=env_key, port_file=port_file, base=base)
+    if port_file.exists():
+        return _effective_port(env_key=env_key, port_file=port_file, base=base)
+    port_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for port in range(base, min(base + _MAX_PORT_ATTEMPTS, 65536)):
+        if _port_is_free(port):
+            try:
+                fd = os.open(port_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return _effective_port(env_key=env_key, port_file=port_file, base=base)
+            try:
+                os.write(fd, f"{port}\n".encode("ascii"))
+            finally:
+                os.close(fd)
+            return port
+    raise RuntimePathError(
+        f"No free loopback TCP port found in {base}-{min(base + _MAX_PORT_ATTEMPTS - 1, 65535)}"
+    )
+
+
+def assign_daemon_port(paths: RuntimePaths | None = None) -> int:
+    selected = runtime_paths() if paths is None else paths
+    return _assign_port(
+        env_key="SLOWAVE_MCP_HTTP_PORT", port_file=selected.daemon_port_file, base=DAEMON_BASE_PORT
+    )
+
+
+def assign_dashboard_port(paths: RuntimePaths | None = None) -> int:
+    selected = runtime_paths() if paths is None else paths
+    return _assign_port(
+        env_key="SLOWAVE_DASHBOARD_PORT",
+        port_file=selected.dashboard_port_file,
+        base=DASHBOARD_BASE_PORT,
     )
 
 
