@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.17.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.4...slowave-v0.17.5) (2026-09-05)
+
+
+### Bug Fixes
+
+* align diagnostics tests ([a876d21](https://github.com/slowave-ai/slowave/commit/a876d213409b966ed0217cdca1ad9bbbc28e5689))
+* format dashboard worker test ([61eca53](https://github.com/slowave-ai/slowave/commit/61eca53185f160bfa378a50ef253143191b04415))
+* restructure diagnostics ([31374ff](https://github.com/slowave-ai/slowave/commit/31374ff8d21e76a1e630cf3531b5c61bd11e92de))
+
 ## [0.17.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.17.3...slowave-v0.17.4) (2026-09-04)
 
 
