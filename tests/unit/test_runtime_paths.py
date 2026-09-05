@@ -6,11 +6,7 @@ import pytest
 
 from slowave.cli import setup
 from slowave.cli.cleanup import _runtime_cleanup_targets
-from slowave.core.paths import (
-    RuntimePathError,
-    ensure_runtime_dirs,
-    resolve_runtime_paths,
-)
+from slowave.core.paths import RuntimePathError, ensure_runtime_dirs, resolve_runtime_paths
 from slowave.mcp import daemon
 
 
