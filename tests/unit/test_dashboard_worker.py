@@ -175,7 +175,12 @@ def test_worker_chart_buckets_aggregate_outcomes_over_range(tmp_path: Path, monk
 def test_maintenance_history_is_moved_to_diagnostics_without_decorative_chart() -> None:
     source = Path(__file__).parents[2] / "slowave/dashboard/ui/src/pages.tsx"
     app = source.read_text()
-    for label in ("Diagnostics", "Consolidation history", "Maintenance runs", "No maintenance passes recorded"):
+    for label in (
+        "Diagnostics",
+        "Consolidation history",
+        "Maintenance runs",
+        "No maintenance passes recorded",
+    ):
         assert label in app
     assert "maintenanceExpanded ? 50 : 10" in app
     assert '"Show 50 runs"' in app
