@@ -51,25 +51,23 @@ and installs local daemon, worker, and backup services. Preview first with
 
 You still ask your agent to do normal work: fix a regression, add a migration,
 review a pull request. When it encounters a durable fact or decision, the
-installed lifecycle instructs it to preserve that claim. On a later task,
-Slowave can return a compact, scoped set of relevant recorded memories.
+installed lifecycle instructs your agent to preserve that claim. On a later task,
+Slowave can return a compact, scoped set of relevant recorded memories. 
 
-For example: an agent learns that a service must stay local, a migration needs
-to be reversible, and a failed approach caused a production incident. Those are
-useful in the next session. Rather than replaying the entire transcript, the
-agent can preserve those durable claims for later retrieval.
+You carry on working as usual, you will only see:
+- your agent activating Slowave for the current task and goal, 
+- Slowave retrieving relevant context to your agent, 
+- your agent sending feedback to Slowave on what was retrieved.
+- your agent committing a Slowave session.
+
+Optionally you will see:
+- your agent invoking Slowave to remember durable facts.
+- your agent invoking Slowave to recall something critical for the current task or goal.
 
 Slowave does not decide whether a claim is true or important. Your agent makes
 that judgment and reports whether retrieved memory helped, was irrelevant, or
 became stale. Slowave maintains the resulting local memory.
 
-**A concrete lifecycle:** the public acceptance suite records “The billing
-ledger is stored in PostgreSQL 16” in one MCP client session, commits it, then
-opens a separate client connection and retrieves that same claim for a related
-task. See
-[the executable test](tests/acceptance/test_mcp_lifecycle.py#L223). This proves
-cross-session persistence through the public MCP contract—not that every agent
-will identify every fact correctly.
 
 ## Why install Slowave?
 
