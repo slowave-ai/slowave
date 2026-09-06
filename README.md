@@ -7,113 +7,112 @@
 
 <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="300"/>
 
-**Living memory layer across your AI tools.**
+**Give your coding agents durable project memory across sessions.**
 
 ---
 
-One local memory for your AI agents across sessions, tools, and models.
+AI agents have large context windows, but that context ends with the session.
+Open a new terminal, switch from Claude Code to Codex, or return next week and
+you reconstruct the same decisions, constraints, and failed attempts.
 
-- **Evolves with use:** Useful memories strengthen, irrelevant ones lose priority, and stale knowledge can be suppressed or superseded.
-- **Learns from experience:** Decisions, outcomes, and multi-step approaches can become reusable memories and procedures.
-- **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
-- **No separate LLM required:** The memory core performs maintenance and retrieval without separate model calls or an LLM API key.
-- **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
+Slowave gives configured agents one local, shared memory. The agent decides what
+is worth preserving; Slowave keeps it scoped, retrievable, auditable, and
+updatable over time.
 
-Works with Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop.
+- **Continue, don't re-brief:** Decisions, constraints, preferences, and lessons
+  from one task can inform the next.
+- **Keep memory current:** Agent feedback can reinforce useful guidance or mark
+  a claim stale when reality changes.
+- **Reuse experience carefully:** Completed work can capture a procedure;
+  failures stay available as cautionary evidence, not instructions.
+- **Stay local:** Durable state lives in SQLite on your machine, not a hosted
+  memory service.
+- **Avoid a second LLM pipeline:** Slowave's storage, consolidation, and
+  retrieval do not make separate model calls or require an LLM API key.
+- **Inspect the evidence:** Review memories, retrievals, feedback, procedures,
+  and system activity in the local dashboard.
 
-## Day 1 demo
+Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
+
+## Start here
+
+Install Slowave, preview the changes, then configure detected clients:
+
+```bash
+pipx install slowave
+slowave setup --dry-run
+slowave setup
+slowave doctor
+```
+
+`slowave setup` configures detected MCP clients, installs lifecycle instructions,
+and installs local daemon, worker, and backup services. Preview first with
+`--dry-run`; see the [full setup and removal reference](docs/install.md).
 
 <p>
     <img src="img/demo.gif" alt="Slowave demo" width="75%">
 </p>
 
-## Why Slowave?
+## What changes in your workflow?
 
-Most agent memory systems treat memory mainly as a retrieval problem: they accumulate information in storage, search it, and then add the results back to the prompt. Over time, this creates noise: new decisions conflict with old ones, and irrelevant information pollutes the context window.
+You still ask your agent to do normal work: fix a regression, add a migration,
+review a pull request. When it encounters a durable fact or decision, the
+installed lifecycle instructs it to preserve that claim. On a later task,
+Slowave can return a compact, scoped set of relevant recorded memories.
 
-A common fix is an additional LLM layer that summarizes content and detects semantic signals such as contradiction or supersession. This adds significant token cost and latency while hiding memory management behind a second reasoning model.
+For example: an agent learns that a service must stay local, a migration needs
+to be reversible, and a failed approach caused a production incident. Those are
+useful in the next session. Rather than replaying the entire transcript, the
+agent can preserve those durable claims for later retrieval.
 
-Slowave implements a different paradigm:
+Slowave does not decide whether a claim is true or important. Your agent makes
+that judgment and reports whether retrieved memory helped, was irrelevant, or
+became stale. Slowave maintains the resulting local memory.
 
-> Your LLM agent is fully responsible for reasoning over the task and the retrieved memories.
->
-> Slowave applies your agent signals to evolve memory through deterministic mechanisms.
+**A concrete lifecycle:** the public acceptance suite records “The billing
+ledger is stored in PostgreSQL 16” in one MCP client session, commits it, then
+opens a separate client connection and retrieves that same claim for a related
+task. See
+[the executable test](tests/acceptance/test_mcp_lifecycle.py#L223). This proves
+cross-session persistence through the public MCP contract—not that every agent
+will identify every fact correctly.
 
-The connected agent records durable knowledge and evaluates whether retrieved context is useful, irrelevant, or stale.
+## Why install Slowave?
 
-Slowave evolves that memory locally using embeddings, scopes, salience, associations, reinforcement, decay.
+Every new agent session has the codebase but not necessarily the context behind
+it. The missing context is often what makes an agent repeat a rejected design,
+miss an operational constraint, or make you explain the project again.
 
-### Key features
+Slowave turns those durable judgments into a shared project memory. It is not a
+transcript-replay system and it is not another agent: it returns a bounded
+working set, keeps it within scope, and records feedback about whether it was
+useful or out of date. The connected LLM remains responsible for reasoning.
 
-- **One memory across all tools**: Claude Code, Codex, Cursor, and other tools can access the same local memory. You can change the client or model without starting over.
-
-- **Memory evolves with use**: Directly recalled memories gain salience, and memories used together get co-activated, allowing related context to surface even when it does not literally match your query. Useful feedback reinforces memories, irrelevant ones lose priority, and stale information can be suppressed or superseded.
-
-- **No extra LLM layer**: Slowave makes no LLM calls to summarize, merge, rewrite, or rerank memory. This avoids the extra model-token cost and latency. No LLM API key is required.
-
-- **Fully local**: Slowave uses local embeddings and stores memory in SQLite. It does not send memory to a hosted memory service.
-
-- **Learn from past experience**: Multi-step agent executions can become structured procedures in memory with context, steps, and caveats. When a similar task appears, the agent can retrieve what was tried, whether it worked or not, learning from past experiences.
-
-- **Compact, flexible scoped context**: Slowave retrieves a small set of relevant memories instead of replaying an expanding transcript. Memories remain scoped until broader reuse is justified.
-
-- **Local dashboard**: Inspect what was stored and retrieved, the source evidence and retrieval paths behind each memory, and the feedback submitted by your agents. You can also review procedures and lifecycle state, or reversibly suppress a memory without deleting its evidence.
+Install it when your agent work has enough continuity to lose: multiple
+sessions, multiple tools, recurring decisions, or projects you return to over
+time. The first useful payoff is simply not having to reconstruct the same
+constraint in the next task.
 
 
 ## Installation
 
-Install Slowave:
-
-```bash
-pipx install slowave
-```
-
-Preview the changes, configure detected clients, and verify the installation:
-
-```bash
-slowave setup --dry-run   # preview
-slowave setup             # configure detected clients
-slowave doctor            # verify the installation
-```
-
-`slowave setup` is idempotent and safe to run more than once. It:
-
-- configures MCP
-- installs the lifecycle instructions
-- starts the daemon
-- starts the background worker
+The quick start configures every detected client. To configure just one, run `slowave setup --client <name>`; see [supported clients](#supported-clients) and the [installation reference](docs/install.md) for platform-specific setup, changes, and removal.
 
 > [!IMPORTANT]
 > **No LLM API key required.**
 
-Configure one client with `slowave setup --client <name>`. See [supported clients](#supported-clients) and the [installation reference](docs/install.md).
-
 To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
-
-
-## Long-term value
-
-Slowave becomes more useful as experience accumulates across projects. 
-
-What to expect:
-
-- **Day 1**: Cold start seeds your first project scope. Agents immediately preserve decisions, preferences, constraints, and task outcomes. Context from one session is recallable in the next.
-- **Week 1**: Feedback loops close. Repeated work across projects and tools builds a shared history. Useful memories reinforce; irrelevant ones fade; stale decisions get flagged. Agents start retrieving what helped before instead of re-deriving it.
-- **Month 1**: Consolidation compounds. Cross-project patterns crystallize into reusable procedures with context, steps, and caveats. Agents retrieve not just facts but what was tried, what worked, what to avoid, turning accumulated experience into a compounding advantage for every new task.
-
-
-Slowave provides persistence immediately. Its deeper value compounds through use.
 
 
 ## Dashboard
 
-Start the local dashboard:
+Start the local dashboard with:
 
 ```bash
 slowave dashboard
 ```
 
-Open the dashboard to inspect memories, retrievals, procedures, activity, and system health.
+The dashboard opens in your browser, where you can inspect memories, retrievals, procedures, activity, and system health.
 
 <p align="center">
   <a href="img/overview.jpg">
@@ -197,27 +196,18 @@ See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for 
 - It cannot recall information that was never recorded.
 - It supplies relevant context, but the connected agent decides how to interpret and use it.
 - Memory quality depends on the client agent and the feedback it provides.
+- Scopes reduce accidental context leakage; use separate stores when hard isolation is required.
 - Slowave adds token overhead from tool calls and retrieved context.
-- Slowave is in public beta. APIs, storage formats, and retrieval behavior may change before a stable release.
+- The local SQLite database is plaintext by default; protect it with OS permissions or full-disk encryption.
+- Slowave is public beta software. APIs, configuration, and storage schema may change, and migrations are not guaranteed before stable release.
 
-## Benchmarks
+## Evaluation
 
-Slowave maintains and retrieves memory without LLM calls for ingestion,
-consolidation, or recall. The results below measure whether its retrieved
-evidence supports the right answer; they do not measure an LLM-generated final
-answer.
-
-| Benchmark | LLM-judge result | What it demonstrates |
-| --- | ---: | --- |
-| LoCoMo | **71.84%** | Explicit-fact retrieval across long conversations; **87.04%** on LoCoMo's multi-session category |
-| LongMemEval oracle | **65.20%** | Retaining and combining supplied evidence sessions; this oracle split does not test retrieval among distractors |
-
-The external judge was `deepseek/deepseek-v4-flash`. These values are not yet
-directly comparable with leaderboard claims using different splits, answerers,
-judges, or retrieval budgets.
-
-See [benchmarks.md](docs/benchmarks.md) for category detail, how the judge
-works, limitations, and exact local reproduction commands.
+The current evaluation notes report preliminary retrieval-evidence results,
+methodology, limitations, and commands for running new evaluations. They do not
+claim end-to-end agent accuracy or a comparison against other memory systems.
+See [benchmarks.md](docs/benchmarks.md) before treating any result as a
+production-quality claim.
 
 
 ## Documentation

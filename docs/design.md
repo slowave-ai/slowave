@@ -120,9 +120,9 @@ This keeps the memory layer independent from the reasoning layer. The same memor
 
 Not all useful memory is factual. Some memory is behavioral: repeated ways of doing things that should not need to be restated every session—how a project is tested, a monthly report is assembled, a client onboarding is run, or a recurring troubleshooting workflow unfolds.
 
-Slowave captures these patterns implicitly, not as an explicit procedural store. Repetition strengthens the paths between consolidated patterns, and recall can surface "what has tended to come next" as a predictive signal alongside regular retrieval.
+Slowave represents these patterns in two complementary ways. Repetition strengthens associations between consolidated experiences, and recall can surface what has tended to come next alongside regular retrieval. When a task produces a clear reusable method, commit can also capture an explicit procedure with a summary, durable context, ordered steps, and caveats.
 
-Explicit instructions ("run tests before pushing", "send the recap after every meeting") are stored as constraints and recalled when relevant. Observed repetition reinforces the associative structure. Over time both signals converge: the recalled constraint and the observed tendency point in the same direction.
+Explicit instructions ("run tests before pushing", "send the recap after every meeting") are stored as constraints and recalled when relevant. Observed repetition reinforces the associative structure. Procedures are evidence from past work rather than instructions the agent must follow; failed procedures remain cautionary evidence when relevant.
 
 > **Behavioral memory explains; it never prescribes.** Slowave supplies context about what has tended to work, while the language model remains the decision-maker.
 
