@@ -19,18 +19,12 @@ Slowave gives configured agents one local, shared memory. The agent decides what
 is worth preserving; Slowave keeps it scoped, retrievable, auditable, and
 updatable over time.
 
-- **Continue, don't re-brief:** Decisions, constraints, preferences, and lessons
-  from one task can inform the next.
-- **Keep memory current:** Agent feedback can reinforce useful guidance or mark
-  a claim stale when reality changes.
-- **Reuse experience carefully:** Completed work can capture a procedure;
-  failures stay available as cautionary evidence, not instructions.
-- **Stay local:** Durable state lives in SQLite on your machine, not a hosted
-  memory service.
-- **Avoid a second LLM pipeline:** Slowave's storage, consolidation, and
-  retrieval do not make separate model calls or require an LLM API key.
-- **Inspect the evidence:** Review memories, retrievals, feedback, procedures,
-  and system activity in the local dashboard.
+- **Keep context across tasks**: Your agents can reuse recorded decisions, preferences, constraints, and lessons instead of making you repeat them.
+- **Improves with use:** Useful memories strengthen, irrelevant ones lose priority, stale knowledge can be suppressed or superseded.
+- **Learns from experience:** Decisions, outcomes, and multi-step solutions can become reusable memories and procedures.
+- **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
+- **No separate LLM required:** The memory core performs maintenance and retrieval without separate model calls or an LLM API key.
+- **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
 
 Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
 
