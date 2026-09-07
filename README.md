@@ -209,6 +209,7 @@ production-quality claim.
 
 ## Documentation
 
+- <a href="" target="_blank">Mintlify</a>: full auto-generated documentation 
 - [design.md](docs/design.md): design rationale, boundaries, and positioning
 - [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
 - [install.md](docs/install.md): installation, setup, lifecycle instructions, modified files, and removal
