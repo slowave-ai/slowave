@@ -26,24 +26,49 @@ is worth preserving. Slowave keeps it scoped, retrievable, auditable over time.
 
 Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
 
-## Start here
+<p>
+    <img src="img/demo.gif" alt="Slowave demo" width="75%">
+</p>
 
-Install Slowave, preview the changes, then configure detected clients:
+## Why Slowave?
 
+Every new agent session has the codebase but not necessarily the full context behind
+it: your previous interactions with your agent, your decisions, your thinking process.
+
+The **missing context** is what makes an agent repeat a rejected design,
+miss an operational constraint, or make you explain (again and again) the project principles.
+
+Slowave turns those durable judgments into a shared project memory.
+
+It is **not** a markdown-transcript-replay system and it is not another LLM layer on top of your agent.
+
+Slowave maintains your memory locally with brain-inspired algorithms without LLM calls. 
+
+It returns a bounded working set, keeps it within scope, and records feedback about whether it was
+useful or out of date. Your LLM agent remains responsible for reasoning.
+
+Install Slowave if you feel you're **missing the continuity** in your daily work with your LLM agent.
+
+The first useful payoff is simply not having to repeat the same constraint in the next task.
+
+Over time, the way you work becomes **reusable context** for your agent.
+
+## Installation
+
+
+### Quick start
 ```bash
 pipx install slowave
 slowave setup --dry-run
 slowave setup
-slowave doctor
 ```
 
-`slowave setup` configures detected MCP clients, installs lifecycle instructions,
-and installs local daemon, worker, and backup services. Preview first with
-`--dry-run`; see the [full setup and removal reference](docs/install.md).
+The quick start configures every detected client. To configure just one client at a time, see the [installation reference](docs/install.md).
 
-<p>
-    <img src="img/demo.gif" alt="Slowave demo" width="75%">
-</p>
+> [!IMPORTANT]
+> **No LLM API key required.**
+
+To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
 
 ## What changes in your workflow?
 
@@ -69,33 +94,6 @@ that judgment and reports whether retrieved memory helped, was irrelevant, or
 became stale. Slowave maintains the resulting local memory.
 
 
-## Why install Slowave?
-
-Every new agent session has the codebase but not necessarily the context (e.g. the thinking process) behind
-it. The missing context is often what makes an agent repeat a rejected design,
-miss an operational constraint, or make you explain the project again.
-
-Slowave turns those durable judgments into a shared project memory. It is not a
-transcript-replay system and it is not another agent: it returns a bounded
-working set, keeps it within scope, and records feedback about whether it was
-useful or out of date. The connected LLM remains responsible for reasoning.
-
-Install it when your agent work has enough continuity to lose: multiple
-sessions, multiple tools, recurring decisions, or projects you return to over
-time. The first useful payoff is simply not having to reconstruct the same
-constraint in the next task.
-
-
-## Installation
-
-The quick start configures every detected client. To configure just one, run `slowave setup --client <name>`; see [supported clients](#supported-clients) and the [installation reference](docs/install.md) for platform-specific setup, changes, and removal.
-
-> [!IMPORTANT]
-> **No LLM API key required.**
-
-To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
-
-
 ## Dashboard
 
 Start the local dashboard with:
@@ -104,7 +102,14 @@ Start the local dashboard with:
 slowave dashboard
 ```
 
-The dashboard opens in your browser, where you can inspect memories, retrievals, procedures, activity, and system health.
+Opens the dashboard in your browser, where you can inspect:
+
+- **Memories:** browse saved decisions, constraints, and lessons.
+- **Procedures:** review reusable step-by-step methods from past work.
+- **Retrievals:** see what memory Slowave returned for each task.
+- **Activity:** follow recent sessions, memory updates, and feedback.
+- **Memory graph:** explore connections between related memories.
+- **System health:** check the database, worker, backups, and local services.
 
 <p align="center">
   <a href="img/overview.jpg">
