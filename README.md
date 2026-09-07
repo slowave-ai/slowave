@@ -11,19 +11,17 @@
 
 ---
 
-AI agents have large context windows, but that context ends with the session.
-Open a new terminal, switch from Claude Code to Codex, or return next week and
-you reconstruct the same decisions, constraints, and failed attempts.
+AI agents have large context windows, but that context ends with your current session.
+Open a new session, switch from Claude Code to Codex, and you reconstruct the same decisions, constraints, and failed attempts.
 
-Slowave gives configured agents one local, shared memory. The agent decides what
-is worth preserving; Slowave keeps it scoped, retrievable, auditable, and
-updatable over time.
+Slowave gives your agents one local, shared memory. The agent decides what
+is worth preserving. Slowave keeps it scoped, retrievable, auditable over time.
 
 - **Keep context across tasks**: Your agents can reuse recorded decisions, preferences, constraints, and lessons instead of making you repeat them.
 - **Improves with use:** Useful memories strengthen, irrelevant ones lose priority, stale knowledge can be suppressed or superseded.
 - **Learns from experience:** Decisions, outcomes, and multi-step solutions can become reusable memories and procedures.
 - **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
-- **No separate LLM required:** The memory core performs maintenance and retrieval without separate model calls or an LLM API key.
+- **No LLM API key:** The memory core performs maintenance and retrieval without LLM calls or an LLM API key.
 - **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
 
 Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
@@ -49,12 +47,14 @@ and installs local daemon, worker, and backup services. Preview first with
 
 ## What changes in your workflow?
 
+Slowave is transparent to your work.
+
 You still ask your agent to do normal work: fix a regression, add a migration,
 review a pull request. When it encounters a durable fact or decision, the
-installed lifecycle instructs your agent to preserve that claim. On a later task,
-Slowave can return a compact, scoped set of relevant recorded memories. 
+installed lifecycle instructs your agent to preserve that claim. 
+On a later task, Slowave can return a compact, scoped set of relevant recorded memories to your agent, so that it can act upon its own memories. 
 
-You carry on working as usual, you will only see:
+What you will see while working with your agent:
 - your agent activating Slowave for the current task and goal, 
 - Slowave retrieving relevant context to your agent, 
 - your agent sending feedback to Slowave on what was retrieved.
@@ -71,7 +71,7 @@ became stale. Slowave maintains the resulting local memory.
 
 ## Why install Slowave?
 
-Every new agent session has the codebase but not necessarily the context behind
+Every new agent session has the codebase but not necessarily the context (e.g. the thinking process) behind
 it. The missing context is often what makes an agent repeat a rejected design,
 miss an operational constraint, or make you explain the project again.
 
@@ -150,11 +150,11 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 
 Slowave works through 5 simple MCP tools:
 
-- **Activate:** start a task and load relevant memory.
-- **Remember:** save a fact, decision, preference, or instruction.
-- **Recall:** search memory during a task.
-- **Feedback:** mark retrieved memory as useful, irrelevant, or stale.
-- **Commit:** save the task outcome and any reusable procedure.
+- `Activate`: start a task and load relevant memory.
+- `Remember`: save a fact, decision, preference, or instruction.
+- `Recall`: search memory during a task.
+- `Feedback`: mark retrieved memory as useful, irrelevant, or stale.
+- `Commit`: save the task outcome and any reusable procedure.
 
 A **background worker** consolidates relevant memories and procedures.
 
