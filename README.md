@@ -7,7 +7,7 @@
 
 <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="300"/>
 
-**Give your coding agents durable project memory across sessions.**
+**Living memory layer across your AI tools.**
 
 ---
 
