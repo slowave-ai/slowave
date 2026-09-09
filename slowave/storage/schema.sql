@@ -394,6 +394,23 @@ CREATE INDEX IF NOT EXISTS idx_context_recall_session ON context_recall_events(s
 CREATE INDEX IF NOT EXISTS idx_context_recall_scope ON context_recall_events(scope_id);
 CREATE INDEX IF NOT EXISTS idx_context_recall_created ON context_recall_events(created_at);
 
+-- Frozen, resumable retrieval pages.  Each opaque cursor addresses an
+-- immutable candidate snapshot and offset; replaying a cursor is therefore
+-- deterministic and cannot drift as salience or the store changes.
+CREATE TABLE IF NOT EXISTS retrieval_continuations (
+  cursor_id         TEXT PRIMARY KEY,
+  retrieval_id      TEXT NOT NULL,
+  session_id        TEXT NOT NULL,
+  scope_id          TEXT NOT NULL,
+  candidates_json   TEXT NOT NULL,
+  offset_n          INTEGER NOT NULL,
+  page_size         INTEGER NOT NULL,
+  created_at        INTEGER NOT NULL,
+  FOREIGN KEY (retrieval_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_continuations_retrieval
+  ON retrieval_continuations(retrieval_id);
+
 -- Retrieval items: one row per memory returned in slowave_context or slowave_recall
 CREATE TABLE IF NOT EXISTS context_recall_items (
   context_id        TEXT NOT NULL,
@@ -409,6 +426,7 @@ CREATE TABLE IF NOT EXISTS context_recall_items (
   confidence        REAL,
   admitted          INTEGER NOT NULL DEFAULT 1, -- 1=selected into context, 0=filtered by gate
   pathway           TEXT NOT NULL DEFAULT 'direct', -- direct/exploration/graph (WP-6)
+  phase             TEXT NOT NULL DEFAULT 'focus',  -- focus/continuation
   topical_relevance REAL,
   final_rank_score  REAL,
   score_margin      REAL,

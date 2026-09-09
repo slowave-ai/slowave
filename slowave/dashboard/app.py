@@ -1098,6 +1098,42 @@ _SCHEMA_SORT_COLS: dict[str, str] = {
 }
 
 
+def _scope_breakdown(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Per-scope memory inventory with retrieval-coverage support for Home."""
+    scope_rows = conn.execute(
+        "SELECT COALESCE(s.scope_id, '(no scope)') AS scope, COUNT(*) AS memories, "
+        "SUM(CASE WHEN r.memory_id IS NULL THEN 1 ELSE 0 END) AS never_retrieved "
+        "FROM schemas s "
+        "LEFT JOIN (SELECT DISTINCT memory_id FROM context_recall_items WHERE admitted = 1) r "
+        "ON r.memory_id = 'sch_' || s.id "
+        "WHERE s.status IN ('active', 'needs_review') "
+        "GROUP BY COALESCE(s.scope_id, '(no scope)') ORDER BY memories DESC"
+    ).fetchall()
+    entries: list[dict[str, Any]] = []
+    total = 0
+    for r in scope_rows:
+        n = int(r["memories"] or 0)
+        total += n
+        entries.append(
+            {
+                "scope": str(r["scope"]),
+                "memories": n,
+                "never_retrieved": int(r["never_retrieved"] or 0),
+            }
+        )
+    other = None
+    if len(entries) > 8:
+        rest = entries[8:]
+        other = {
+            "scope": "Other scopes",
+            "memories": sum(e["memories"] for e in rest),
+            "never_retrieved": sum(e["never_retrieved"] for e in rest),
+            "scope_count": len(rest),
+        }
+        entries = entries[:8]
+    return {"rows": entries, "other": other, "total": total}
+
+
 def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     limit = max(1, min(100, _qs_int(qs, "limit", _qs_int(qs, "per_page", 50))))
     page = max(1, _qs_int(qs, "page", 1))
@@ -2332,6 +2368,7 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         base["recent_changes"] = sorted(
             changes, key=lambda item: int(item.get("observed_at") or 0), reverse=True
         )[:30]
+        base["scope_breakdown"] = _scope_breakdown(conn)
         effectiveness_qs = dict(qs)
         effectiveness_qs["hours"] = ["all" if all_time else str(hours)]
         effectiveness_qs["from"] = [str(since)]

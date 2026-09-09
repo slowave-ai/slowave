@@ -156,16 +156,19 @@ def test_recall_without_evidence_has_empty_raw_events(eng):
     assert r.raw_events == []
 
 
-def test_recall_schema_reinforcement_increases_salience(eng):
+def test_recall_without_feedback_does_not_mutate_schema_salience_or_recurrence(eng):
     content = "always write tests before shipping"
     eng.remember(content=content, type="fact")
     schema_id = eng.schemas.list(limit=1)[0].id
-    salience_before = eng.schemas.get(schema_id).salience
+    before = eng.schemas.get(schema_id)
+    recurrence_before = int((before.facets or {}).get("recurrence_count") or 0)
 
     eng.recall(content, top_k=5)
+    eng.recall(content, top_k=5)
 
-    salience_after = eng.schemas.get(schema_id).salience
-    assert salience_after >= salience_before
+    after = eng.schemas.get(schema_id)
+    assert after.salience == before.salience
+    assert int((after.facets or {}).get("recurrence_count") or 0) == recurrence_before
 
 
 def test_recall_multiple_schemas_are_ranked(eng):
