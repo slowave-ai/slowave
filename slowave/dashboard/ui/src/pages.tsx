@@ -477,11 +477,12 @@ export function HomePage({ location }: PageProps) {
                 <EmptyState title="No memory metrics available">Memory-health metrics will appear when the dashboard receives memory and retrieval data.</EmptyState>
               </Section>
             )}
+            <MemoryByScope breakdown={home.scope_breakdown} />
             {home.recent_changes?.length ? (
               <Section
                 title={
                   <>
-                    Recent changes{" "}
+                    Recent activity{" "}
                     <span className="section-qualifier">selected period</span>
                   </>
                 }
@@ -565,6 +566,130 @@ function MemoryUseRateBar({ used, retrieved }: { used: unknown; retrieved: unkno
   );
 }
 
+function SalienceBar({ salience }: { salience: unknown }) {
+  const value = Number(salience);
+  const percent = Number.isFinite(value)
+    ? Math.min(100, Math.max(0, (value / 20) * 100))
+    : null;
+  const available = percent !== null;
+  return (
+    <div
+      className={`use-rate-bar${available ? "" : " is-disabled"}`}
+      role="progressbar"
+      aria-label={available ? `Salience ${Math.round(percent)}%` : "Salience unavailable"}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={available ? Math.round(percent) : undefined}
+      aria-disabled={!available}
+    >
+      <span className="use-rate-bar-track" aria-hidden="true">
+        <span className="use-rate-bar-fill" style={{ width: `${percent ?? 0}%` }} />
+      </span>
+      <span className="use-rate-bar-value">
+        {available ? `${Math.round(percent)}%` : "—"}
+      </span>
+    </div>
+  );
+}
+
+function MemoryByScope({ breakdown }: { breakdown: Json }) {
+  const rows: any[] = breakdown?.rows || [];
+  const total = Number(breakdown?.total || 0);
+  const other = breakdown?.other;
+  if (!rows.length) return null;
+  const renderRow = (
+    scope: string,
+    memories: number,
+    neverRetrieved: number,
+    key: string,
+  ) => {
+    const label = scope === "(no scope)" ? "No scope" : scope;
+    const share = total > 0 ? (memories / total) * 100 : 0;
+    const retrieved = memories - neverRetrieved;
+    const coverage = memories > 0 ? (retrieved / memories) * 100 : 0;
+    return (
+      <tr key={key}>
+        <td className="scope-text" title={label}>
+          {truncate(label, 40)}
+        </td>
+        <td className="numeric">{memories.toLocaleString()}</td>
+        <td className="numeric">
+          <span
+            className="use-rate-bar"
+            role="progressbar"
+            aria-label={`${Math.round(share)}% of memories`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(share)}
+          >
+            <span className="use-rate-bar-track" aria-hidden="true">
+              <span className="use-rate-bar-fill" style={{ width: `${share}%` }} />
+            </span>
+            <span className="use-rate-bar-value">{Math.round(share)}%</span>
+          </span>
+        </td>
+        <td className="numeric">
+          <span
+            className="use-rate-bar"
+            role="progressbar"
+            aria-label={`${Math.round(coverage)}% retrieval coverage`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(coverage)}
+            title={`${retrieved.toLocaleString()} of ${memories.toLocaleString()} retrieved`}
+          >
+            <span className="use-rate-bar-track" aria-hidden="true">
+              <span className="use-rate-bar-fill" style={{ width: `${coverage}%` }} />
+            </span>
+            <span className="use-rate-bar-value">{Math.round(coverage)}%</span>
+          </span>
+        </td>
+      </tr>
+    );
+  };
+  return (
+    <Section title="Memory by scope">
+      <TableFrame label="Memory by scope">
+        <table>
+          <thead>
+            <tr>
+              <th>Scope</th>
+              <th className="numeric">Memories</th>
+              <th className="numeric">Share</th>
+              <th className="numeric">
+                Retrieval coverage{" "}
+                <DefinitionTooltip label="Retrieval coverage definition">
+                  Share of memories in this scope that have been surfaced during
+                  a retrieval at least once.
+                </DefinitionTooltip>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r: any) => {
+              const scope = String(r.scope);
+              return renderRow(
+                scope,
+                Number(r.memories),
+                Number(r.never_retrieved),
+                scope,
+              );
+            })}
+            {other
+              ? renderRow(
+                  `${other.scope} (${other.scope_count})`,
+                  Number(other.memories),
+                  Number(other.never_retrieved),
+                  "__other__",
+                )
+              : null}
+          </tbody>
+        </table>
+      </TableFrame>
+    </Section>
+  );
+}
+
 export function MemoryPage({ location }: PageProps) {
   const detailId = location.path.startsWith("/memory/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -577,14 +702,14 @@ export function MemoryPage({ location }: PageProps) {
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const memoryColumns = [
-    { id: "memory", label: "Memory" }, { id: "state", label: "State" }, { id: "scope", label: "Scope" },
+    { id: "memory", label: "Memory" }, { id: "state", label: "State" }, { id: "salience", label: "Salience" }, { id: "scope", label: "Scope" },
     { id: "changed", label: "Last changed" }, { id: "retrieved", label: "Retrieved", description: "Distinct retrieval events that admitted this memory." },
     { id: "used", label: "Used", description: "Distinct retrieval events explicitly assessed as used." }, { id: "use_rate", label: "Use rate" },
     { id: "last_used", label: "Last used" }, { id: "created", label: "Created" }, { id: "evidence", label: "Supporting evidence" },
     { id: "irrelevant", label: "Irrelevant" }, { id: "stale", label: "Stale feedback" }, { id: "wrong", label: "Wrong feedback" },
     { id: "related", label: "Related memories" }, { id: "source_activity", label: "Source activity count" },
   ];
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(["memory", "state", "scope", "changed", "use_rate", "last_used"]);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(["memory", "state", "salience", "scope", "changed", "use_rate", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
@@ -725,6 +850,7 @@ export function MemoryPage({ location }: PageProps) {
                     />
                   </th>}
                   {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /><DefinitionTooltip label="State definition">The memory's lifecycle status: active, needs review, or stale.</DefinitionTooltip></th>}
+                  {visible("salience") && <th className="numeric"><SortButton label="Salience" active={sort === "salience"} direction={dir} onClick={() => changeSort("salience")} /><DefinitionTooltip label="Salience definition">A measure of how strongly this memory is favored for retrieval. Higher means it is more likely to be surfaced.</DefinitionTooltip></th>}
                   {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("created") && <th
                     aria-sort={
@@ -831,6 +957,7 @@ export function MemoryPage({ location }: PageProps) {
                       {visible("state") && <td>
                         <StatusBadge value={memory.status} />
                       </td>}
+                      {visible("salience") && <td className="numeric"><SalienceBar salience={memory.salience} /></td>}
                       {visible("scope") && <td className="scope-text" title={memory.scope || undefined}>
                         {memory.scope ? truncate(memory.scope, 30) : "No scope"}
                       </td>}
@@ -1283,7 +1410,7 @@ export function RetrievalPage({ location }: PageProps) {
         refreshing={request.refreshing}
         onRefresh={request.reload}
       />
-      <div className="filter-bar">
+      <div className="filter-bar filter-bar-nowrap">
         <label>
           Search
           <input
@@ -1330,80 +1457,45 @@ export function RetrievalPage({ location }: PageProps) {
             updateParams("/retrieval", location, { scope: next, page: 1 })
           }
         />
-        <details className="filter-menu">
-          <summary>More filters</summary>
-          <div>
-            <label>
-              Empty
-              <select
-                value={noMatch}
-                onChange={(e) =>
-                  updateParams("/retrieval", location, {
-                    no_match: e.target.value,
-                    page: 1,
-                  })
-                }
-              >
-                <option value="">Any</option>
-                <option value="true">Empty only</option>
-                <option value="false">With exposures</option>
-              </select>
-            </label>
-            <label>
-              Contains
-              <select
-                value={contains}
-                onChange={(e) =>
-                  updateParams("/retrieval", location, {
-                    contains: e.target.value,
-                    page: 1,
-                  })
-                }
-              >
-                <option value="">Any item</option>
-                <option value="memory">Memory</option>
-                <option value="procedure">Procedure</option>
-              </select>
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={includeInternal === "true"}
-                onChange={(e) =>
-                  updateParams("/retrieval", location, {
-                    include_internal: e.target.checked ? "true" : undefined,
-                    page: 1,
-                  })
-                }
-              />{" "}
-              Include identified lifecycle-hook traffic
-            </label>
-            <ColumnsControl columns={retrievalColumns} visible={visibleColumns} onChange={setVisibleColumns} />
-            <label>
-              Observed since
-              <input
-                type="date"
-                value={
-                  param(location, "from")
-                    ? new Date(Number(param(location, "from")) * 1000)
-                        .toISOString()
-                        .slice(0, 10)
-                    : ""
-                }
-                onChange={(event) =>
-                  updateParams("/retrieval", location, {
-                    from: event.target.value
-                      ? Math.floor(
-                          new Date(event.target.value).getTime() / 1000,
-                        )
-                      : undefined,
-                    page: 1,
-                  })
-                }
-              />
-            </label>
-          </div>
-        </details>
+        <label>
+          Contains
+          <select
+            value={contains}
+            onChange={(e) =>
+              updateParams("/retrieval", location, {
+                contains: e.target.value,
+                page: 1,
+              })
+            }
+          >
+            <option value="">Any item</option>
+            <option value="memory">Memory</option>
+            <option value="procedure">Procedure</option>
+          </select>
+        </label>
+        <label>
+          Observed since
+          <input
+            type="date"
+            value={
+              param(location, "from")
+                ? new Date(Number(param(location, "from")) * 1000)
+                    .toISOString()
+                    .slice(0, 10)
+                : ""
+            }
+            onChange={(event) =>
+              updateParams("/retrieval", location, {
+                from: event.target.value
+                  ? Math.floor(
+                      new Date(event.target.value).getTime() / 1000,
+                    )
+                  : undefined,
+                page: 1,
+              })
+            }
+          />
+        </label>
       </div>
       {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Retrieval summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <>
         <div className="metric-card-grid" aria-label="Retrieval summary">
@@ -1442,7 +1534,7 @@ export function RetrievalPage({ location }: PageProps) {
                     <SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} />
                     <ColumnHelp id="scope" label="Scope" />
                   </th>}
-                  {visible("retrieved") && <th className="numeric" aria-sort={sort === "exposed" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
+                  {visible("retrieved") && <th aria-sort={sort === "exposed" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Retrieved" active={sort === "exposed"} direction={dir} onClick={() => changeSort("exposed")} /><ColumnHelp id="retrieved" label="Retrieved" />
                   </th>}
                   {visible("memories_retrieved") && <th className="numeric"><SortButton label="Memories retrieved" active={sort === "memories_retrieved"} direction={dir} onClick={() => changeSort("memories_retrieved")} /><ColumnHelp id="memories_retrieved" label="Memories retrieved" /></th>}
@@ -1875,30 +1967,20 @@ export function ProceduresPage({ location }: PageProps) {
             <option value="never">Never retrieved</option>
           </select>
         </label>
-        <details className="filter-menu">
-          <summary>More filters</summary>
-          <div>
-            <label>
-              Created since
-              <input
-                type="date"
-                onChange={(e) =>
-                  updateParams("/procedures", location, {
-                    from: e.target.value
-                      ? Math.floor(new Date(e.target.value).getTime() / 1000)
-                      : undefined,
-                    page: 1,
-                  })
-                }
-              />
-            </label>
-            <p>
-              All readable lifecycle versions are included. Version is available
-              only in detail diagnostics.
-            </p>
-            <ColumnsControl columns={procedureColumns} visible={visibleColumns} onChange={setVisibleColumns} />
-          </div>
-        </details>
+        <label>
+          Created since
+          <input
+            type="date"
+            onChange={(e) =>
+              updateParams("/procedures", location, {
+                from: e.target.value
+                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
+                  : undefined,
+                page: 1,
+              })
+            }
+          />
+        </label>
       </div>
       {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Procedure summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <div className="metric-card-grid" aria-label="Procedure summary">
         <RateMetricCard title="Retrieved procedures" numerator={request.data.summary?.retrieved_procedures ?? 0} denominator={request.data.summary?.current_procedures ?? 0} tooltip="Distinct procedures retrieved in the selected population divided by current procedures in the selected population." className="metric-retrieved" />

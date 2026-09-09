@@ -17,9 +17,12 @@ existing two.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
+import secrets
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -40,6 +43,9 @@ _MCP_ACTIVATE_LIMIT_DEFAULT = 2
 _MCP_ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.20
 _MCP_RECALL_TOP_K_DEFAULT = 2
 _MCP_RECALL_MIN_RELEVANCE_DEFAULT = 0.40
+_MCP_FROZEN_CANDIDATE_LIMIT = _MCP_RECALL_TOP_K_DEFAULT + 8
+_MCP_CONTINUATION_PAGE_SIZE = 2
+_MCP_FIELD_RESPONSE_CHARS = 160
 _MCP_MEMORY_CONTENT_LIMIT = 500
 _MCP_CONTINUITY_START_RESPONSE_CHARS = 1600
 _MCP_CONTINUATION_RESPONSE_CHARS = 900
@@ -148,6 +154,267 @@ def _serialized_chars(value: dict[str, Any]) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
 
 
+def _candidate_kind(item: dict[str, Any]) -> str:
+    if item["kind"] == "procedure":
+        return "procedure"
+    return str(item["value"].get("pathway") or "memory")
+
+
+def _accessible_field(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a bounded orientation signal containing no candidate content."""
+    if not candidates:
+        return {}
+    field = {
+        "extra_candidates": len(candidates),
+        "kinds": sorted({_candidate_kind(item) for item in candidates}),
+        "approx_extra_tokens": math.ceil(
+            sum(_serialized_chars(item["value"]) for item in candidates) / 4
+        ),
+    }
+    # The field has its own hard ceiling.  Kinds are lower priority than the
+    # count, so discard them if future labels make the envelope too large.
+    if _serialized_chars(field) > _MCP_FIELD_RESPONSE_CHARS:
+        field = {
+            "extra_candidates": len(candidates),
+            "approx_extra_tokens": field["approx_extra_tokens"],
+        }
+    return field
+
+
+def _freeze_continuation(
+    eng: Any,
+    *,
+    retrieval_id: str,
+    session_id: str,
+    scope: str,
+    candidates: list[dict[str, Any]],
+    offset: int,
+    page_size: int = _MCP_CONTINUATION_PAGE_SIZE,
+    cursor_id: str | None = None,
+) -> str | None:
+    if offset >= len(candidates):
+        return None
+    cursor = cursor_id or "cur_" + secrets.token_urlsafe(24)
+    eng.db.connect().execute(
+        "INSERT OR IGNORE INTO retrieval_continuations "
+        "(cursor_id, retrieval_id, session_id, scope_id, candidates_json, offset_n, page_size, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            cursor,
+            retrieval_id,
+            session_id,
+            scope,
+            json.dumps(candidates, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            offset,
+            page_size,
+            int(time.time()),
+        ),
+    )
+    eng.db.connect().commit()
+    return cursor
+
+
+def _read_continuation(
+    eng: Any, *, cursor: str, session_id: str, scope: str
+) -> tuple[str, list[dict[str, Any]], int, int]:
+    row = (
+        eng.db.connect()
+        .execute(
+            "SELECT retrieval_id, session_id, scope_id, candidates_json, offset_n, page_size "
+            "FROM retrieval_continuations WHERE cursor_id = ?",
+            (cursor,),
+        )
+        .fetchone()
+    )
+    if row is None:
+        raise ValueError("unknown continue_from cursor")
+    if row["session_id"] != session_id or row["scope_id"] != scope:
+        raise ValueError("continue_from cursor does not match session_id and scope")
+    session = (
+        eng.db.connect()
+        .execute(
+            "SELECT ended_ts FROM sessions WHERE id = ? AND scope_id = ?",
+            (session_id, scope),
+        )
+        .fetchone()
+    )
+    if session is None:
+        raise ValueError("continue_from cursor session no longer exists")
+    if session["ended_ts"] is not None:
+        raise ValueError("continue_from cursor session is already ended")
+    return (
+        str(row["retrieval_id"]),
+        json.loads(row["candidates_json"]),
+        int(row["offset_n"]),
+        int(row["page_size"]),
+    )
+
+
+def _continuation_page(eng: Any, *, cursor: str, session_id: str, scope: str) -> dict[str, Any]:
+    retrieval_id, candidates, offset, page_size = _read_continuation(
+        eng, cursor=cursor, session_id=session_id, scope=scope
+    )
+    data: dict[str, Any] = {
+        "retrieval_id": retrieval_id,
+        "memories": [],
+        "procedures": [],
+        "evidence": [],
+        "evidence_mode": "references",
+        "evidence_truncated": False,
+        # Reserve cursor metadata before admitting content so the focus page
+        # itself never overflows when a real tail is attached below.  The
+        # orientation field has its own independent ceiling.
+        "more_available": True,
+        "continue_from": "cur_" + "x" * 32,
+    }
+    next_offset = offset
+    admitted = 0
+    while next_offset < len(candidates) and admitted < page_size:
+        item = candidates[next_offset]
+        key = "memories" if item["kind"] == "memory" else "procedures"
+        data[key].append(item["value"])
+        if _serialized_chars(data) > _MCP_CONTINUATION_RESPONSE_CHARS:
+            data[key].pop()
+            break
+        next_offset += 1
+        admitted += 1
+    remaining = candidates[next_offset:]
+    next_cursor = _freeze_continuation(
+        eng,
+        retrieval_id=retrieval_id,
+        session_id=session_id,
+        scope=scope,
+        candidates=candidates,
+        offset=next_offset,
+        page_size=page_size,
+        cursor_id=(
+            "cur_"
+            + hashlib.sha256(f"{cursor}:{retrieval_id}:{next_offset}".encode("utf-8")).hexdigest()[
+                :32
+            ]
+        ),
+    )
+    data["more_available"] = next_cursor is not None
+    if next_cursor is not None:
+        data["continue_from"] = next_cursor
+    else:
+        data.pop("continue_from", None)
+    data["accessible_field"] = _accessible_field(remaining)
+    _authorize_continuation_exposure(eng, retrieval_id=retrieval_id, data=data)
+    return data
+
+
+def _canonical_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [{"kind": "memory", "value": item} for item in data.get("memories", [])]
+    candidates.extend({"kind": "procedure", "value": item} for item in data.get("procedures", []))
+    return candidates
+
+
+def _candidate_fits_continuation(item: dict[str, Any]) -> bool:
+    probe = {
+        "retrieval_id": "rec_x",
+        "memories": [item["value"]] if item["kind"] == "memory" else [],
+        "procedures": [item["value"]] if item["kind"] == "procedure" else [],
+        "evidence": [],
+        "evidence_mode": "references",
+        "evidence_truncated": False,
+        "more_available": True,
+        "continue_from": "cur_" + "x" * 32,
+        "accessible_field": {},
+    }
+    return _serialized_chars(probe) <= _MCP_CONTINUATION_RESPONSE_CHARS
+
+
+def _attach_frozen_tail(
+    eng: Any,
+    *,
+    data: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    session_id: str,
+    scope: str,
+    exposed_ids: set[str],
+) -> None:
+    tail = [
+        item
+        for item in candidates
+        if (item["value"].get("memory_id") or item["value"].get("procedure_id")) not in exposed_ids
+        and _candidate_fits_continuation(item)
+    ]
+    cursor = _freeze_continuation(
+        eng,
+        retrieval_id=data["retrieval_id"],
+        session_id=session_id,
+        scope=scope,
+        candidates=tail,
+        offset=0,
+    )
+    data["more_available"] = cursor is not None
+    if cursor is not None:
+        data["continue_from"] = cursor
+    else:
+        data.pop("continue_from", None)
+    data["accessible_field"] = _accessible_field(tail)
+
+
+def _authorize_continuation_exposure(eng: Any, *, retrieval_id: str, data: dict[str, Any]) -> None:
+    """Make only actually rendered continuation items eligible for feedback."""
+    conn = eng.db.connect()
+    retrieval_type = "recall"
+    parent = conn.execute(
+        "SELECT retrieval_type FROM context_recall_events WHERE context_id = ?",
+        (retrieval_id,),
+    ).fetchone()
+    if parent is not None and parent["retrieval_type"]:
+        retrieval_type = str(parent["retrieval_type"])
+    rank = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM context_recall_items WHERE context_id = ? AND admitted = 1",
+            (retrieval_id,),
+        ).fetchone()[0]
+    )
+    exposed: list[str] = []
+    for memory_type, items in (
+        ("schema", data.get("memories", [])),
+        ("procedural_memory", data.get("procedures", [])),
+    ):
+        for item in items:
+            memory_id = item.get("memory_id") or item.get("procedure_id")
+            if not memory_id:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO context_recall_items "
+                "(context_id, memory_id, retrieval_type, memory_type, rank, content_text, "
+                "admitted, pathway, phase, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'continuation', ?)",
+                (
+                    retrieval_id,
+                    memory_id,
+                    retrieval_type,
+                    memory_type,
+                    rank,
+                    str(item.get("content") or item.get("summary") or "")[
+                        :_MCP_MEMORY_CONTENT_LIMIT
+                    ],
+                    item.get("pathway", "direct"),
+                    int(time.time()),
+                ),
+            )
+            exposed.append(str(memory_id))
+            rank += 1
+    if exposed:
+        current = conn.execute(
+            "SELECT memory_ids_json FROM context_recall_events WHERE context_id = ?",
+            (retrieval_id,),
+        ).fetchone()
+        memory_ids = set(json.loads(current[0] or "[]")) if current else set()
+        memory_ids.update(exposed)
+        conn.execute(
+            "UPDATE context_recall_events SET memory_ids_json = ?, count_n = ? WHERE context_id = ?",
+            (json.dumps(sorted(memory_ids)), len(memory_ids), retrieval_id),
+        )
+    conn.commit()
+
+
 def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str, Any]:
     """Return the minimum safe activation preview for a procedure."""
     full = _canonical_procedure(item, scope)
@@ -167,8 +434,7 @@ def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str,
     return preview
 
 
-def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[str, Any]:
-    """Project the internal activation result onto the stable O2 payload."""
+def _activation_candidates(result: dict[str, Any], scope: str) -> list[dict[str, Any]]:
     memories = []
     for item in result.get("schemas", []):
         memory: dict[str, Any] = {
@@ -182,6 +448,23 @@ def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[
         if provenance:
             memory["provenance"] = provenance
         memories.append(memory)
+    ordered = [item for item in memories if item["pathway"] != "context_reinstatement"]
+    candidates = [{"kind": "memory", "value": item} for item in ordered]
+    candidates.extend(
+        {"kind": "procedure", "value": _compact_activation_procedure(item, scope)}
+        for item in result.get("procedures", [])
+    )
+    candidates.extend(
+        {"kind": "memory", "value": item}
+        for item in memories
+        if item["pathway"] == "context_reinstatement"
+    )
+    return candidates
+
+
+def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[str, Any]:
+    """Project the internal activation result onto the stable O2 payload."""
+    candidates = _activation_candidates(result, scope)
     warnings = []
     if result.get("scope_warning"):
         warnings.append({"code": "scope_fragmentation", "message": result["scope_warning"]})
@@ -204,21 +487,11 @@ def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[
         _MCP_CONTINUITY_START_RESPONSE_CHARS
         if result.get("continuity_state") == "started"
         else _MCP_CONTINUATION_RESPONSE_CHARS
-    )
+    ) - 50  # reserve an opaque continue_from cursor on the final envelope
     # Core memory, procedure outcome/safety, then reinstatement context.
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    candidates.extend(
-        ("memory", item) for item in memories if item["pathway"] != "context_reinstatement"
-    )
-    candidates.extend(
-        ("procedure", _compact_activation_procedure(item, scope))
-        for item in result.get("procedures", [])
-    )
-    candidates.extend(
-        ("memory", item) for item in memories if item["pathway"] == "context_reinstatement"
-    )
     omitted = False
-    for kind, candidate in candidates:
+    for envelope in candidates:
+        kind, candidate = envelope["kind"], envelope["value"]
         field = "memories" if kind == "memory" else "procedures"
         data[field].append(candidate)
         if _serialized_chars(data) > budget:
@@ -332,6 +605,28 @@ def _canonical_recall_result(
         "evidence_mode": evidence,
         "evidence_truncated": len(raw_records) > _MCP_EVIDENCE_LIMIT,
     }
+
+
+def _focus_recall_data(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Apply the unchanged top-2 focus and the continuation char ceiling."""
+    candidates = _canonical_candidates(data)
+    focused = dict(data)
+    focused["memories"] = []
+    focused["procedures"] = []
+    if len(candidates) > _MCP_CONTINUATION_PAGE_SIZE:
+        focused["more_available"] = True
+        focused["continue_from"] = "cur_" + "x" * 32
+    admitted = 0
+    for item in candidates:
+        if admitted >= _MCP_CONTINUATION_PAGE_SIZE:
+            break
+        key = "memories" if item["kind"] == "memory" else "procedures"
+        focused[key].append(item["value"])
+        if _serialized_chars(focused) > _MCP_CONTINUATION_RESPONSE_CHARS:
+            focused[key].pop()
+            continue
+        admitted += 1
+    return focused, candidates
 
 
 def _restrict_activation_exposure(eng: Any, *, retrieval_id: str, data: dict[str, Any]) -> None:
@@ -539,6 +834,17 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 )
             )
             data = _canonical_activation_result(result, scope=scope)
+            all_candidates = _activation_candidates(result, scope)
+            exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
+            exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
+            _attach_frozen_tail(
+                eng,
+                data=data,
+                candidates=all_candidates,
+                session_id=result["session_id"],
+                scope=scope,
+                exposed_ids=exposed_ids,
+            )
             _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
             return {"ok": True, "data": data}
         except Exception as e:
@@ -550,23 +856,26 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_recall")
     async def slowave_recall(
-        query: str,
         session_id: str,
         scope: str,
         ctx: Context,
+        query: str | None = None,
         task_context: dict[str, Any] | None = None,
         evidence: str = "references",
+        continue_from: str | None = None,
     ) -> dict[str, Any]:
         """Semantic retrieval: bring relevant memories into working memory.
         Use for deliberate mid-task lookups when you need specific historical
         context beyond what activate surfaced.
         Recall is explicitly bound to the active session and matching scope.
         Args:
-            query: natural-language query.
+            query: natural-language query; omit when continuing a frozen result.
             session_id: active session returned by slowave_activate.
             scope: required retrieval boundary; must match the session.
             task_context: optional context update for this sub-question.
             evidence: references (default) or full; budget and policy are server-owned.
+            continue_from: opaque cursor returned by activate or recall. The
+                cursor is bound to this session and scope and replays a frozen tail.
         Returns:
             retrieval_id: pass to slowave_feedback after using memories.
             memories: canonical direct/associated memories with stable pathways.
@@ -574,27 +883,51 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             evidence: bounded references, with bounded content only in full mode.
         """
         try:
-            if not query.strip():
-                raise ValueError("query must be nonblank")
             _validate_scope(scope)
             if evidence not in {"references", "full"}:
                 raise ValueError("evidence must be references or full")
             eng = build_engine()
+            if continue_from is not None:
+                if query is not None or task_context is not None or evidence != "references":
+                    raise ValueError(
+                        "continue_from is mutually exclusive with query, task_context, and full evidence"
+                    )
+                return {
+                    "ok": True,
+                    "data": _continuation_page(
+                        eng,
+                        cursor=continue_from,
+                        session_id=session_id,
+                        scope=scope,
+                    ),
+                }
+            if query is None or not query.strip():
+                raise ValueError("query must be nonblank when continue_from is omitted")
             result = ops.recall(
                 eng,
                 query=query,
                 session_id=session_id,
-                top_k=_MCP_RECALL_TOP_K_DEFAULT,
+                top_k=_MCP_FROZEN_CANDIDATE_LIMIT,
                 evidence=evidence == "full",
                 scope=scope,
                 mode="strict_scope",
                 min_relevance=_MCP_RECALL_MIN_RELEVANCE_DEFAULT,
                 task_context=task_context,
             )
-            response = {
-                "ok": True,
-                "data": _canonical_recall_result(result, scope=scope, evidence=evidence),
-            }
+            full_data = _canonical_recall_result(result, scope=scope, evidence=evidence)
+            data, candidates = _focus_recall_data(full_data)
+            exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
+            exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
+            _attach_frozen_tail(
+                eng,
+                data=data,
+                candidates=candidates,
+                session_id=session_id,
+                scope=scope,
+                exposed_ids=exposed_ids,
+            )
+            _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
+            response = {"ok": True, "data": data}
             asyncio.create_task(
                 _bg_log_event(
                     eng,

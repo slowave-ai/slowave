@@ -249,6 +249,80 @@ def test_feedback_rejects_legacy_truth_aliases(tmp_path: Path) -> None:
     _run(scenario())
 
 
+def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        scope = "project:billing"
+        async with open_harness(tmp_path / "continuation.db") as harness:
+            activation, _ = await harness.activate(
+                "continuation_seed",
+                "Store billing policies",
+                "store billing policies",
+                scope,
+            )
+            for index in range(6):
+                await harness.remember(
+                    f"Billing policy section {index} uses ledger code {1000 + index}.",
+                    "fact",
+                    activation["session_id"],
+                    scope,
+                )
+
+            first, _ = await harness.recall(
+                "continuation_first",
+                "Which billing policy sections use ledger codes?",
+                activation["session_id"],
+                scope,
+            )
+            assert len(first["memories"]) <= 2
+            assert first["more_available"] is True
+            assert first["continue_from"].startswith("cur_")
+            assert set(first["accessible_field"]) == {
+                "extra_candidates",
+                "kinds",
+                "approx_extra_tokens",
+            }
+            assert "content" not in str(first["accessible_field"]).lower()
+
+            arguments = {
+                "continue_from": first["continue_from"],
+                "session_id": activation["session_id"],
+                "scope": scope,
+            }
+            repeated_a, _ = await harness.call("slowave_recall", arguments)
+            repeated_b, _ = await harness.call("slowave_recall", arguments)
+            assert repeated_a == repeated_b
+
+            seen = [item["memory_id"] for item in first["memories"]]
+            page = repeated_a
+            while True:
+                seen.extend(item["memory_id"] for item in page["memories"])
+                if not page["more_available"]:
+                    break
+                page, _ = await harness.call(
+                    "slowave_recall",
+                    {
+                        "continue_from": page["continue_from"],
+                        "session_id": activation["session_id"],
+                        "scope": scope,
+                    },
+                )
+            assert len(seen) == len(set(seen))
+            assert len(seen) >= 6
+            assert page["accessible_field"] == {}
+
+            wrong_scope, _ = await harness.raw_call(
+                "slowave_recall",
+                {
+                    "continue_from": first["continue_from"],
+                    "session_id": activation["session_id"],
+                    "scope": "project:other",
+                },
+            )
+            _assert_error(wrong_scope, "invalid_input", "does not match")
+
+    _run(scenario())
+
+
 def test_feedback_enforcement_mutation_fails_the_complete_feedback_contract() -> None:
     """Disabling commit feedback enforcement must make this contract fail."""
     assert_acceptance_mutation_is_caught(

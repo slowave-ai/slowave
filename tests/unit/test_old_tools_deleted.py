@@ -113,7 +113,14 @@ class TestOldToolsDeleted:
             "trajectory",
         }
         recall_fields = set(tools["slowave_recall"].inputSchema["properties"])
-        assert recall_fields == {"query", "session_id", "scope", "task_context", "evidence"}
+        assert recall_fields == {
+            "query",
+            "session_id",
+            "scope",
+            "task_context",
+            "evidence",
+            "continue_from",
+        }
         activate = tools["slowave_activate"].inputSchema
         assert set(activate["properties"]) == {
             "task",

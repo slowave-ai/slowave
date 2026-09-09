@@ -49,14 +49,6 @@ from slowave.symbolic.schema_store import Schema, SchemaStore
 # self-limiting without needing this floor to also do that work.
 _RECALL_GRAPH_MIN_ACTIVATION = 0.15
 
-# A schema's most recent exposure history skews net-negative once explicit
-# irrelevant/stale/wrong marks outnumber explicit useful marks by enough to
-# push context_noise_score (negative / (negative + 3*used + 1), see
-# SchemaStore._update_utility_scores) past this ratio. Below the threshold a
-# single stray `irrelevant` mark against an otherwise well-used schema can't
-# flip the gate -- only a genuine net-negative trend does.
-_EXPOSURE_GATE_NOISE_THRESHOLD = 0.5
-
 # Below this combined cue-text length (query + goal + task_type + situation +
 # requirements + topics + entities, joined), context_brief() treats the call
 # as carrying no real signal (a one-word ack, an empty follow-up) and shrinks
@@ -516,23 +508,6 @@ class RetrievalService:
         if min_relevance > 0.0:
             schemas = [s for s in schemas if schema_scores.get(s.id, 0.0) >= min_relevance]
         schemas = schemas[:top_k]
-
-        for s in schemas:
-            # Passive mere-exposure reinforcement on every top-k appearance is
-            # gated off once a schema's exposure history skews net-negative --
-            # otherwise an explicit `irrelevant`/`wrong` correction gets
-            # silently erased by the very next exposure. Any subsequent
-            # explicit positive mark (`useful`/`partially_useful`) raises
-            # context_used_count and lifts the gate again; a positive mark can
-            # only be recorded against a retrieval that surfaced this schema,
-            # so this doubles as the "re-earned from a fresh query" reset.
-            facets = s.facets or {}
-            negative_marks = int(facets.get("context_irrelevant_count") or 0)
-            used_marks = int(facets.get("context_used_count") or 0)
-            noise = float(facets.get("context_noise_score") or 0.0)
-            if negative_marks > used_marks and noise >= _EXPOSURE_GATE_NOISE_THRESHOLD:
-                continue
-            self.schemas.reinforce(s.id, amount=0.05)
 
         # Relation-graph spreading activation: schemas linked to one of the
         # above via schema_relations (relates_to) can still be worth
