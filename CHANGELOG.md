@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.18.1...slowave-v0.19.0) (2026-09-09)
+
+
+### Features
+
+* continuation for recall + remove passive reinforcement + meta-cognition activation field + dashboard updates ([#142](https://github.com/slowave-ai/slowave/issues/142)) ([c2480a6](https://github.com/slowave-ai/slowave/commit/c2480a6e26962765f3ec5746bc8a40e06c08573f))
+
 ## [0.18.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.18.0...slowave-v0.18.1) (2026-09-05)
 
 
