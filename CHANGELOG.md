@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.1...slowave-v0.19.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* enforce MCP contracts ([#146](https://github.com/slowave-ai/slowave/issues/146)) ([d517679](https://github.com/slowave-ai/slowave/commit/d517679c13bcc3aeca5b7d12152e21af05c2f3c9))
+
 ## [0.19.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.0...slowave-v0.19.1) (2026-09-10)
 
 
