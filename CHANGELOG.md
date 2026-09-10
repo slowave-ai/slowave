@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.0...slowave-v0.19.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* mcp lifecycle contract, performance fixes, removed hooks ([#144](https://github.com/slowave-ai/slowave/issues/144)) ([702be37](https://github.com/slowave-ai/slowave/commit/702be370e3efcc06ff81354d4639acc051ba8f77))
+
 ## [0.19.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.18.1...slowave-v0.19.0) (2026-09-09)
 
 
