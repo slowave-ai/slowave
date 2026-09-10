@@ -381,7 +381,15 @@ class TestDetectLifecycleVersion:
         assert "reusable multi-step method" in block
         assert "at least two ordered" in block
         assert "task actions" in block
-        assert "summary/context/steps/caveats shape" in block
+        assert '`{"version": 2, "summary": "...", "context": {...}, "steps":' in block
+        assert '[{"summary": "..."}]' in block
+        assert '"verified"|"partially_verified"|"unverified"' in block
+        assert '"action"|"observation"' in block
+        assert "The MCP tool\n  schema is authoritative" in block
+        assert "Endpoint payloads" in block
+        assert "never both" in block
+        assert "Feedback payloads" in block
+        assert "non-empty `items` batch" in block
         assert "specific, standalone future-facing knowledge" in block
         assert "connected MCP tools define the exact" in block
 

@@ -912,7 +912,21 @@ operation, not an empty result.
   procedure summaries as specific, standalone future-facing knowledge.
 - **Procedures:** include one for a reusable method with at least two ordered
   task actions; omit it only for answer-only or trivial work. Use the accepted
-  summary/context/steps/caveats shape from the tool description.
+  shape: `{{"version": 2, "summary": "...", "context": {{...}}, "steps":
+  [{{"summary": "..."}}], "caveats": ["..."]}}`. Verification is
+  `{{"status": "verified"|"partially_verified"|"unverified", "summary": "...",
+  "evidence_refs": [...]}}`; trajectory entries are `{{"kind":
+  "action"|"observation", "summary": "...", "status":
+  "started"|"succeeded"|"failed"|"unknown"}}` (at most 32). The MCP tool
+  schema is authoritative for the complete contract.
+- **Endpoint payloads:** `slowave_activate` and `slowave_recall` accept
+  structured `task_context` JSON objects. `slowave_remember` accepts either
+  one `{{content, type, occurred_at?}}` claim or a non-empty `memories` list of
+  those objects (never both); types are fact, preference, decision, constraint,
+  instruction, lesson, warning, open_question, task, or artifact.
+- **Feedback payloads:** use `memory_feedback` and `procedure_feedback` arrays
+  with the IDs returned by retrieval, or use a non-empty `items` batch, but do
+  not mix batch and scalar fields. `coverage` is `partial` or `complete`.
 <!-- slowave-lifecycle-end {LIFECYCLE_VERSION} -->"""
 
 

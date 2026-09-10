@@ -24,9 +24,18 @@ import math
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 import slowave.ops as ops
 from slowave.mcp import session_resolver
@@ -63,6 +72,280 @@ _REMEMBER_TYPES = {
     "task",
     "artifact",
 }
+
+
+# ---------------------------------------------------------------------------
+# Public MCP commit contract
+# ---------------------------------------------------------------------------
+#
+# These models deliberately live at the transport boundary rather than leaving
+# FastMCP to infer ``dict[str, Any]``.  The latter renders as an unconstrained
+# JSON object in tools/list even though ops.commit() has always enforced a
+# strict nested contract.  Keep these models aligned with the normalizers in
+# ``slowave.ops`` and ``slowave.symbolic.procedural_memory``; the contract test
+# asserts that the MCP schema remains explicit.
+
+
+class _StrictCommitModel(BaseModel):
+    """Strict JSON-object base for the public commit payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StrictMCPModel(BaseModel):
+    """Strict transport object base for every public MCP request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+RememberType = Literal[
+    "fact",
+    "preference",
+    "decision",
+    "constraint",
+    "instruction",
+    "lesson",
+    "warning",
+    "open_question",
+    "task",
+    "artifact",
+]
+
+
+class CommitVerification(_StrictCommitModel):
+    """Evidence that supports the reported task outcome."""
+
+    status: Literal["verified", "partially_verified", "unverified"]
+    summary: Annotated[str, Field(min_length=1)]
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("summary")
+    @classmethod
+    def _nonblank_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary must be nonblank")
+        return value
+
+
+class CommitProcedureStep(_StrictCommitModel):
+    """One ordered, human-readable action in a reusable procedure."""
+
+    summary: Annotated[str, Field(min_length=1)]
+
+    @field_validator("summary")
+    @classmethod
+    def _nonblank_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary must be nonblank")
+        return value
+
+
+class CommitProcedure(_StrictCommitModel):
+    """A reusable multi-step method that was actually attempted."""
+
+    version: Literal[2] = 2
+    summary: Annotated[str, Field(min_length=1)]
+    context: dict[str, JsonValue] = Field(default_factory=dict)
+    steps: Annotated[list[CommitProcedureStep], Field(min_length=1)]
+    caveats: list[str] = Field(default_factory=list)
+
+    @field_validator("summary")
+    @classmethod
+    def _nonblank_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary must be nonblank")
+        return value
+
+    @field_validator("caveats")
+    @classmethod
+    def _nonblank_caveats(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("caveat entries must be nonblank")
+        return normalized
+
+
+class CommitTrajectoryEntry(_StrictCommitModel):
+    """One task-level action or observation; never lifecycle bookkeeping."""
+
+    kind: Literal["action", "observation"]
+    summary: Annotated[str, Field(min_length=1, max_length=1000)]
+    status: Literal["started", "succeeded", "failed", "unknown"] = "unknown"
+
+    @field_validator("summary")
+    @classmethod
+    def _nonblank_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary must be nonblank")
+        return value
+
+
+class CommitArguments(_StrictCommitModel):
+    """Canonical public request contract for ``slowave_commit``."""
+
+    session_id: Annotated[str, Field(min_length=1)]
+    final_goal: Annotated[str, Field(min_length=1)]
+    outcome: Literal["success", "partial", "failure"]
+    outcome_summary: Annotated[str, Field(min_length=1)]
+    verification: CommitVerification
+    procedure: CommitProcedure | None = None
+    trajectory: Annotated[list[CommitTrajectoryEntry] | None, Field(max_length=32)] = None
+
+    @field_validator("session_id", "final_goal", "outcome_summary")
+    @classmethod
+    def _nonblank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must be nonblank")
+        return value
+
+
+class ActivateArguments(_StrictMCPModel):
+    task: Annotated[str, Field(min_length=1)]
+    initial_goal: Annotated[str, Field(min_length=1)]
+    scope: Annotated[str, Field(min_length=3)]
+    continuity_id: str | None = None
+    task_context: dict[str, JsonValue] | None = None
+
+
+class RecallArguments(_StrictMCPModel):
+    session_id: Annotated[str, Field(min_length=1)]
+    scope: Annotated[str, Field(min_length=3)]
+    query: str | None = None
+    task_context: dict[str, JsonValue] | None = None
+    evidence: Literal["references", "full"] = "references"
+    continue_from: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "RecallArguments":
+        if self.continue_from is not None:
+            if (
+                self.query is not None
+                or self.task_context is not None
+                or self.evidence != "references"
+            ):
+                raise ValueError(
+                    "continue_from is mutually exclusive with query, task_context, and full evidence"
+                )
+        elif not self.query or not self.query.strip():
+            raise ValueError("query must be nonblank when continue_from is omitted")
+        return self
+
+
+class RememberEntry(_StrictMCPModel):
+    content: Annotated[str, Field(min_length=1)]
+    type: RememberType
+    occurred_at: str | None = None
+
+
+class RememberArguments(_StrictMCPModel):
+    scope: Annotated[str, Field(min_length=3)]
+    session_id: Annotated[str, Field(min_length=1)]
+    content: str | None = None
+    type: RememberType | None = None
+    occurred_at: str | None = None
+    memories: Annotated[list[RememberEntry] | None, Field(min_length=1)] = None
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> "RememberArguments":
+        if self.memories is not None:
+            if self.content is not None or self.type is not None:
+                raise ValueError("memories is mutually exclusive with content and type")
+        elif not self.content or not self.content.strip() or self.type is None:
+            raise ValueError("content and type are required when memories is omitted")
+        return self
+
+
+class MemoryFeedbackEntry(_StrictMCPModel):
+    memory_id: Annotated[str, Field(min_length=1)]
+    assessment: Annotated[str, Field(min_length=1)]
+    stale_reason: str | None = None
+    replacement_memory_id: str | None = None
+    reason: str | None = None
+
+
+class ProcedureFeedbackEntry(_StrictMCPModel):
+    procedure_id: Annotated[str, Field(min_length=1)]
+    use: Annotated[str, Field(min_length=1)]
+    effect: str | None = None
+    contribution: str | None = None
+    reason: str | None = None
+
+
+class FeedbackItem(_StrictMCPModel):
+    retrieval_id: Annotated[str, Field(min_length=1)]
+    memory_feedback: list[MemoryFeedbackEntry] | None = None
+    procedure_feedback: list[ProcedureFeedbackEntry] | None = None
+    retrieval_quality: str | None = None
+    missing: list[str] | None = None
+    coverage: Literal["partial", "complete"] = "partial"
+
+
+class FeedbackArguments(_StrictMCPModel):
+    retrieval_id: str | None = None
+    memory_feedback: list[MemoryFeedbackEntry] | None = None
+    procedure_feedback: list[ProcedureFeedbackEntry] | None = None
+    retrieval_quality: str | None = None
+    missing: list[str] | None = None
+    coverage: Literal["partial", "complete"] = "partial"
+    items: Annotated[list[FeedbackItem] | None, Field(min_length=1)] = None
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> "FeedbackArguments":
+        if self.items is not None:
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.retrieval_id,
+                        self.memory_feedback,
+                        self.procedure_feedback,
+                        self.retrieval_quality,
+                        self.missing,
+                    )
+                )
+                or self.coverage != "partial"
+            ):
+                raise ValueError("items is mutually exclusive with scalar feedback fields")
+        elif not self.retrieval_id or not self.retrieval_id.strip():
+            raise ValueError("retrieval_id is required")
+        return self
+
+
+def _format_validation_error(exc: ValidationError) -> tuple[str, list[dict[str, str]]]:
+    """Return stable, actionable client errors from the canonical model."""
+
+    field_errors: list[dict[str, str]] = []
+    for error in exc.errors(include_url=False):
+        path = "".join(
+            f"[{part}]" if isinstance(part, int) else ("." if index else "") + str(part)
+            for index, part in enumerate(error["loc"])
+        )
+        field_errors.append({"path": path, "message": error["msg"]})
+    message = "; ".join(f"{item['path']}: {item['message']}" for item in field_errors)
+    return message, field_errors
+
+
+def _publish_schema(mcp: FastMCP, name: str, model: type[BaseModel]) -> None:
+    """Publish a canonical schema while retaining handler-owned errors.
+
+    FastMCP 1.x derives an input schema from a callback's annotations and then
+    validates those annotations before invoking the callback.  For this tool,
+    that would turn malformed input into an unstructured framework error and
+    bypass Slowave's ``{ok: false, error: ...}`` contract.  The callback is
+    therefore deliberately permissive and validates its canonical model
+    itself; this small, version-pinned adapter replaces only the advertised
+    schema.  Keep the private FastMCP access here, with transport tests.
+    """
+
+    tool = mcp._tool_manager.get_tool(name)
+    if tool is None:  # pragma: no cover - registration immediately precedes this call.
+        raise RuntimeError(f"{name} was not registered")
+    tool.parameters = model.model_json_schema()
 
 
 def _validate_scope(scope: str) -> None:
@@ -758,12 +1041,12 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_activate")
     async def slowave_activate(
-        task: str,
-        initial_goal: str,
-        scope: str,
         ctx: Context,
-        continuity_id: str | None = None,
-        task_context: dict[str, Any] | None = None,
+        task: Any = None,
+        initial_goal: Any = None,
+        scope: Any = None,
+        continuity_id: Any = None,
+        task_context: Any = None,
     ) -> dict[str, Any]:
         """Prime working memory with relevant context. Opens an implicit session.
 
@@ -803,21 +1086,38 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 contains extra_candidates, kinds, and approx_extra_tokens, never content.
         """
         try:
-            if not task.strip():
-                raise ValueError("task must be nonblank")
-            if not initial_goal.strip():
-                raise ValueError("initial_goal must be nonblank")
-            _validate_scope(scope)
+            request = ActivateArguments.model_validate(
+                {
+                    "task": task,
+                    "initial_goal": initial_goal,
+                    "scope": scope,
+                    "continuity_id": continuity_id,
+                    "task_context": task_context,
+                }
+            )
+        except ValidationError as exc:
+            message, field_errors = _format_validation_error(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_input",
+                    "message": message,
+                    "retryable": False,
+                    "field_errors": field_errors,
+                },
+            }
+        try:
+            _validate_scope(request.scope)
             provenance = _integration_provenance(ctx)
             eng = build_engine(disable_encoder=False)
             result = ops.activate(
                 eng,
-                query=task,
-                task=task,
-                scope=scope,
-                initial_goal=initial_goal,
-                task_context=task_context,
-                continuity_id=continuity_id,
+                query=request.task,
+                task=request.task,
+                scope=request.scope,
+                initial_goal=request.initial_goal,
+                task_context=request.task_context,
+                continuity_id=request.continuity_id,
                 mode="strict_scope",
                 limit=_MCP_ACTIVATE_LIMIT_DEFAULT,
                 agent=f"mcp:{provenance['integration']}",
@@ -828,18 +1128,18 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 manage_continuity=True,
                 continuity_integration=str(provenance["integration"]),
             )
-            session_resolver.bind(scope, result["session_id"])
+            session_resolver.bind(request.scope, result["session_id"])
             asyncio.create_task(
                 _bg_log_event(
                     eng,
                     result["session_id"],
                     "context_query",
-                    task,
+                    request.task,
                     {"provenance": provenance},
                 )
             )
-            data = _canonical_activation_result(result, scope=scope)
-            all_candidates = _activation_candidates(result, scope)
+            data = _canonical_activation_result(result, scope=request.scope)
+            all_candidates = _activation_candidates(result, request.scope)
             exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
             exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
             _attach_frozen_tail(
@@ -847,7 +1147,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 data=data,
                 candidates=all_candidates,
                 session_id=result["session_id"],
-                scope=scope,
+                scope=request.scope,
                 exposed_ids=exposed_ids,
             )
             _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
@@ -861,13 +1161,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_recall")
     async def slowave_recall(
-        session_id: str,
-        scope: str,
         ctx: Context,
-        query: str | None = None,
-        task_context: dict[str, Any] | None = None,
-        evidence: str = "references",
-        continue_from: str | None = None,
+        session_id: Any = None,
+        scope: Any = None,
+        query: Any = None,
+        task_context: Any = None,
+        evidence: Any = "references",
+        continue_from: Any = None,
     ) -> dict[str, Any]:
         """Semantic retrieval: bring relevant memories into working memory.
         Use for deliberate mid-task lookups when you need specific historical
@@ -898,38 +1198,55 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 contains extra_candidates, kinds, and approx_extra_tokens, never content.
         """
         try:
-            _validate_scope(scope)
-            if evidence not in {"references", "full"}:
-                raise ValueError("evidence must be references or full")
+            request = RecallArguments.model_validate(
+                {
+                    "session_id": session_id,
+                    "scope": scope,
+                    "query": query,
+                    "task_context": task_context,
+                    "evidence": evidence,
+                    "continue_from": continue_from,
+                }
+            )
+        except ValidationError as exc:
+            message, field_errors = _format_validation_error(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_input",
+                    "message": message,
+                    "retryable": False,
+                    "field_errors": field_errors,
+                },
+            }
+        try:
+            _validate_scope(request.scope)
             eng = build_engine()
-            if continue_from is not None:
-                if query is not None or task_context is not None or evidence != "references":
-                    raise ValueError(
-                        "continue_from is mutually exclusive with query, task_context, and full evidence"
-                    )
+            if request.continue_from is not None:
                 return {
                     "ok": True,
                     "data": _continuation_page(
                         eng,
-                        cursor=continue_from,
-                        session_id=session_id,
-                        scope=scope,
+                        cursor=request.continue_from,
+                        session_id=request.session_id,
+                        scope=request.scope,
                     ),
                 }
-            if query is None or not query.strip():
-                raise ValueError("query must be nonblank when continue_from is omitted")
+            assert request.query is not None
             result = ops.recall(
                 eng,
-                query=query,
-                session_id=session_id,
+                query=request.query,
+                session_id=request.session_id,
                 top_k=_MCP_FROZEN_CANDIDATE_LIMIT,
-                evidence=evidence == "full",
-                scope=scope,
+                evidence=request.evidence == "full",
+                scope=request.scope,
                 mode="strict_scope",
                 min_relevance=_MCP_RECALL_MIN_RELEVANCE_DEFAULT,
-                task_context=task_context,
+                task_context=request.task_context,
             )
-            full_data = _canonical_recall_result(result, scope=scope, evidence=evidence)
+            full_data = _canonical_recall_result(
+                result, scope=request.scope, evidence=request.evidence
+            )
             data, candidates = _focus_recall_data(full_data)
             exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
             exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
@@ -937,8 +1254,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 eng,
                 data=data,
                 candidates=candidates,
-                session_id=session_id,
-                scope=scope,
+                session_id=request.session_id,
+                scope=request.scope,
                 exposed_ids=exposed_ids,
             )
             _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
@@ -946,9 +1263,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             asyncio.create_task(
                 _bg_log_event(
                     eng,
-                    session_id,
+                    request.session_id,
                     "trajectory:action",
-                    f"slowave_recall: {query}"[:1000],
+                    f"slowave_recall: {request.query}"[:1000],
                     {
                         "status": "succeeded",
                         "provenance": {
@@ -968,13 +1285,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_remember")
     async def slowave_remember(
-        scope: str,
-        session_id: str,
         ctx: Context,
-        content: str | None = None,
-        type: str | None = None,
-        occurred_at: str | None = None,
-        memories: list[dict[str, Any]] | None = None,
+        scope: Any = None,
+        session_id: Any = None,
+        content: Any = None,
+        type: Any = None,
+        occurred_at: Any = None,
+        memories: Any = None,
     ) -> dict[str, Any]:
         """Explicitly encode a durable typed claim into long-term memory.
         Scalar and batch forms inherit one explicitly verified session and scope.
@@ -1005,21 +1322,52 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 independent ok/data or ok/error results.
         """
         try:
+            request = RememberArguments.model_validate(
+                {
+                    "scope": scope,
+                    "session_id": session_id,
+                    "content": content,
+                    "type": type,
+                    "occurred_at": occurred_at,
+                    "memories": memories,
+                }
+            )
+        except ValidationError as exc:
+            message, field_errors = _format_validation_error(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_input",
+                    "message": message,
+                    "retryable": False,
+                    "field_errors": field_errors,
+                },
+            }
+        try:
             eng = build_engine()
             session = (
                 eng.db.connect()
-                .execute("SELECT scope_id, ended_ts FROM sessions WHERE id = ?", (session_id,))
+                .execute(
+                    "SELECT scope_id, ended_ts FROM sessions WHERE id = ?", (request.session_id,)
+                )
                 .fetchone()
             )
             if session is None:
-                raise ValueError(f"unknown session_id: {session_id}")
+                raise ValueError(f"unknown session_id: {request.session_id}")
             if session["ended_ts"] is not None:
-                raise ValueError(f"session is already ended: {session_id}")
-            if session["scope_id"] != scope:
+                raise ValueError(f"session is already ended: {request.session_id}")
+            if session["scope_id"] != request.scope:
                 raise ValueError("session_id and scope do not match")
             provenance = _integration_provenance(ctx)
             normalized, is_batch = _normalize_remember_inputs(
-                content=content, memory_type=type, occurred_at=occurred_at, memories=memories
+                content=request.content,
+                memory_type=request.type,
+                occurred_at=request.occurred_at,
+                memories=(
+                    [item.model_dump() for item in request.memories]
+                    if request.memories is not None
+                    else None
+                ),
             )
             if not is_batch:
                 item = normalized[0]
@@ -1029,8 +1377,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                         eng,
                         content=item["content"],
                         memory_type=item["type"],
-                        scope=scope,
-                        session_id=session_id,
+                        scope=request.scope,
+                        session_id=request.session_id,
                         provenance=provenance,
                         occurred_at=item["occurred_at"],
                     ),
@@ -1046,8 +1394,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                                 eng,
                                 content=item["content"],
                                 memory_type=item["type"],
-                                scope=scope,
-                                session_id=session_id,
+                                scope=request.scope,
+                                session_id=request.session_id,
                                 provenance=provenance,
                                 occurred_at=item["occurred_at"],
                             ),
@@ -1077,13 +1425,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     @mcp.tool(name="slowave_feedback")
     async def slowave_feedback(
         ctx: Context,
-        retrieval_id: str | None = None,
-        memory_feedback: list[dict[str, Any]] | None = None,
-        procedure_feedback: list[dict[str, Any]] | None = None,
-        retrieval_quality: str | None = None,
-        missing: list[str] | None = None,
-        coverage: str = "partial",
-        items: list[dict[str, Any]] | None = None,
+        retrieval_id: Any = None,
+        memory_feedback: Any = None,
+        procedure_feedback: Any = None,
+        retrieval_quality: Any = None,
+        missing: Any = None,
+        coverage: Any = "partial",
+        items: Any = None,
     ) -> dict[str, Any]:
         """Record append-only evidence about retrieved memories and procedures.
 
@@ -1114,23 +1462,46 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             results: for batch input, ordered item envelopes with independent
                 ok/data or ok/error results.
         """
+        try:
+            request = FeedbackArguments.model_validate(
+                {
+                    "retrieval_id": retrieval_id,
+                    "memory_feedback": memory_feedback,
+                    "procedure_feedback": procedure_feedback,
+                    "retrieval_quality": retrieval_quality,
+                    "missing": missing,
+                    "coverage": coverage,
+                    "items": items,
+                }
+            )
+        except ValidationError as exc:
+            message, field_errors = _format_validation_error(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_input",
+                    "message": message,
+                    "retryable": False,
+                    "field_errors": field_errors,
+                },
+            }
         # Feedback follows activate/recall in the public lifecycle, so the
         # encoder-enabled engine is already warm.  Reusing it avoids building
         # a second SQLite/FAISS engine just for this short write operation.
         eng = build_engine(disable_encoder=False)
-        if items is not None:
+        if request.items is not None:
             if (
                 any(
                     value is not None
                     for value in (
-                        retrieval_id,
-                        memory_feedback,
-                        procedure_feedback,
-                        retrieval_quality,
-                        missing,
+                        request.retrieval_id,
+                        request.memory_feedback,
+                        request.procedure_feedback,
+                        request.retrieval_quality,
+                        request.missing,
                     )
                 )
-                or coverage != "partial"
+                or request.coverage != "partial"
             ):
                 return {
                     "ok": False,
@@ -1141,8 +1512,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     },
                 }
             results: list[dict[str, Any]] = []
-            for item in items:
-                item_rid = item.get("retrieval_id", "")
+            for item in request.items:
+                item_rid = item.retrieval_id
                 try:
                     results.append(
                         {
@@ -1150,11 +1521,19 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                             "data": ops.feedback(
                                 eng,
                                 retrieval_id=item_rid,
-                                memory_feedback=item.get("memory_feedback"),
-                                procedure_feedback=item.get("procedure_feedback"),
-                                retrieval_quality=item.get("retrieval_quality"),
-                                missing=item.get("missing"),
-                                coverage=item.get("coverage", "partial"),
+                                memory_feedback=(
+                                    [x.model_dump() for x in item.memory_feedback]
+                                    if item.memory_feedback is not None
+                                    else None
+                                ),
+                                procedure_feedback=(
+                                    [x.model_dump() for x in item.procedure_feedback]
+                                    if item.procedure_feedback is not None
+                                    else None
+                                ),
+                                retrieval_quality=item.retrieval_quality,
+                                missing=item.missing,
+                                coverage=item.coverage,
                             ),
                         }
                     )
@@ -1172,16 +1551,24 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     )
             return {"ok": True, "data": {"results": results}}
         try:
-            if not retrieval_id:
+            if not request.retrieval_id:
                 raise ValueError("retrieval_id is required")
             data = ops.feedback(
                 eng,
-                retrieval_id=retrieval_id,
-                memory_feedback=memory_feedback,
-                procedure_feedback=procedure_feedback,
-                retrieval_quality=retrieval_quality,
-                missing=missing,
-                coverage=coverage,
+                retrieval_id=request.retrieval_id,
+                memory_feedback=(
+                    [x.model_dump() for x in request.memory_feedback]
+                    if request.memory_feedback is not None
+                    else None
+                ),
+                procedure_feedback=(
+                    [x.model_dump() for x in request.procedure_feedback]
+                    if request.procedure_feedback is not None
+                    else None
+                ),
+                retrieval_quality=request.retrieval_quality,
+                missing=request.missing,
+                coverage=request.coverage,
             )
             return {"ok": True, "data": data}
         except Exception as e:
@@ -1191,14 +1578,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
     @mcp.tool(name="slowave_commit")
     async def slowave_commit(
-        session_id: str,
-        final_goal: str,
-        outcome: str,
-        outcome_summary: str,
-        verification: dict[str, Any],
         ctx: Context,
-        procedure: dict[str, Any] | None = None,
-        trajectory: list[dict[str, Any]] | None = None,
+        session_id: Any = None,
+        final_goal: Any = None,
+        outcome: Any = None,
+        outcome_summary: Any = None,
+        verification: Any = None,
+        procedure: Any = None,
+        trajectory: Any = None,
     ) -> dict[str, Any]:
         """Close the current task and trigger offline memory consolidation.
 
@@ -1209,10 +1596,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             final_goal: required confirmed goal.
             outcome: required success|partial|failure.
             outcome_summary: required standalone actual result.
-            verification: required status, summary, and optional evidence refs.
-            procedure: executed reusable method when one was attempted.
+            verification: required {status, summary, evidence_refs?}; status is
+                verified|partially_verified|unverified.
+            procedure: optional {version: 2, summary, context: {}, steps:
+                [{summary}], caveats: []}; include only for a reusable method
+                that was actually attempted.
             trajectory: optional executed-attempt trace of at most 32 action/observation
-                entries. Must contain TASK actions/observations only. Do NOT include
+                entries, each {kind, summary, status?}. Must contain TASK
+                actions/observations only. Do NOT include
                 Slowave lifecycle bookkeeping (activate/recall/feedback/commit calls,
                 "Activated the Slowave session." etc.) -- the server filters those out
                 and reports the count as trajectory_lifecycle_filtered. If you have no
@@ -1230,19 +1621,46 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             already_ended: true when the session had already been closed.
         """
         try:
+            request = CommitArguments.model_validate(
+                {
+                    "session_id": session_id,
+                    "final_goal": final_goal,
+                    "outcome": outcome,
+                    "outcome_summary": outcome_summary,
+                    "verification": verification,
+                    "procedure": procedure,
+                    "trajectory": trajectory,
+                }
+            )
+        except ValidationError as exc:
+            message, field_errors = _format_validation_error(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "code": "invalid_input",
+                    "message": message,
+                    "retryable": False,
+                    "field_errors": field_errors,
+                },
+            }
+        try:
             # O10 trajectories must be embedded so session_end can form episodic
             # memories from the attempted path; an encoder-free commit would
             # preserve rows for audit but silently exclude them from consolidation.
             eng = build_engine(disable_encoder=False)
             result = ops.commit(
                 eng,
-                session_id=session_id,
-                outcome=outcome,
-                final_goal=final_goal,
-                outcome_summary=outcome_summary,
-                procedure=procedure,
-                verification=verification,
-                trajectory=trajectory,
+                session_id=request.session_id,
+                outcome=request.outcome,
+                final_goal=request.final_goal,
+                outcome_summary=request.outcome_summary,
+                procedure=request.procedure.model_dump() if request.procedure is not None else None,
+                verification=request.verification.model_dump(),
+                trajectory=(
+                    [item.model_dump() for item in request.trajectory]
+                    if request.trajectory
+                    else None
+                ),
                 provenance=_integration_provenance(ctx),
                 enforce_feedback=True,
             )
@@ -1263,3 +1681,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 "ok": False,
                 "error": {"code": "invalid_input", "message": str(e), "retryable": False},
             }
+
+    _publish_schema(mcp, "slowave_activate", ActivateArguments)
+    _publish_schema(mcp, "slowave_recall", RecallArguments)
+    _publish_schema(mcp, "slowave_remember", RememberArguments)
+    _publish_schema(mcp, "slowave_feedback", FeedbackArguments)
+    _publish_schema(mcp, "slowave_commit", CommitArguments)
