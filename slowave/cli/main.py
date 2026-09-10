@@ -104,36 +104,6 @@ def cli(ctx: click.Context, db: str, as_json: bool) -> None:
     ctx.obj["json"] = as_json
 
 
-@cli.group("hook", hidden=True)
-def hook_group() -> None:
-    """Internal client-hook adapters."""
-
-
-@hook_group.command("codex-stop")
-def codex_stop_hook() -> None:
-    """Emit Codex's structured, loop-safe Stop-hook decision."""
-    try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError):
-        payload = {}
-    if payload.get("stop_hook_active") is True:
-        click.echo("{}")
-        return
-    click.echo(
-        json.dumps(
-            {
-                "decision": "block",
-                "reason": (
-                    "SLOWAVE MANDATORY: assess every retrieval with slowave_feedback, "
-                    "then call slowave_commit with the actual outcome and verification before "
-                    "finishing. If commit reports incomplete_feedback, assess every listed "
-                    "target with complete coverage and retry commit."
-                ),
-            }
-        )
-    )
-
-
 @cli.group()
 def session() -> None:
     """Session lifecycle."""
@@ -2059,12 +2029,12 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
                     if "counters unavailable" in warning:
                         remediation = "Run `slowave status --json` or inspect the SQLite DB schema; this diagnostic is best-effort and does not mean feedback is broken."
                     else:
-                        remediation = "Check client lifecycle instructions and post-recall feedback hooks. This is independent from the background worker."
+                        remediation = "Check client lifecycle instructions and post-recall feedback. This is independent from the background worker."
                 elif label == "Session lifecycle":
                     if "counters unavailable" in warning:
-                        remediation = "Run `slowave status --json` or inspect the SQLite DB schema; this diagnostic is best-effort and does not mean lifecycle hooks are broken."
+                        remediation = "Run `slowave status --json` or inspect the SQLite DB schema; this diagnostic is best-effort and does not mean lifecycle tracking is broken."
                     else:
-                        remediation = "Check that the client calls session end/commit hooks when a conversation or task finishes."
+                        remediation = "Check that the client calls session end/commit when a conversation or task finishes."
                 renderer.warning(f"{label}: {warning}", remediation)
             for name, detail in warnings_list:
                 if "custom instructions" in detail.lower():
@@ -2100,7 +2070,7 @@ def uninstall_cmd(dry_run: bool) -> None:
     """Remove Slowave integrations and services while preserving local data.
 
     Removes only Slowave-owned MCP entries, generated lifecycle files or blocks,
-    enforcement hooks, and daemon, worker, and backup services. It does not remove
+    and daemon, worker, and backup services. It does not remove
     the effective runtime root, database archives, setup backups, or the installed Python package.
     Use 'slowave purge' to also remove local data, then use the same package manager
     used for installation (for example, 'pipx uninstall slowave') to remove Slowave.
@@ -2127,7 +2097,7 @@ def uninstall_cmd(dry_run: bool) -> None:
     removed_count += _remove_backup_service(dry_run)
     _section("4. Lifecycle instruction blocks")
     removed_count += _remove_lifecycle_blocks(dry_run)
-    _section("5. MCP server configurations and hooks")
+    _section("5. MCP server configurations")
     removed_count += _remove_mcp_configs(dry_run)
 
     click.echo()

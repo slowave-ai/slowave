@@ -313,11 +313,18 @@ def canonical_cue_text(
     )
 
 
-def packed_cue_embedding(encoder, cue_text: str) -> tuple[bytes, int] | None:
-    """Encode a non-empty canonical cue once for snapshot persistence."""
-    if encoder is None or not cue_text:
-        return None
-    vector = np.asarray(encoder.encode(cue_text), dtype=np.float32)
+def packed_cue_embedding(encoder, cue_text: str, *, vector=None) -> tuple[bytes, int] | None:
+    """Pack a canonical cue embedding for snapshot persistence.
+
+    Callers that already evaluated the same canonical cue can pass ``vector``.
+    This keeps telemetry observational: it records the exact vector used by
+    the retrieval-side shadow policy without paying for a second inference.
+    """
+    if vector is None:
+        if encoder is None or not cue_text:
+            return None
+        vector = encoder.encode(cue_text)
+    vector = np.asarray(vector, dtype=np.float32)
     if vector.ndim != 1 or vector.size == 0:
         return None
     return pack_f32(vector), int(vector.size)

@@ -596,7 +596,15 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
   const rows: any[] = breakdown?.rows || [];
   const total = Number(breakdown?.total || 0);
   const other = breakdown?.other;
-  if (!rows.length) return null;
+  if (!rows.length && !other) {
+    return (
+      <Section title="Memory by scope">
+        <EmptyState title="No memories yet">
+          Memory scopes will appear after your agent stores its first durable memory.
+        </EmptyState>
+      </Section>
+    );
+  }
   const renderRow = (
     scope: string,
     memories: number,

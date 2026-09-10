@@ -201,25 +201,27 @@ def _shadow_access_traces(
     topics: list[str] | None,
     entities: list[str] | None,
     scope_id: str | None,
+    cue_embedding: Any | None = None,
 ) -> list[dict[str, object]]:
     """Evaluate all recorded candidates under Phase-2 shadow policy only."""
-    if eng.encoder is None:
-        return []
-    cue_text = canonical_cue_text(
-        query=query,
-        goal=goal,
-        task_type=task_type,
-        situation=situation,
-        requirements=requirements,
-        topics=topics,
-        entities=entities,
-    )
-    if not cue_text:
-        return []
-    try:
-        cue_embedding = eng.encoder.encode(cue_text)
-    except Exception:
-        return []
+    if cue_embedding is None:
+        if eng.encoder is None:
+            return []
+        cue_text = canonical_cue_text(
+            query=query,
+            goal=goal,
+            task_type=task_type,
+            situation=situation,
+            requirements=requirements,
+            topics=topics,
+            entities=entities,
+        )
+        if not cue_text:
+            return []
+        try:
+            cue_embedding = eng.encoder.encode(cue_text)
+        except Exception:
+            return []
     return [
         eng.shadow_retrieval_access(
             schema_id=schema_id,
@@ -425,8 +427,9 @@ def activate(
     cold_start = eng.schemas.count_by_scope(scope_id) == 0 if scope_id else eng.schemas.count() == 0
     scope_warning = _scope_fragmentation_warning(eng, scope_id) if cold_start and scope_id else None
 
+    procedures = load_procedures(eng.db.connect(), scope=scope_id)
     procedure_hits = retrieve_procedures(
-        load_procedures(eng.db.connect(), scope=scope_id),
+        procedures,
         query=query,
         retrieval_context=resolved_context,
         encoder=getattr(eng, "encoder", None),
@@ -465,6 +468,21 @@ def activate(
         for trace in brief.activation_trace
         if not trace.admitted and not _is_scope_rejection(trace.reason)
     ]
+    shadow_cue_text = canonical_cue_text(
+        query=query,
+        goal=resolved_goal,
+        task_type=task_type,
+        situation=cue_situation,
+        requirements=requirements,
+        topics=topics,
+        entities=entities,
+    )
+    shadow_cue_embedding = None
+    if eng.encoder is not None and shadow_cue_text:
+        try:
+            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
+        except Exception:
+            pass
     _shadow = _shadow_access_traces(
         eng,
         candidates=_shadow_candidates,
@@ -476,6 +494,7 @@ def activate(
         topics=topics,
         entities=entities,
         scope_id=scope_id,
+        cue_embedding=shadow_cue_embedding,
     )
     _internal["shadow_access_traces"] = _shadow
     eng.record_context_recall(
@@ -498,6 +517,7 @@ def activate(
         filtered_items=_filtered,
         retrieval_policy_version="continuity-v1" if continuity_state else "strict-v9",
         continuity_state=continuity_state,
+        cue_embedding=shadow_cue_embedding,
     )
 
     result: dict[str, Any] = {
@@ -669,8 +689,9 @@ def recall(
         )
         eng.db.connect().commit()
     recall_id = f"rec_{uuid.uuid4().hex[:12]}"
+    procedures = load_procedures(eng.db.connect(), scope=scope)
     procedure_hits = retrieve_procedures(
-        load_procedures(eng.db.connect(), scope=scope),
+        procedures,
         query=query,
         retrieval_context=retrieval_context,
         encoder=getattr(eng, "encoder", None),
@@ -694,6 +715,21 @@ def recall(
         ],
         procedures=procedure_hits,
     )
+    shadow_cue_text = canonical_cue_text(
+        query=query,
+        goal=None,
+        task_type=None,
+        situation=retrieval_context,
+        requirements=None,
+        topics=None,
+        entities=None,
+    )
+    shadow_cue_embedding = None
+    if eng.encoder is not None and shadow_cue_text:
+        try:
+            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
+        except Exception:
+            pass
     _internal["shadow_access_traces"] = _shadow_access_traces(
         eng,
         candidates=[
@@ -712,6 +748,7 @@ def recall(
         topics=None,
         entities=None,
         scope_id=scope,
+        cue_embedding=shadow_cue_embedding,
     )
     eng.record_retrieval(
         retrieval_id=recall_id,
@@ -724,6 +761,7 @@ def recall(
         mode=mode,
         limit=top_k,
         response=_internal,
+        cue_embedding=shadow_cue_embedding,
     )
     memories = [
         {

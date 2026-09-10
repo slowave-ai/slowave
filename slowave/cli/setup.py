@@ -4,7 +4,7 @@ Automates:
   1. Patching MCP client configs (Claude Code, Claude Desktop, Cline, Cursor, Windsurf)
      to point to the Slowave HTTP MCP daemon at http://127.0.0.1:8766/mcp.
   2. Injecting lifecycle instructions (CLAUDE.md, .clinerules, etc.) into client
-     rule files, and UserPromptSubmit/Stop hooks into ~/.claude/settings.json.
+     rule files.
   3. Installing the background worker as a user service
      (launchd on macOS, systemd on Linux, Task Scheduler on Windows).
   4. Running `slowave doctor` to verify the result.
@@ -42,7 +42,6 @@ class ChangeType(str, Enum):
 
     MCP_CONFIG = "mcp_config"
     LIFECYCLE_BLOCK = "lifecycle_block"
-    HOOKS = "hooks"
     WORKER_SERVICE = "worker_service"
     MANUAL_STEP = "manual_step"
 
@@ -150,17 +149,6 @@ class Summary:
                 )
             lines.append("")
 
-        # Hooks
-        if grouped[ChangeType.HOOKS]:
-            hooks = grouped[ChangeType.HOOKS]
-            lines.append(click.style(f"{safe_emoji('🔐', '[lock]')} Lifecycle Hooks", bold=True))
-            for change in hooks:
-                status_label = f"({change.status.value.upper()})"
-                lines.append(
-                    f"  ✓ {change.description} {click.style(status_label, fg='bright_black')}"
-                )
-            lines.append("")
-
         # Worker Service
         if grouped[ChangeType.WORKER_SERVICE]:
             services = grouped[ChangeType.WORKER_SERVICE]
@@ -223,11 +211,6 @@ def mark_setup_done() -> None:
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
-
-
-def _claude_settings_path() -> Path:
-    """~/.claude/settings.json — hooks, permissions, env only (NOT mcpServers)."""
-    return _home() / ".claude" / "settings.json"
 
 
 def _claude_json_path() -> Path:
@@ -383,9 +366,7 @@ def _codex_home() -> Path:
 def _codex_config_path() -> Path:
     """Codex global config — ~/.codex/config.toml (or $CODEX_HOME/config.toml).
 
-    Both the MCP server registry (``mcp_servers``) and lifecycle enforcement
-    hooks (``hooks``) live in this single TOML file — unlike Claude Code,
-    which splits them across ``~/.claude.json`` and ``~/.claude/settings.json``.
+    The MCP server registry lives under ``mcp_servers``.
     """
     return _codex_home() / "config.toml"
 
@@ -412,9 +393,6 @@ class ClientSpec:
 
     All setup, cleanup, summary-preview, and backup-cleanup code iterates
     ``_clients()`` so that adding a new client is a one-line change here.
-    Adding a new enforcement mechanism to an existing client is also a
-    one-field change: set ``hooks_config_path`` and ``hooks_patch_fn``.
-
     Fields
     ------
     key         CLI ``--client`` value, e.g. ``"claude-code"``
@@ -433,20 +411,6 @@ class ClientSpec:
                 (e.g. Claude Desktop custom-instructions, Cursor rules).
     manual_note Human-readable guidance printed after setup for manual steps.
 
-    hooks_config_path
-                Callable[[], Path] | None — config file that receives
-                enforcement hooks (e.g. ``~/.claude/settings.json``).
-                None = this client has no scriptable enforcement mechanism.
-    hooks_patch_fn
-                Callable[(dict, str), tuple[dict, bool]] | None —
-                function that applies/updates enforcement hooks in a config
-                dict.  Signature: ``fn(config) -> (new_config, changed)``.
-                Must be None when hooks_config_path is None.
-    hooks_cleanup_fn
-                Callable[(dict), tuple[dict, bool]] | None —
-                function that removes Slowave enforcement hooks from a
-                config dict.  Signature: ``fn(config) -> (new_config, changed)``.
-
     require_dir_exists
                 When True, skip MCP patching silently if the config file's
                 parent directory doesn't exist (client probably not installed).
@@ -462,9 +426,6 @@ class ClientSpec:
     lifecycle_agent: str
     manual_lifecycle: bool = False
     manual_note: str = ""
-    hooks_config_path: Any = None  # Callable[[], Path] | None
-    hooks_patch_fn: Any = None  # Callable[(dict), (dict, bool)] | None
-    hooks_cleanup_fn: Any = None  # Callable[(dict), (dict, bool)] | None
     require_dir_exists: bool = False
     restart_note: str = ""
 
@@ -482,10 +443,6 @@ def _clients() -> list[ClientSpec]:
             mcp_path=_claude_json_path,
             lifecycle_path=_claude_md_path,
             lifecycle_agent="claude-code",
-            # Enforcement: UserPromptSubmit + Stop hooks in settings.json
-            hooks_config_path=_claude_settings_path,
-            hooks_patch_fn=_patch_claude_code_hooks,
-            hooks_cleanup_fn=_remove_claude_code_hooks,
             require_dir_exists=True,
             restart_note="Restart Claude Code to apply changes.",
         ),
@@ -512,8 +469,7 @@ def _clients() -> list[ClientSpec]:
             lifecycle_path=_clinerules_path,
             lifecycle_agent="cline-tui",
             require_dir_exists=True,
-            # No enforcement hooks yet — lifecycle relies on .clinerules instructions.
-            # When Cline adds a hook/trigger surface, add hooks_config_path + hooks_patch_fn here.
+            # Lifecycle behavior is defined by the injected instruction block.
             restart_note="Reload Cline (or restart VS Code / Cursor) to apply changes.",
         ),
         ClientSpec(
@@ -539,8 +495,7 @@ def _clients() -> list[ClientSpec]:
             lifecycle_path=_windsurf_global_rules_path,
             lifecycle_agent="windsurf",
             require_dir_exists=True,
-            # No enforcement hooks yet — lifecycle relies on global_rules.md instructions.
-            # When Windsurf adds a hook surface, add hooks_config_path + hooks_patch_fn here.
+            # Lifecycle behavior is defined by the injected instruction block.
             restart_note="Restart Windsurf to apply changes.",
         ),
         ClientSpec(
@@ -561,10 +516,6 @@ def _clients() -> list[ClientSpec]:
             mcp_path=_codex_config_path,
             lifecycle_path=_codex_agents_md_path,
             lifecycle_agent="codex",
-            # Enforcement: UserPromptSubmit + Stop hooks, same TOML file as MCP config.
-            hooks_config_path=_codex_config_path,
-            hooks_patch_fn=_patch_codex_hooks,
-            hooks_cleanup_fn=_remove_codex_hooks,
             require_dir_exists=True,
             restart_note="Restart Codex (CLI, Desktop, or IDE extension) to apply changes.",
         ),
@@ -919,77 +870,49 @@ _LIFECYCLE_BLOCK_TEMPLATE = f"""\
 <!-- slowave-lifecycle-start {LIFECYCLE_VERSION} -->
 ## MANDATORY — Slowave memory (5-verb cognitive cycle)
 
-Slowave is your persistent memory layer across tasks. You are the reasoning layer, and the quality of your long-term decisions depends on how effectively you use and maintain that memory.
+Use this loop once per user task. The connected MCP tools define the exact
+parameter and validation schema; obey their descriptions when calling them.
 
-You are responsible for actively consulting Slowave when past experience may help, preserving durable knowledge when it emerges, and providing accurate signals that improve memory quality over time.
+1. **Activate before your first response.** Derive a concise action-led
+   `initial_goal`, then call `slowave_activate` once with the verbatim task,
+   stable scope, and (after the first task in this client conversation) the
+   unchanged server-issued `continuity_id`. Store `session_id` and
+   `retrieval_id`. For coding work, scope is `project:<repository-root-name>`:
+   use the workspace root or nearest Git root, otherwise `project:<basename(cwd)>`.
+2. **Use memory deliberately.** Call `slowave_recall` when the task pivots to
+   a materially new question. Preserve a continuation cursor exactly and use
+   it only when more context would help. Call `slowave_remember` only for a
+   novel, durable, standalone fact; never store transient task state.
+3. **Assess every retrieval.** After each activate, recall, or continuation,
+   call `slowave_feedback` for every returned memory and procedure. Feedback
+   measures retrieval quality, not task outcome.
+4. **Commit before the final response.** Call `slowave_commit` with the actual
+   outcome and verification. Report `partial` or `failure` honestly. If a
+   reusable multi-step method was attempted, include its procedure.
 
-The Slowave lifecycle is mandatory: call `slowave_activate` before responding, assess every retrieval with feedback, and call `slowave_commit` before ending the task.
+Never activate because of a hook, stop event, system reminder, or injected
+follow-up prompt: one user task receives one activation. Do not invent IDs,
+scope, continuity, cursors, or success. Treat `{{"ok":false,...}}` as a failed
+operation, not an empty result.
 
-Each endpoint has a distinct role:
+### Conditional rules — apply when relevant
 
-- `slowave_activate` — Start a session, establish its provisional goal, and retrieve potentially relevant memories and procedures.
-- `slowave_remember` — Preserve a durable fact, decision, constraint, preference, or lesson that should remain useful in future tasks.
-- `slowave_recall` — Retrieve relevant past knowledge when the active question or situation changes and prior experience may help.
-- `slowave_feedback` — Record append-only, target-specific evidence about retrieved memories and procedures without conflating retrieval quality with task outcome.
-- `slowave_commit` — Close the session with the actual outcome and, when applicable, the procedure that was attempted. Record what really happened, including incomplete or failed results.
-
-Every v9 tool returns discriminated JSON. Read successful payloads from `{{"ok":true,"data":...}}`. Treat `{{"ok":false,"error":{{"code":...,"message":...,"retryable":...}}}}` as a failed lifecycle operation; do not continue as though an empty result succeeded.
-
-For coding agents, resolve the Slowave scope from the repository root before activation: use the client-provided workspace root when available; otherwise use the nearest Git working-tree root (for example, `git rev-parse --show-toplevel`). Set the scope to `project:<repository-root-name>` and reuse that exact value for every Slowave call in the session. If no workspace or Git root is available, fall back to `project:<basename(cwd)>` and report the fallback.
-
-**1 — `slowave_activate` (before your first response)**
-`slowave_activate(task="<verbatim task>", initial_goal="<short goal>", scope="project:<repository-root-name>", continuity_id=<optional>, task_context=<optional>)` → store `retrieval_id`, `session_id`, and `continuity_id`.
-- `task`: the task verbatim — do not summarize (raw text drives retrieval).
-- `initial_goal`: a concise provisional statement of the outcome sought. Start with an action verb and include the object plus any constraint that materially distinguishes the task. Prefer one short sentence; do not force a word count or copy the full request. Example: `"replace the legacy procedure audit with a structured dogfooding view"`.
-- `continuity_id`: on the first Slowave activation in the current client conversation, omit it. Store the server-returned opaque `continuity_id` and pass it unchanged to every subsequent activation in that same client conversation. Never invent, modify, or reuse an ID from another conversation. Omitting it (including `null`) always starts a new continuity.
-- `task_context` (optional): structured facts useful for ordinary and procedural retrieval, e.g. `{{"aiops":{{"cluster_id":"prod-1"}}}}`; context never overrides scope isolation.
-- `scope`: for coding agents, `project:<repository-root-name>` resolved as described above; other integrations may supply a different stable scope policy. Never omit it or change it within the session.
-- Call ONCE.
-
-   **Cold start gate — if the response `data.memory_state` is `"cold_start"`:**
-   - Find the most stable context document available (project README/overview, system instructions, or user profile).
-   - For each fact, ask: is it durable AND not already observable from the current context? If yes to both, call `slowave_remember(content, type, scope, session_id)` — one call per fact, never grouped.
-   - Exhaust that document before responding. Do NOT scan the full codebase.
-
-**2 — `slowave_remember` (encode durable knowledge)**
-`slowave_remember(content=<claim>, type=<explicit type>, scope="project:<repository-root-name>", session_id=<activate session_id>)` — scalar form; batch form is `slowave_remember(memories=[{{"content":...,"type":...}}], scope=..., session_id=...)`.
-- Novelty gate — skip if it already surfaced in activate/recall, is reconstructible from current context, or is transient/session-only state.
-- ONE fact per call (never bundle — it blurs the embedding).
-- Blank-slate phrasing: write so a reader with zero session context understands it. WRONG: `"fixed it by adding the field"`. RIGHT: `"SessionReaper idle timeout defaults to 3600s; the HTTP daemon disables it (0)"`.
-- `type` is required; pick exactly one: `fact` · `preference` (how the user wants things) · `decision` (choice + reason) · `constraint` (invariant) · `instruction` (explicit reusable direction, not an execution-backed procedure) · `lesson` (from failure/surprise) · `warning` (hazard) · `open_question` · `task` (durable to-do) · `artifact` (produced/external ref). Execution-backed procedures belong only in commit.
-- Scalar and batch forms inherit one required outer scope/session. Batch entries contain only `content` and `type`; never place scope or session IDs inside an entry.
-- Read each result's `memory_id` and `disposition`. `created` means a new memory was stored; `matched` means exact existing content was reinforced. Never infer novelty from success, and never claim `reconsolidated` unless the server explicitly returns it. Batch results are ordered best-effort item envelopes with an `index` and independent `ok/data` or `ok/error` result.
-- If a remembered fact changed: remember the corrected version AND flag the old one via `stale_memory_ids`/`wrong_memory_ids` in step 4.
-- Never encode: what is observable right now, transient state, vague impressions, or what you did this session (step 5 captures that).
-
-**3 — `slowave_recall` (mid-task lookups — call whenever you pivot to a new sub-question, not only on failure)**
-`slowave_recall(query, session_id=<activate session_id>, scope="project:<repository-root-name>", task_context=<optional>, evidence="references|full")` — specific, semantic query. WRONG: `"what about auth"`. RIGHT: `"decision on daemon single-instance enforcement"`. Session and scope are required and must match. Retrieval budget and policy are server-owned. Store the returned `retrieval_id`.
-
-**4 — `slowave_feedback` (whenever evidence becomes available)**
-`slowave_feedback(retrieval_id=<id>, memory_feedback=[...], procedure_feedback=[...], retrieval_quality=<optional>, missing=[...], coverage="partial|complete")`
-- Memory assessments are `used|irrelevant|stale`; use only IDs exposed by that
-  retrieval. A `stale` assessment MUST include `stale_reason` from
-  `contradicted|superseded|outdated|unsupported|withdrawn` and a concise
-  `reason`; `superseded` MUST also include `replacement_memory_id` for the
-  active replacement in the same retrieval scope.
-- Procedure feedback separates `use="used|not_used"` from `effect="helped|no_effect|harmed|unknown"`; `contribution` is required when used.
-- Task outcome never belongs in feedback. `slowave_commit` owns the task outcome.
-- `coverage="complete"` means every exposed memory and procedure was explicitly assessed. Silence under partial coverage is not negative evidence.
-- Later evidence appends a refining event; it never rewrites earlier feedback.
-
-**5 — `slowave_commit` (session close — always)**
-`slowave_commit(session_id=<activate session_id>, final_goal="<confirmed goal>", outcome="success|partial|failure", outcome_summary="<actual result>", verification={{"status":"verified|partially_verified|unverified","summary":"...","evidence_refs":[]}}, procedure={{...}}, trajectory=[{{"kind":"action|observation","summary":"...","status":"started|succeeded|failed|unknown"}}])`. Non-negotiable. Outcome must be honest (`partial` if anything was incomplete). Trajectory is optional and bounded to 32 entries; include material attempted branches and observations that are not already captured automatically, without adding source/provenance fields (the integration owns those).
-- Commit is the feedback-completeness gate. If it returns `error.code="incomplete_feedback"`, submit feedback for every listed outstanding target with complete coverage and retry; the session remains open.
-- `final_goal`: the most accurate objective actually pursued; it may equal `initial_goal`.
-- Treat this commit as writing memory for your future self. `final_goal`, `outcome_summary`, all `summary` descriptions, and all free-form JSON fields are critical retrieval and reuse inputs, not bookkeeping. Make them specific, standalone, accurate, and rich in the stable facts that would help a future agent find and safely apply the procedure; avoid vague text such as `"fixed it"`, omitted constraints, secrets, and incidental identifiers.
-- `procedure` is REQUIRED whenever a clear procedure was attempted, whether the outcome was success, partial, or failure. A procedure is clear when: (a) the session performed at least two causally ordered actions toward the goal, (b) the method could plausibly inspire another task with the same kind of goal, and (c) you can state its material context or caveats. If all three are true, you MUST submit it; do not omit it merely because the task failed, was noisy, or the method seems obvious.
-- Omit `procedure` only when the work was answer-only or trivial, no multi-step operational method was attempted, or the executed actions cannot honestly form a coherent reusable sequence. When uncertain, submit the procedure and describe the uncertainty, failure, or partial result in `outcome_summary`.
-- Use this accepted `procedure` shape: `{{"summary":"...","context":{{...}},"steps":[{{"summary":"..."}}],"caveats":["..."]}}`. `summary` and at least one summary-only step are required; `context` defaults to `{{}}`; `caveats` defaults to `[]`; optional `version`, if sent, must be `2`.
-- `procedure.summary`, every `procedure.steps[].summary`, and every `procedure.caveats[]` entry must be non-empty natural-language strings. `procedure.context` must be a JSON object containing only durable client-defined facts that materially shaped the approach. Caveats are guidance, not hard applicability gates. Preserve critical checks, ordering, safety bounds, and verification while abstracting incidental filenames, generated IDs, literal values, and tool calls.
-- A procedure is a retrieval-oriented abstraction of the reusable method, not a reconstruction of the completed session. Write the summary so that a future task with the same kind of goal can retrieve it. Include only the causally necessary steps, decision points, safety checks, ordering constraints, and verification method. Exclude investigation history, transient execution details, completed-session results, and information already recorded in the outcome summary. Avoid duplication between summary, context, steps, and caveats. Write the shortest procedure that preserves the method’s useful logic; do not target a fixed length or require it to be independently executable. Place durable applicability facts in `context` and conditional guidance in `caveats`; do not add new fields.
-- Do NOT send `procedure.preconditions`, `procedure.retrieval_context`, or `operation`/`target` inside procedure steps: those fields belong to older experimental contracts and the current validator rejects them. Do not place top-level retrieval cues inside `procedure`; activation/recall `task_context` is a separate contract.
-
-Anti-patterns: skip activate · `remember` without `scope` · bundle facts in one call · context-dependent phrasing · re-encode facts already surfaced · leave a superseded fact unflagged · invent memory IDs · put task outcome in feedback · treat not-used as harmful · report `success` when partial/failed · skip feedback or commit · use deleted tools (`slowave_reinforce`, `slowave_context`, `slowave_session_start/end`, `slowave_event`, `slowave_retrieval_feedback`, `slowave_context_feedback`).
+- **Cold start:** read one stable context document, then remember only durable
+  facts that are not already observable. Do not scan the whole codebase.
+- **Warnings and cursors:** account for every warning before relying on a
+  retrieval. A continuation contains only `session_id`, `scope`, and
+  `continue_from`; its returned targets also require feedback.
+- **Feedback:** use only IDs exposed by that retrieval. Mark `stale` only with
+  the required reason (and replacement for `superseded`). Use
+  `coverage="complete"` only after assessing every target; correct any
+  `outstanding` or `rejected` result before committing.
+- **Commit:** if it reports `incomplete_feedback`, submit all missing feedback
+  with complete coverage and retry. Verify both `feedback_status` and
+  `verification_status`. Keep trajectory entries task-only. Write outcome and
+  procedure summaries as specific, standalone future-facing knowledge.
+- **Procedures:** include one for a reusable method with at least two ordered
+  task actions; omit it only for answer-only or trivial work. Use the accepted
+  summary/context/steps/caveats shape from the tool description.
 <!-- slowave-lifecycle-end {LIFECYCLE_VERSION} -->"""
 
 
@@ -1101,145 +1024,6 @@ def _lifecycle_block_up_to_date(existing: str, block: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Claude Code hooks
-# ---------------------------------------------------------------------------
-
-_HOOKS_MARKER = "SLOWAVE MANDATORY"
-
-_USER_PROMPT_CMD = (
-    "echo 'SLOWAVE MANDATORY: Before writing your first word call: "
-    "(1) derive initial_goal as one concise action-led statement of the sought outcome, including any materially distinguishing object or constraint, "
-    "(2) slowave_activate(task=<verbatim task>,initial_goal=<derived goal>,scope=project:<repository-root-name>) "
-    "store retrieval_id and session_id. "
-    "Produce NO output until this call succeeds.'"
-)
-
-_STOP_CMD = (
-    "echo 'SLOWAVE MANDATORY: Before finishing this turn call: "
-    "(1) assess every retrieval with slowave_feedback(retrieval_id=<id>,memory_feedback=<target-specific assessments>,procedure_feedback=<use/effect/contribution>,coverage=partial|complete), "
-    "(2) slowave_commit(session_id=<activate session_id>,final_goal=<confirmed goal>,outcome=success|partial|failure,"
-    "outcome_summary=<specific standalone result>,verification=<status,summary,evidence_refs>,procedure=<required structured procedure whenever a clear reusable multi-step method was attempted, even if partial or failed>,"
-    "trajectory=<optional bounded action/observation entries for material attempts not captured automatically>,"
-    "with no task outcome fields in feedback). "
-    "Do NOT end the turn without step 2.'"
-)
-
-_CODEX_STOP_CMD = "slowave hook codex-stop # SLOWAVE MANDATORY"
-
-
-def _hooks_up_to_date(config: dict[str, Any], event: str, cmd: str) -> bool:
-    """Return True iff a Slowave hook for *event* already has exactly *cmd* as its command.
-
-    Checks for exact command text rather than mere marker presence so that
-    updated hook commands are applied on re-run.
-    """
-    for group in config.get("hooks", {}).get(event, []):
-        for h in group.get("hooks", []):
-            if _HOOKS_MARKER in h.get("command", ""):
-                return h.get("command", "") == cmd
-    return False
-
-
-def _patch_claude_code_hooks(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Inject or update UserPromptSubmit + Stop hooks.
-
-    Always writes the current command text.  If a stale Slowave hook already
-    exists (marker present but command differs), it is replaced in-place.
-    If no Slowave hook exists yet, a new group is appended.
-    """
-    changed = False
-    hooks = config.setdefault("hooks", {})
-    for event, cmd in [("UserPromptSubmit", _USER_PROMPT_CMD), ("Stop", _STOP_CMD)]:
-        if _hooks_up_to_date(config, event, cmd):
-            continue  # already correct — skip
-        # Remove any stale Slowave hook group for this event, then re-add.
-        if event in hooks:
-            hooks[event] = [
-                g
-                for g in hooks[event]
-                if not any(_HOOKS_MARKER in h.get("command", "") for h in g.get("hooks", []))
-            ]
-        hooks.setdefault(event, []).append(
-            {"matcher": "", "hooks": [{"type": "command", "command": cmd}]}
-        )
-        changed = True
-    return config, changed
-
-
-def _remove_claude_code_hooks(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Remove all Slowave enforcement hooks from a Claude Code settings dict.
-
-    Used by cleanup.  Removes every hook group whose command contains
-    ``_HOOKS_MARKER`` from the ``UserPromptSubmit`` and ``Stop`` events.
-    """
-    changed = False
-    for event in ["UserPromptSubmit", "Stop"]:
-        before = config.get("hooks", {}).get(event, [])
-        after = [
-            g
-            for g in before
-            if not any(_HOOKS_MARKER in h.get("command", "") for h in g.get("hooks", []))
-        ]
-        if after != before:
-            config.setdefault("hooks", {})[event] = after
-            changed = True
-    return config, changed
-
-
-# ---------------------------------------------------------------------------
-# Codex hooks
-# ---------------------------------------------------------------------------
-#
-# Codex's [[hooks.<Event>]] TOML array-of-tables shape parses down to the
-# same nested dict/list-of-dicts data model as Claude Code's JSON hooks, minus
-# the "matcher" field (only relevant for tool-scoped events like PreToolUse,
-# not UserPromptSubmit/Stop). _hooks_up_to_date() is structure-agnostic (only
-# calls .get() on whatever it's handed) so it is reused as-is against the
-# tomlkit document returned by _read_toml().
-
-
-def _patch_codex_hooks(config: Any) -> tuple[Any, bool]:
-    """Inject or update Codex UserPromptSubmit + Stop hooks.
-
-    Mirrors _patch_claude_code_hooks(): always writes the current command
-    text, replacing any stale Slowave hook group in-place.
-    """
-    changed = False
-    hooks = config.setdefault("hooks", {})
-    for event, cmd in [("UserPromptSubmit", _USER_PROMPT_CMD), ("Stop", _CODEX_STOP_CMD)]:
-        if _hooks_up_to_date(config, event, cmd):
-            continue
-        existing = [
-            g
-            for g in hooks.get(event, [])
-            if not any(_HOOKS_MARKER in h.get("command", "") for h in g.get("hooks", []))
-        ]
-        existing.append({"hooks": [{"type": "command", "command": cmd}]})
-        hooks[event] = existing
-        changed = True
-    return config, changed
-
-
-def _remove_codex_hooks(config: Any) -> tuple[Any, bool]:
-    """Remove all Slowave enforcement hooks from a Codex config.toml document.
-
-    Used by cleanup. Same logic as _remove_claude_code_hooks(), just without
-    the "matcher" field Codex doesn't use for these events.
-    """
-    changed = False
-    for event in ["UserPromptSubmit", "Stop"]:
-        before = config.get("hooks", {}).get(event, [])
-        after = [
-            g
-            for g in before
-            if not any(_HOOKS_MARKER in h.get("command", "") for h in g.get("hooks", []))
-        ]
-        if after != before:
-            config.setdefault("hooks", {})[event] = after
-            changed = True
-    return config, changed
-
-
 # ---------------------------------------------------------------------------
 # Worker service templates
 # ---------------------------------------------------------------------------
@@ -1634,7 +1418,6 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
 def _build_summary(
     client: str,
     worker: bool,
-    install_hooks: bool,
     slowave_bin: str,
     specs: list[ClientSpec] | None = None,
     mcp_url: str = "http://127.0.0.1:8766/mcp",
@@ -1677,22 +1460,6 @@ def _build_summary(
                 description="MCP server configuration",
             )
         )
-        if spec.hooks_config_path is not None and spec.hooks_patch_fn is not None and install_hooks:
-            hooks_file = spec.hooks_config_path()
-            # Codex keeps hooks in the same file as MCP config (cfg, already patched above) —
-            # re-patch that in-memory doc rather than re-reading, so the preview reflects both
-            # changes as they'd actually land in one combined write.
-            hooks_source = cfg if spec.key == "codex" else _read_json(hooks_file)
-            _, changed_hooks = spec.hooks_patch_fn(hooks_source)
-            summary.add_change(
-                Change(
-                    change_type=ChangeType.HOOKS,
-                    client=spec.label,
-                    status=ChangeStatus.UPDATE if changed_hooks else ChangeStatus.SKIP,
-                    path=str(hooks_file),
-                    description="Enforcement hooks",
-                )
-            )
         if spec.lifecycle_path is not None:
             lc_file = spec.lifecycle_path()
             existing = lc_file.read_text(encoding="utf-8") if lc_file.exists() else ""
@@ -1848,26 +1615,17 @@ def _section(title: str) -> None:
     show_default=True,
     help="Install the background worker as a system service.",
 )
-@click.option(
-    "--hooks/--no-hooks",
-    "install_hooks",
-    default=True,
-    show_default=True,
-    help="Inject UserPromptSubmit + Stop hooks (Claude Code and Codex only).",
-)
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing any files.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def setup_cmd(
-    client: str, worker: bool, install_hooks: bool, dry_run: bool, as_json: bool = False
-) -> None:
+def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -> None:
     """One-command post-install wiring for Claude Code, Claude Desktop, Cline, Cursor, Windsurf, OpenCode, and Codex.
 
     Configures every detected client to connect to the Slowave HTTP MCP daemon
     at http://127.0.0.1:8766/mcp.  The daemon and background worker start
     automatically as system services — no manual steps needed.
 
-    Automates MCP config, lifecycle instruction injection, enforcement hooks,
-    and the daemon + worker services. All steps are idempotent.
+    Automates MCP config, lifecycle instruction injection, and the daemon +
+    worker services. All steps are idempotent.
 
     \b
     Examples:
@@ -1932,9 +1690,7 @@ def setup_cmd(
         _ok(f"Found: {', '.join(spec.label for spec in detected_specs)}")
 
     # Build and display summary
-    summary = _build_summary(
-        client, worker, install_hooks, slowave_bin, detected_specs, mcp_url=mcp_url
-    )
+    summary = _build_summary(client, worker, slowave_bin, detected_specs, mcp_url=mcp_url)
     click.echo(summary.format())
 
     # Confirm unless dry-run — skip if nothing to do
@@ -1960,12 +1716,6 @@ def setup_cmd(
             continue
 
         if spec.key == "codex":
-            # Codex keeps MCP config and hooks in the same TOML file (unlike Claude
-            # Code's split ~/.claude.json / ~/.claude/settings.json). Read once, apply
-            # both patches to the same in-memory doc, write once — reading it twice and
-            # writing it twice (as the generic path below does for two-file clients)
-            # would leave the retained *.bak.* as the post-MCP-patch state instead of
-            # the true pre-Slowave original.
             cfg = _read_toml(mcp_file)
             cfg, mcp_changed = _patch_codex_mcp(cfg, mcp_url)
             if mcp_changed:
@@ -1977,22 +1727,7 @@ def setup_cmd(
             else:
                 _skip(f"MCP server already configured (HTTP) in {mcp_file}")
 
-            hooks_changed = False
-            if spec.hooks_config_path is not None and spec.hooks_patch_fn is not None:
-                if install_hooks:
-                    cfg, hooks_changed = spec.hooks_patch_fn(cfg)
-                    if hooks_changed:
-                        (
-                            _ok(f"Would update enforcement hooks → {mcp_file}")
-                            if dry_run
-                            else _ok(f"Enforcement hooks updated → {mcp_file}")
-                        )
-                    else:
-                        _skip(f"Enforcement hooks already up-to-date in {mcp_file}")
-                else:
-                    _skip(f"Enforcement hooks skipped (--no-hooks) for {spec.label}")
-
-            if not dry_run and (mcp_changed or hooks_changed):
+            if not dry_run and mcp_changed:
                 _write_toml(mcp_file, cfg)
         else:
             cfg = _read_json(mcp_file)
@@ -2023,23 +1758,6 @@ def setup_cmd(
                     _ok(f"MCP server set ({transport_label}) → {mcp_file}")
             else:
                 _skip(f"MCP server already configured ({transport_label}) in {mcp_file}")
-
-            # Enforcement hooks — data-driven via spec.hooks_patch_fn
-            if spec.hooks_config_path is not None and spec.hooks_patch_fn is not None:
-                hooks_file = spec.hooks_config_path()
-                cfg_hooks = _read_json(hooks_file)
-                if install_hooks:
-                    cfg_hooks, changed = spec.hooks_patch_fn(cfg_hooks)
-                    if changed:
-                        if dry_run:
-                            _ok(f"Would update enforcement hooks → {hooks_file}")
-                        else:
-                            _write_json(hooks_file, cfg_hooks)
-                            _ok(f"Enforcement hooks updated → {hooks_file}")
-                    else:
-                        _skip(f"Enforcement hooks already up-to-date in {hooks_file}")
-                else:
-                    _skip(f"Enforcement hooks skipped (--no-hooks) for {spec.label}")
 
         # Lifecycle block — auto-inject or print manual instruction
         if spec.lifecycle_path is not None:

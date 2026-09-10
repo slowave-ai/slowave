@@ -397,7 +397,9 @@ def retrieve_procedures(
 
     cue = " ".join((query, json.dumps(retrieval_context or {}, ensure_ascii=False)))
     cue_terms = set(re.findall(r"\w+", cue.casefold()))
-    query_vector = encoder.encode(cue) if encoder is not None else None
+    # Avoid an embedding inference when this scope has no procedures.  This
+    # is the normal case for new projects and the result is necessarily empty.
+    query_vector = encoder.encode(cue) if encoder is not None and procedures else None
     ranked: list[tuple[float, dict[str, Any]]] = []
     for item in procedures:
         text = " ".join(

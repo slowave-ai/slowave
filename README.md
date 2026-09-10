@@ -26,10 +26,6 @@ is worth preserving. Slowave keeps it scoped, retrievable, auditable over time.
 
 Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
 
-<p>
-    <img src="img/demo.gif" alt="Slowave demo" width="75%">
-</p>
-
 ## Why Slowave?
 
 Every new agent session has the codebase but not necessarily the full context behind

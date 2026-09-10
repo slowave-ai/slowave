@@ -796,6 +796,11 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             warnings: stable structured safety warnings.
             continuity_id: server-issued opaque client-conversation token.
             continuity_state: started on omission, continued on valid reuse.
+            retrieval_policy_version: server-selected retrieval-policy identifier.
+            more_available: whether a frozen continuation page is available.
+            continue_from: opaque continuation cursor, present only when more_available.
+            accessible_field: bounded orientation for unreturned candidates;
+                contains extra_candidates, kinds, and approx_extra_tokens, never content.
         """
         try:
             if not task.strip():
@@ -879,8 +884,18 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         Returns:
             retrieval_id: pass to slowave_feedback after using memories.
             memories: canonical direct/associated memories with stable pathways.
-            procedures: canonical procedures without ranking scores.
-            evidence: bounded references, with bounded content only in full mode.
+            procedures: canonical procedures, including their ID, goal, summary,
+                context, steps, caveats, outcome, outcome_summary, created_at,
+                aggregate evidence, and recent contributions; no ranking scores.
+            evidence: bounded records with evidence_id, source_kind, recorded_at,
+                occurred_at, and source_ref; full mode also returns content and
+                per-record truncated.
+            evidence_mode: the applied references or full mode.
+            evidence_truncated: whether evidence records exceeded the response budget.
+            more_available: whether a frozen continuation page is available.
+            continue_from: opaque continuation cursor, present only when more_available.
+            accessible_field: bounded orientation for unreturned candidates;
+                contains extra_candidates, kinds, and approx_extra_tokens, never content.
         """
         try:
             _validate_scope(scope)
@@ -978,6 +993,16 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                   outer scope and session.
         IMPORTANT: Use ONLY for durable knowledge that should persist across sessions.
         Do NOT store ephemeral task state — that belongs in session events.
+
+        Returns:
+            stored: true when the scalar claim was accepted.
+            memory_id: canonical identifier for a scalar stored or matched memory.
+            disposition: created or matched for a scalar claim.
+            type: confirmed scalar memory type.
+            scope: confirmed scalar memory scope.
+            source_event_id: source provenance event for a scalar claim.
+            results: for batch input, ordered item envelopes with index and
+                independent ok/data or ok/error results.
         """
         try:
             eng = build_engine()
@@ -1079,8 +1104,20 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             coverage: partial or complete; silence under partial is not negative.
             items: batch of records with the same fields. Scalar feedback fields
                    and items are mutually exclusive.
+        Returns:
+            retrieval_id: the assessed scalar retrieval.
+            coverage: applied partial or complete coverage.
+            outstanding: memory_ids and procedure_ids still requiring assessment.
+            accepted_event_ids: append-only feedback events accepted by the server.
+            rejected: feedback targets or shapes the server did not apply, with reasons.
+            applied: IDs grouped by the feedback effect recorded by the server.
+            results: for batch input, ordered item envelopes with independent
+                ok/data or ok/error results.
         """
-        eng = build_engine(disable_encoder=True)
+        # Feedback follows activate/recall in the public lifecycle, so the
+        # encoder-enabled engine is already warm.  Reusing it avoids building
+        # a second SQLite/FAISS engine just for this short write operation.
+        eng = build_engine(disable_encoder=False)
         if items is not None:
             if (
                 any(
@@ -1184,6 +1221,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             session_id: the session that was closed.
             episodes_formed: number of episodic memories created.
             feedback_status: complete for normal closure.
+            committed: true when the session outcome was recorded.
+            outcome: confirmed success, partial, or failure outcome.
+            verification_status: confirmed verification status.
+            operation: closed for a new close or updated for an already-ended session.
+            trajectory_lifecycle_filtered: number of lifecycle entries removed,
+                when any were filtered.
+            already_ended: true when the session had already been closed.
         """
         try:
             # O10 trajectories must be embedded so session_end can form episodic

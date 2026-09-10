@@ -124,6 +124,7 @@ class FeedbackService:
         lifecycle_version: str | None = None,
         retrieval_policy_version: str | None = None,
         continuity_state: str | None = None,
+        cue_embedding=None,
     ) -> None:
         """Record a retrieval response snapshot for feedback correlation.
 
@@ -147,18 +148,16 @@ class FeedbackService:
 
         conn = self.db.connect()
         now = int(time.time())
-        cue = packed_cue_embedding(
-            self.encoder,
-            canonical_cue_text(
-                query=query,
-                goal=goal,
-                task_type=task_type,
-                situation=situation,
-                requirements=requirements,
-                topics=topics,
-                entities=entities,
-            ),
+        cue_text = canonical_cue_text(
+            query=query,
+            goal=goal,
+            task_type=task_type,
+            situation=situation,
+            requirements=requirements,
+            topics=topics,
+            entities=entities,
         )
+        cue = packed_cue_embedding(self.encoder, cue_text, vector=cue_embedding)
 
         memory_ids = []
         response_json_text = None
