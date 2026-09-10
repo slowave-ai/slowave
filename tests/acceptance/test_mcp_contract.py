@@ -21,6 +21,47 @@ def _assert_error(payload: dict, code: str, message_fragment: str) -> None:
     assert message_fragment in payload["error"]["message"]
 
 
+def test_commit_rejects_malformed_nested_payload_with_structured_error(tmp_path: Path) -> None:
+    """Schema violations retain Slowave's normal structured error envelope."""
+
+    async def scenario() -> None:
+        async with open_harness(tmp_path / "commit-schema-validation.db") as harness:
+            activation, _ = await harness.activate(
+                "commit_schema_validation",
+                "Validate the commit payload contract.",
+                "validate commit payload contract",
+                "project:contract",
+            )
+            rejected, _ = await harness.raw_call(
+                "slowave_commit",
+                {
+                    "session_id": activation["session_id"],
+                    "final_goal": "validate commit payload contract",
+                    "outcome": "success",
+                    "outcome_summary": "The payload was validated.",
+                    "verification": {"status": "verified", "summary": "Schema inspected."},
+                    "procedure": {
+                        "summary": "Inspect a schema",
+                        "steps": ["This must be an object, not a string."],
+                    },
+                },
+            )
+            _assert_error(rejected, "invalid_input", "procedure.steps[0]")
+            assert rejected["error"]["field_errors"] == [
+                {
+                    "path": "procedure.steps[0]",
+                    "message": "Input should be a valid dictionary or instance of CommitProcedureStep",
+                }
+            ]
+
+            # Validation must happen before any commit side effect; the caller
+            # can correct the payload and close this same active session.
+            await harness.feedback_all(activation)
+            await harness.commit(activation["session_id"], "validate commit payload contract")
+
+    _run(scenario())
+
+
 def test_remember_rejects_a_session_from_another_scope_without_closing_it(tmp_path: Path) -> None:
     """A client cannot write into project:beta using a project:alpha session."""
 

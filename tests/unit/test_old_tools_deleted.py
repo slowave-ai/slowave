@@ -141,3 +141,83 @@ class TestOldToolsDeleted:
         }
         assert set(remember["required"]) == {"scope", "session_id"}
         assert "items" not in remember["properties"]
+
+    def test_commit_schema_exposes_every_nested_validation_rule(self) -> None:
+        """Clients must not have to discover commit payload shapes by retrying."""
+        import asyncio
+
+        import jsonschema
+        import pytest
+
+        import slowave.mcp.server as srv
+
+        loop = asyncio.new_event_loop()
+        try:
+            tools = {tool.name: tool for tool in loop.run_until_complete(srv.mcp.list_tools())}
+        finally:
+            loop.close()
+
+        schema = tools["slowave_commit"].inputSchema
+        definitions = schema["$defs"]
+        assert schema["properties"]["outcome"]["enum"] == ["success", "partial", "failure"]
+        assert definitions["CommitVerification"]["additionalProperties"] is False
+        assert definitions["CommitProcedure"]["additionalProperties"] is False
+        assert definitions["CommitProcedureStep"]["additionalProperties"] is False
+        assert definitions["CommitTrajectoryEntry"]["additionalProperties"] is False
+        assert definitions["CommitProcedure"]["properties"]["steps"]["minItems"] == 1
+        assert definitions["CommitTrajectoryEntry"]["properties"]["kind"]["enum"] == [
+            "action",
+            "observation",
+        ]
+
+        valid = {
+            "session_id": "sess_example",
+            "final_goal": "Deliver the contract fix",
+            "outcome": "success",
+            "outcome_summary": "The schema is explicit.",
+            "verification": {"status": "verified", "summary": "Schema inspected."},
+            "procedure": {
+                "summary": "Verify an MCP contract",
+                "context": {"surface": "mcp"},
+                "steps": [{"summary": "Inspect the published schema."}],
+                "caveats": ["Run an end-to-end client compatibility check."],
+            },
+            "trajectory": [{"kind": "action", "summary": "Inspected the schema."}],
+        }
+        jsonschema.validate(valid, schema)
+
+        invalid = {**valid, "procedure": {**valid["procedure"], "steps": ["inspect it"]}}
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+    def test_all_endpoint_schemas_expose_strict_nested_contracts(self) -> None:
+        import asyncio
+
+        import slowave.mcp.server as srv
+
+        loop = asyncio.new_event_loop()
+        try:
+            tools = {tool.name: tool for tool in loop.run_until_complete(srv.mcp.list_tools())}
+        finally:
+            loop.close()
+
+        remember = tools["slowave_remember"].inputSchema
+        assert remember["$defs"]["RememberEntry"]["additionalProperties"] is False
+        assert remember["$defs"]["RememberEntry"]["properties"]["type"]["enum"] == [
+            "fact",
+            "preference",
+            "decision",
+            "constraint",
+            "instruction",
+            "lesson",
+            "warning",
+            "open_question",
+            "task",
+            "artifact",
+        ]
+        feedback = tools["slowave_feedback"].inputSchema
+        for definition in ("MemoryFeedbackEntry", "ProcedureFeedbackEntry", "FeedbackItem"):
+            assert feedback["$defs"][definition]["additionalProperties"] is False
+        assert feedback["properties"]["coverage"]["enum"] == ["partial", "complete"]
+        recall = tools["slowave_recall"].inputSchema
+        assert recall["properties"]["evidence"]["enum"] == ["references", "full"]
