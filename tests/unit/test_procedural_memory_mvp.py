@@ -88,6 +88,15 @@ class _SimilarityEncoder:
         return _Vector(self.similarity)
 
 
+class _CountingEncoder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, text: str):
+        self.calls += 1
+        raise AssertionError("an empty procedure set must not be embedded")
+
+
 def test_procedure_retrieval_requires_point_five_raw_similarity() -> None:
     procedure = {
         "id": "proc_example",
@@ -108,6 +117,13 @@ def test_procedure_retrieval_requires_point_five_raw_similarity() -> None:
     admitted = retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.5))
     assert [item["id"] for item in admitted] == ["proc_example"]
     assert admitted[0]["score"] == 0.59
+
+
+def test_procedure_retrieval_skips_embedding_for_empty_set() -> None:
+    encoder = _CountingEncoder()
+
+    assert retrieve_procedures([], query="repair", encoder=encoder) == []
+    assert encoder.calls == 0
 
 
 def test_activate_can_omit_duplicate_schemas_and_diagnostics() -> None:

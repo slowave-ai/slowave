@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -30,6 +31,12 @@ from slowave.cli.setup import (
 from slowave.core.paths import runtime_paths
 
 SYSTEM = platform.system()
+
+# These signatures identify hooks written by released versions before hooks
+# were removed from setup.  Cleanup retains this migration path so uninstall
+# cannot leave a broken `slowave hook codex-stop` command behind.
+_LEGACY_HOOK_MARKER = "SLOWAVE MANDATORY"
+_LEGACY_CODEX_STOP_COMMAND = "slowave hook codex-stop"
 
 
 def _runtime_cleanup_targets() -> tuple[Path, list[Path], bool]:
@@ -323,21 +330,89 @@ def _remove_lifecycle_blocks(dry_run: bool) -> int:
     return count
 
 
+def _remove_legacy_slowave_hooks(config: Any) -> tuple[Any, bool]:
+    """Remove only legacy Slowave hooks from a JSON or TOML client config.
+
+    Older releases installed hooks under ``UserPromptSubmit`` and ``Stop``.
+    New setup no longer writes hooks, but uninstall and purge must remove these
+    historic entries.  Preserve unrelated hooks, including hooks in the same
+    event group.
+    """
+    if not isinstance(config, dict):
+        return config, False
+
+    hooks = config.get("hooks")
+    if not isinstance(hooks, dict):
+        return config, False
+
+    changed = False
+    for event in ("UserPromptSubmit", "Stop"):
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            continue
+        retained_groups = []
+        for group in groups:
+            if not isinstance(group, dict):
+                retained_groups.append(group)
+                continue
+            entries = group.get("hooks")
+            if not isinstance(entries, list):
+                retained_groups.append(group)
+                continue
+            retained_entries = [
+                entry
+                for entry in entries
+                if not (
+                    isinstance(entry, dict)
+                    and (
+                        _LEGACY_HOOK_MARKER in str(entry.get("command", ""))
+                        or _LEGACY_CODEX_STOP_COMMAND in str(entry.get("command", ""))
+                    )
+                )
+            ]
+            if retained_entries == entries:
+                retained_groups.append(group)
+                continue
+            changed = True
+            if retained_entries:
+                group["hooks"] = retained_entries
+                retained_groups.append(group)
+        if retained_groups != groups:
+            hooks[event] = retained_groups
+
+    return config, changed
+
+
+def _remove_legacy_hook_file(path: Path, *, toml: bool, dry_run: bool) -> int:
+    """Remove hooks written by prior releases from one known configuration file."""
+    if not path.exists():
+        return 0
+    config = _read_toml(path) if toml else _read_json(path)
+    config, changed = _remove_legacy_slowave_hooks(config)
+    if not changed:
+        return 0
+    if dry_run:
+        _ok(f"Would remove legacy Slowave hooks from: {path}")
+        return 0
+    if toml:
+        _write_toml(path, config)
+    else:
+        _write_json(path, config)
+    _ok(f"Removed legacy Slowave hooks from: {path}")
+    return 1
+
+
 def _remove_mcp_configs(dry_run: bool) -> int:
-    """Remove MCP server entries and enforcement hooks from all client configs.
+    """Remove MCP server entries and legacy Slowave hooks from client configs.
 
     Iterates ``_clients()`` — adding a new client in setup.py automatically
-    includes it here.  Enforcement hook removal is also data-driven via
-    ``spec.hooks_cleanup_fn``: no per-client special-cases needed.
-    Returns the count of config files modified.
+    includes it here. Returns the count of config files modified.
     """
     count = 0
 
     for spec in _clients():
         if spec.key == "codex":
-            # Codex keeps the MCP entry and enforcement hooks in the same TOML
-            # file — patch both against one loaded doc and write once, same
-            # reasoning as the combined read/write in setup.py's setup loop.
+            # Codex stores its MCP entry in a TOML configuration file.
             mcp_file = spec.mcp_path()
             if not mcp_file.exists():
                 _skip(f"{spec.label}: {mcp_file} not found")
@@ -353,16 +428,6 @@ def _remove_mcp_configs(dry_run: bool) -> int:
                     del cfg["mcp_servers"]["slowave"]
                     changed = True
                     _ok(f"Removed slowave MCP entry from: {mcp_file}")
-            if spec.hooks_cleanup_fn is not None:
-                cfg, hooks_changed = spec.hooks_cleanup_fn(cfg)
-                if hooks_changed:
-                    if dry_run:
-                        _ok(f"Would remove slowave enforcement hooks from: {mcp_file}")
-                    else:
-                        changed = True
-                        _ok(f"Removed slowave enforcement hooks from: {mcp_file}")
-                else:
-                    _skip(f"{spec.label}: no slowave enforcement hooks in {mcp_file}")
             if changed and not dry_run:
                 _write_toml(mcp_file, cfg)
                 count += 1
@@ -410,23 +475,15 @@ def _remove_mcp_configs(dry_run: bool) -> int:
                     _ok(f"Removed slowave MCP entry from: {mcp_file}")
                     count += 1
 
-        # Enforcement hooks — data-driven via spec.hooks_cleanup_fn
-        if spec.hooks_config_path is not None and spec.hooks_cleanup_fn is not None:
-            hooks_file = spec.hooks_config_path()
-            if not hooks_file.exists():
-                _skip(f"{spec.label}: hooks file not found ({hooks_file})")
-            else:
-                hcfg = _read_json(hooks_file)
-                hcfg, hooks_changed = spec.hooks_cleanup_fn(hcfg)
-                if hooks_changed:
-                    if dry_run:
-                        _ok(f"Would remove slowave enforcement hooks from: {hooks_file}")
-                    else:
-                        _write_json(hooks_file, hcfg)
-                        _ok(f"Removed slowave enforcement hooks from: {hooks_file}")
-                else:
-                    _skip(f"{spec.label}: no slowave enforcement hooks in {hooks_file}")
-
+    # Hooks are no longer installed, but prior releases wrote them to these
+    # files.  Keep this migration cleanup separate from ClientSpec so the
+    # current setup surface has no hook-installation knowledge.
+    count += _remove_legacy_hook_file(
+        _home() / ".claude" / "settings.json", toml=False, dry_run=dry_run
+    )
+    count += _remove_legacy_hook_file(
+        _home() / ".codex" / "config.toml", toml=True, dry_run=dry_run
+    )
     return count
 
 
@@ -446,8 +503,6 @@ def _remove_setup_backups(dry_run: bool) -> int:
         dirs.add(spec.mcp_path().parent)
         if spec.lifecycle_path is not None:
             dirs.add(spec.lifecycle_path().parent)
-        if spec.hooks_config_path is not None:
-            dirs.add(spec.hooks_config_path().parent)
     candidates: list[Path] = sorted(dirs)
     for directory in candidates:
         if not directory.is_dir():
@@ -477,7 +532,7 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
     """Permanently remove all Slowave configuration and local data.
 
     This command removes everything that 'slowave setup' installed:
-    - MCP server configs, lifecycle blocks, and enforcement hooks for every supported client
+    - MCP server configs and lifecycle blocks for every supported client
     - HTTP daemon, background worker, and daily backup services
     - Local database and data in the effective runtime root (database archives are retained)
     - Setup-created *.bak.* configuration backups

@@ -13,7 +13,6 @@ slowave setup --client codex
 
 `slowave setup` handles everything automatically:
 - Adds `[mcp_servers.slowave]` to `~/.codex/config.toml`, pointing at the Slowave HTTP daemon
-- Injects `UserPromptSubmit` + `Stop` enforcement hooks into the same `config.toml` (fire every turn)
 - Injects the lifecycle instruction block into `~/.codex/AGENTS.md`
 - Installs and starts the background worker and HTTP daemon as system services
 
@@ -29,10 +28,7 @@ and Claude Desktop are separate apps with separate config files, OpenAI consolid
 Codex surfaces onto the **same** `~/.codex/config.toml`. Configure it once and every surface picks
 it up; there's no separate "Codex Desktop" client to run setup against.
 
-One caveat: the MCP config and `AGENTS.md` instructions are confirmed shared across all three
-surfaces. Whether the enforcement hooks fire identically inside the Codex Desktop GUI (vs. the
-terminal CLI) hasn't been independently verified — if you notice the hooks aren't triggering in
-the desktop app specifically, please report it.
+The MCP config and `AGENTS.md` instructions are confirmed shared across all three surfaces.
 
 ---
 
@@ -41,13 +37,11 @@ the desktop app specifically, please report it.
 | What | Where |
 |---|---|
 | MCP server | `~/.codex/config.toml` → `[mcp_servers.slowave]` |
-| Enforcement hooks | Same file → `[[hooks.UserPromptSubmit]]` / `[[hooks.Stop]]` |
 | Lifecycle instructions | `~/.codex/AGENTS.md` |
 | Background worker | launchd (macOS) / systemd (Linux) / Task Scheduler (Windows) |
 
-Unlike every other client Slowave configures, Codex keeps the MCP registry *and* the enforcement
-hooks in one TOML file — `slowave setup` patches both in a single read/write pass so a re-run
-never leaves a partial, out-of-sync state between them.
+Codex keeps its MCP registry in `~/.codex/config.toml`; Slowave writes its lifecycle instructions
+separately to `~/.codex/AGENTS.md`.
 
 `$CODEX_HOME` is respected if set (defaults to `~/.codex`).
 
@@ -69,14 +63,6 @@ scope and ignores `AGENTS.md` entirely — the injected lifecycle block would ne
 `AGENTS.md` into your override file manually.
 
 ---
-
-## Enforcement hooks
-
-Codex has a native hooks system, and Slowave uses it the same way it uses Claude Code's
-`UserPromptSubmit` + `Stop` hooks — nudging the model to call `slowave_activate` at the start of
-a turn and `slowave_commit` before finishing. This is one of only two clients Slowave enforces
-this way today (the other being Claude Code); Cline, Cursor, Windsurf, and OpenCode currently
-rely on instructions alone.
 
 **Compatibility note:** older Codex versions ignore remote (`url`-based) MCP servers unless
 `[features] experimental_use_rmcp_client = true` is set in `config.toml`. Current versions don't
@@ -122,5 +108,5 @@ slowave doctor    # shows client detection and daemon health
 | Symptom | Fix |
 |---|---|
 | Tools don't appear | Run `slowave serve status`; restart Codex; check for the `experimental_use_rmcp_client` compatibility note above |
-| Tools appear but aren't called | `AGENTS.md` block or hooks missing — re-run `slowave setup`; check for a shadowing `AGENTS.override.md` |
-| Sessions are empty | Hooks should enforce this on every turn; check `~/.codex/config.toml` has the `[[hooks.UserPromptSubmit]]` / `[[hooks.Stop]]` entries |
+| Tools appear but aren't called | The `AGENTS.md` block may be missing or shadowed by `AGENTS.override.md` — re-run `slowave setup` or update the override |
+| Sessions are empty | Check that the lifecycle block is available and the `slowave_*` tools are present |

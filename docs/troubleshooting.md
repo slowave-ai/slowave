@@ -273,21 +273,6 @@ slowave setup
 not provided for every retrieved memory or procedure. This is intentional. The
 error response lists the outstanding targets.
 
-### Hooks not firing
-
-Claude Code and Codex use `UserPromptSubmit` and `Stop` hooks to call Slowave
-on every turn. If they aren't firing:
-
-```bash
-slowave setup --client claude-code
-```
-
-```bash
-slowave setup --client codex
-```
-
-Check that `~/.claude/settings.json` contains the hook configuration.
-
 ### Scope fragmentation
 
 If memory is split across two similar scopes (e.g., `project:my-repo` and
@@ -429,7 +414,7 @@ slowave restore /path/to/backup.sqlite.gz
 | Database | File exists, accessible, integrity |
 | Daemon | PID file, process running, health endpoint |
 | Worker | Process detected |
-| Client configs | MCP config, instructions, hooks per client |
+| Client configs | MCP config and instructions per client |
 | Lifecycle version | Installed vs instruction files |
 | Feedback health | Feedback events per retrieval ratio |
 | Embedding model | Model loads and encodes |

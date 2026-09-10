@@ -15,7 +15,6 @@ from slowave.lifecycle import LIFECYCLE_VERSION
 class ClientStatus:
     name: str
     mcp_configured: bool = False
-    hooks_installed: bool = False
     lifecycle_enabled: bool = False
     lifecycle_version: str | None = None
     running: bool = False
@@ -70,7 +69,6 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             _claude_desktop_config_path,
             _claude_json_path,
             _claude_md_path,
-            _claude_settings_path,
             _cline_mcp_settings_path,
             _clinerules_path,
             _detect_lifecycle_version,
@@ -78,27 +76,14 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         )
 
         cc_json = _claude_json_path()
-        cc_settings = _claude_settings_path()
         cc_md = _claude_md_path()
-        cc_has_mcp = cc_has_hooks = cc_has_lifecycle = False
+        cc_has_mcp = cc_has_lifecycle = False
         cc_lifecycle_version: str | None = None
 
         if cc_json.exists():
             try:
                 cfg_j = _read_json(cc_json)
                 cc_has_mcp = "slowave" in cfg_j.get("mcpServers", {})
-            except Exception:
-                pass
-        if cc_settings.exists():
-            try:
-                cfg = _read_json(cc_settings)
-                if not cc_has_mcp:
-                    cc_has_mcp = "slowave" in cfg.get("mcpServers", {})
-                cc_has_hooks = any(
-                    "SLOWAVE MANDATORY" in str(h.get("command", ""))
-                    for group in cfg.get("hooks", {}).get("UserPromptSubmit", [])
-                    for h in group.get("hooks", [])
-                )
             except Exception:
                 pass
         if cc_md.exists():
@@ -109,11 +94,10 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             except Exception:
                 pass
 
-        if cc_json.exists() or cc_settings.exists() or cc_md.exists():
+        if cc_json.exists() or cc_md.exists():
             statuses["claude_code"] = ClientStatus(
                 name="Claude Code",
                 mcp_configured=cc_has_mcp,
-                hooks_installed=cc_has_hooks,
                 lifecycle_enabled=cc_has_lifecycle,
                 lifecycle_version=cc_lifecycle_version,
             )
@@ -198,9 +182,8 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 lifecycle_version=oc_lifecycle_version,
             )
 
-        # Codex detection — TOML config, mcp_servers key, hooks + AGENTS.md
+        # Codex detection — TOML config, mcp_servers key, and AGENTS.md
         from slowave.cli.setup import (
-            _HOOKS_MARKER,
             _codex_agents_md_path,
             _codex_config_path,
             _codex_home,
@@ -210,18 +193,12 @@ def get_client_statuses() -> dict[str, ClientStatus]:
         codex_cfg_path = _codex_config_path()
         codex_agents_md = _codex_agents_md_path()
         codex_override = _codex_home() / "AGENTS.override.md"
-        codex_has_mcp = codex_has_hooks = codex_has_lifecycle = False
+        codex_has_mcp = codex_has_lifecycle = False
         codex_lifecycle_version: str | None = None
         if codex_cfg_path.exists():
             try:
                 ccfg = _read_toml(codex_cfg_path)
                 codex_has_mcp = "slowave" in ccfg.get("mcp_servers", {})
-                codex_has_hooks = any(
-                    _HOOKS_MARKER in h.get("command", "")
-                    for event in ("UserPromptSubmit", "Stop")
-                    for group in ccfg.get("hooks", {}).get(event, [])
-                    for h in group.get("hooks", [])
-                )
             except Exception:
                 pass
         if codex_agents_md.exists():
@@ -235,7 +212,6 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             statuses["codex"] = ClientStatus(
                 name="Codex",
                 mcp_configured=codex_has_mcp,
-                hooks_installed=codex_has_hooks,
                 # AGENTS.override.md shadows AGENTS.md entirely at this scope — if it
                 # exists, the injected block in AGENTS.md is never read by Codex.
                 lifecycle_enabled=codex_has_lifecycle and not codex_override.exists(),
@@ -323,8 +299,6 @@ def summarize_client_status(client: ClientStatus) -> tuple[Status, str]:
         return (Status.WARN, "MCP configured (HTTP); custom instructions missing")
     if client.mcp_configured:
         parts = ["MCP (HTTP)"]
-        if client.hooks_installed:
-            parts.append("hooks")
         if client.lifecycle_enabled:
             if client.lifecycle_version and client.lifecycle_version != LIFECYCLE_VERSION:
                 return (

@@ -6,8 +6,7 @@ All tests are offline — no binaries, no subprocesses, no network.
 Coverage:
   - _patch_mcp_servers          idempotence, HTTP format, legacy stdio migration
   - _remove_mcp_servers_from_settings
-  - _patch_claude_code_hooks    idempotence, new
-  - _patch_codex_mcp / _patch_codex_hooks / _remove_codex_hooks  (Codex, TOML)
+  - _patch_codex_mcp            TOML configuration
   - _read_toml / _write_toml    round-trips comments, backup creation
   - _inject_block               new file, idempotent update, legacy strip
   - _write_json / _backup_file  backup creation
@@ -25,24 +24,19 @@ from click.testing import CliRunner
 
 from slowave.cli.main import cli
 from slowave.cli.setup import (
-    _CODEX_STOP_CMD,
     _MARKER_START,
-    _USER_PROMPT_CMD,
     _backup_file,
     _build_summary,
     _detect_lifecycle_version,
     _detected_clients,
     _inject_block,
     _lifecycle_block,
-    _patch_claude_code_hooks,
-    _patch_codex_hooks,
     _patch_codex_mcp,
     _patch_mcp_servers,
     _patch_opencode_instructions,
     _patch_opencode_mcp,
     _read_json,
     _read_toml,
-    _remove_codex_hooks,
     _remove_mcp_servers_from_settings,
     _write_json,
     _write_toml,
@@ -136,85 +130,7 @@ class TestRemoveMcpServersFromSettings:
 
 
 # ===========================================================================
-# _patch_claude_code_hooks
-# ===========================================================================
-
-
-class TestPatchClaudeCodeHooks:
-    def test_adds_hooks_to_empty_config(self):
-        cfg, changed = _patch_claude_code_hooks({})
-        assert changed is True
-        assert "UserPromptSubmit" in cfg["hooks"]
-        assert "Stop" in cfg["hooks"]
-
-    def test_idempotent_when_hooks_present(self):
-        cfg, _ = _patch_claude_code_hooks({})
-        _, changed2 = _patch_claude_code_hooks(cfg)
-        assert changed2 is False
-
-    def test_preserves_unrelated_hooks(self):
-        existing = {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": "echo hi"}],
-                    }
-                ]
-            }
-        }
-        cfg2, _ = _patch_claude_code_hooks(existing)
-        assert "PreToolUse" in cfg2["hooks"]
-
-    def test_replaces_stale_hook_command(self):
-        """If hook is present but command text differs (version upgrade), it is replaced."""
-        stale_cmd = "echo 'SLOWAVE MANDATORY: old instructions'"
-        cfg = {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": stale_cmd}],
-                    }
-                ]
-            }
-        }
-        cfg2, changed = _patch_claude_code_hooks(cfg)
-        assert changed is True
-        # Stale command should be gone
-        cmds = [h["command"] for g in cfg2["hooks"]["UserPromptSubmit"] for h in g.get("hooks", [])]
-        assert stale_cmd not in cmds
-        # Current command should be present
-        from slowave.cli.setup import _USER_PROMPT_CMD
-
-        assert any(_USER_PROMPT_CMD in c for c in cmds)
-
-    def test_idempotent_with_current_hook_command(self):
-        """If hook already has the exact current command, no change."""
-        from slowave.cli.setup import _STOP_CMD, _USER_PROMPT_CMD
-
-        cfg = {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": _USER_PROMPT_CMD}],
-                    }
-                ],
-                "Stop": [
-                    {
-                        "matcher": "",
-                        "hooks": [{"type": "command", "command": _STOP_CMD}],
-                    }
-                ],
-            }
-        }
-        _, changed = _patch_claude_code_hooks(cfg)
-        assert changed is False
-
-
-# ===========================================================================
-# Codex — _patch_codex_mcp / _patch_codex_hooks / _remove_codex_hooks
+# Codex — _patch_codex_mcp
 # ===========================================================================
 
 
@@ -313,70 +229,6 @@ class TestPatchOpencodeInstructions:
         )
         assert mcp_changed_again is False
         assert instructions_changed is True
-
-
-class TestPatchCodexHooks:
-    def test_adds_hooks_to_empty_config(self):
-        cfg, changed = _patch_codex_hooks({})
-        assert changed is True
-        assert "UserPromptSubmit" in cfg["hooks"]
-        assert "Stop" in cfg["hooks"]
-        assert cfg["hooks"]["Stop"][0]["hooks"][0]["command"] == _CODEX_STOP_CMD
-
-    def test_idempotent_when_hooks_present(self):
-        cfg, _ = _patch_codex_hooks({})
-        _, changed2 = _patch_codex_hooks(cfg)
-        assert changed2 is False
-
-    def test_replaces_stale_hook_command(self):
-        stale_cmd = "echo 'SLOWAVE MANDATORY: old instructions'"
-        cfg = {
-            "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": stale_cmd}]}]}
-        }
-        cfg2, changed = _patch_codex_hooks(cfg)
-        assert changed is True
-        cmds = [h["command"] for g in cfg2["hooks"]["UserPromptSubmit"] for h in g.get("hooks", [])]
-        assert stale_cmd not in cmds
-
-    def test_preserves_unrelated_hook_events(self):
-        existing = {
-            "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}
-        }
-        cfg2, _ = _patch_codex_hooks(existing)
-        assert "PreToolUse" in cfg2["hooks"]
-
-    def test_round_trips_as_array_of_tables(self, tmp_path):
-        """Written TOML must use [[hooks.Event]] array-of-tables syntax."""
-        target = tmp_path / "config.toml"
-        cfg = _read_toml(target)
-        cfg, _ = _patch_codex_hooks(cfg)
-        _write_toml(target, cfg)
-        content = target.read_text()
-        assert "[[hooks.UserPromptSubmit]]" in content
-        assert "[[hooks.Stop]]" in content
-        reparsed = _read_toml(target)
-        assert len(reparsed["hooks"]["UserPromptSubmit"]) == 1
-
-
-class TestRemoveCodexHooks:
-    def test_removes_slowave_hooks(self):
-        cfg, _ = _patch_codex_hooks({})
-        cfg2, changed = _remove_codex_hooks(cfg)
-        assert changed is True
-        assert cfg2["hooks"]["UserPromptSubmit"] == []
-        assert cfg2["hooks"]["Stop"] == []
-
-    def test_no_change_when_absent(self):
-        _, changed = _remove_codex_hooks({})
-        assert changed is False
-
-    def test_preserves_unrelated_hooks(self):
-        cfg, _ = _patch_codex_hooks(
-            {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}}
-        )
-        cfg2, _ = _remove_codex_hooks(cfg)
-        assert "PreToolUse" in cfg2["hooks"]
-        assert cfg2["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo hi"
 
 
 # ===========================================================================
@@ -526,54 +378,38 @@ class TestDetectLifecycleVersion:
 
     def test_generated_block_mandates_clear_procedures_and_memory_quality(self):
         block = _lifecycle_block("claude-code")
-        assert "`procedure` is REQUIRED whenever a clear procedure was attempted" in block
-        assert "whether the outcome was success, partial, or failure" in block
-        assert "at least two causally ordered actions" in block
-        assert "writing memory for your future self" in block
-        assert "all free-form JSON fields are critical retrieval and reuse inputs" in block
-        assert (
-            "`procedure.context` must be a JSON object containing only durable client-defined facts"
-            in block
-        )
-        assert "Procedure feedback separates `use=" in block
-        assert "Use this accepted `procedure` shape" in block
-        assert '"steps":[{"summary":"..."}]' in block
-        assert "optional `version`, if sent, must be `2`" in block
-        assert (
-            "A procedure is a retrieval-oriented abstraction of the reusable method, "
-            "not a reconstruction of the completed session. Write the summary so that "
-            "a future task with the same kind of goal can retrieve it. Include only the "
-            "causally necessary steps, decision points, safety checks, ordering constraints, "
-            "and verification method. Exclude investigation history, transient execution "
-            "details, completed-session results, and information already recorded in the "
-            "outcome summary. Avoid duplication between summary, context, steps, and caveats. "
-            "Write the shortest procedure that preserves the method’s useful logic; do not "
-            "target a fixed length or require it to be independently executable. Place durable "
-            "applicability facts in `context` and conditional guidance in `caveats`; do not "
-            "add new fields."
-        ) in block
-        assert "Do NOT send `procedure.preconditions`" in block
-        assert "the current validator rejects them" in block
-        assert "`contribution` is required when used" in block
-        assert "`contribution` is required when used" in block
+        assert "reusable multi-step method" in block
+        assert "at least two ordered" in block
+        assert "task actions" in block
+        assert "summary/context/steps/caveats shape" in block
+        assert "specific, standalone future-facing knowledge" in block
+        assert "connected MCP tools define the exact" in block
 
     def test_generated_block_hardens_client_memory_responsibilities(self):
         block = _lifecycle_block("claude-code")
-        assert "Slowave is your persistent memory layer across tasks" in block
-        assert "quality of your long-term decisions depends on" in block
-        assert "actively consulting Slowave when past experience may help" in block
-        assert "preserving durable knowledge when it emerges" in block
-        assert "Each endpoint has a distinct role" in block
-        assert '`{"ok":true,"data":...}`' in block
-        assert '`{"ok":false,"error":' in block
-        assert "target-specific evidence about retrieved memories and procedures" in block
-        assert "including incomplete or failed results" in block
-        assert "resolve the Slowave scope from the repository root" in block
+        assert "Use this loop once per user task" in block
+        assert "Activate before your first response" in block
+        assert "Assess every retrieval" in block
+        assert "Commit before the final response" in block
+        assert '`{"ok":false,...}`' in block
         assert "project:<repository-root-name>" in block
-        assert "reuse that exact value for every Slowave call" in block
-        assert "fall back to `project:<basename(cwd)>` and report the fallback" in block
-        assert "do not force a word count" in block
-        assert "one concise action-led statement" in _USER_PROMPT_CMD
+        assert "project:<basename(cwd)>" in block
+        assert "Never activate because of a hook, stop event" in block
+        assert "Do not invent IDs," in block
+        assert "scope, continuity, cursors, or success" in block
+
+    def test_generated_block_explains_accessible_field_and_continuation(self):
+        block = _lifecycle_block("claude-code")
+        assert "### Conditional rules — apply when relevant" in block
+        assert "account for every warning" in block
+        assert "A continuation contains only `session_id`, `scope`, and" in block
+        assert "`continue_from`" in block
+        assert "its returned targets also require feedback" in block
+        assert "incomplete_feedback" in block
+        assert "feedback_status" in block
+        assert "verification_status" in block
+        assert "`outstanding` or `rejected` result before committing" in block
+        assert "Keep trajectory entries task-only" in block
 
 
 # ===========================================================================
@@ -721,14 +557,14 @@ class TestDetectedClients:
         (fake_home / ".claude").mkdir()
         (fake_home / ".cline").mkdir()
 
-        summary = _build_summary("all", worker=False, install_hooks=True, slowave_bin="slowave")
+        summary = _build_summary("all", worker=False, slowave_bin="slowave")
 
         assert {change.client for change in summary.changes} == {"Claude Code", "Cline"}
 
     def test_macos_worker_summary_formats_runtime_placeholders(self, fake_home, monkeypatch):
         monkeypatch.setattr(_setup_mod, "SYSTEM", "Darwin")
 
-        summary = _build_summary("all", worker=True, install_hooks=True, slowave_bin="slowave")
+        summary = _build_summary("all", worker=True, slowave_bin="slowave")
 
         assert any(
             change.change_type.value == "worker_service" and change.client == "macOS"
@@ -838,8 +674,7 @@ class TestCleanupRemoveMcpConfigs:
         count = _cleanup_mod._remove_mcp_configs(dry_run=False)
         assert count == 0
 
-    def test_removes_slowave_mcp_and_hooks_from_codex_config(self, fake_home):
-        """Codex keeps MCP entry + hooks in one TOML file — both must be removed in one write."""
+    def test_removes_slowave_mcp_from_codex_config(self, fake_home):
         codex_dir = fake_home / ".codex"
         codex_dir.mkdir()
         cfg_path = codex_dir / "config.toml"
@@ -848,11 +683,7 @@ class TestCleanupRemoveMcpConfigs:
             "[mcp_servers.slowave]\n"
             'url = "http://127.0.0.1:8766/mcp"\n\n'
             "[mcp_servers.other]\n"
-            'command = "npx"\n\n'
-            "[[hooks.UserPromptSubmit]]\n"
-            "[[hooks.UserPromptSubmit.hooks]]\n"
-            'type = "command"\n'
-            f'command = "{_setup_mod._USER_PROMPT_CMD}"\n',
+            'command = "npx"\n',
             encoding="utf-8",
         )
 
@@ -862,8 +693,69 @@ class TestCleanupRemoveMcpConfigs:
         remaining = _read_toml(cfg_path)
         assert "slowave" not in remaining.get("mcp_servers", {})
         assert "other" in remaining["mcp_servers"]
-        assert remaining["hooks"]["UserPromptSubmit"] == []
         assert remaining["model"] == "gpt-5.5"
+
+    def test_removes_legacy_hooks_without_an_mcp_entry(self, fake_home):
+        codex_dir = fake_home / ".codex"
+        codex_dir.mkdir()
+        cfg_path = codex_dir / "config.toml"
+        cfg_path.write_text(
+            'model = "gpt-5.5"\n\n'
+            "[[hooks.UserPromptSubmit]]\n"
+            "[[hooks.UserPromptSubmit.hooks]]\n"
+            'type = "command"\n'
+            "command = \"echo 'SLOWAVE MANDATORY: activate'\"\n\n"
+            "[[hooks.Stop]]\n"
+            "[[hooks.Stop.hooks]]\n"
+            'type = "command"\n'
+            'command = "slowave hook codex-stop # SLOWAVE MANDATORY"\n\n'
+            "[[hooks.Stop]]\n"
+            "[[hooks.Stop.hooks]]\n"
+            'type = "command"\n'
+            'command = "echo keep-me"\n',
+            encoding="utf-8",
+        )
+
+        count = _cleanup_mod._remove_mcp_configs(dry_run=False)
+
+        assert count == 1
+        remaining = _read_toml(cfg_path)
+        assert remaining["hooks"]["UserPromptSubmit"] == []
+        assert len(remaining["hooks"]["Stop"]) == 1
+        assert remaining["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo keep-me"
+
+    def test_removes_legacy_claude_hooks_and_preserves_unrelated_hooks(self, fake_home):
+        claude_dir = fake_home / ".claude"
+        claude_dir.mkdir()
+        cfg_path = claude_dir / "settings.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "UserPromptSubmit": [
+                            {
+                                "matcher": "",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "echo 'SLOWAVE MANDATORY: activate'",
+                                    }
+                                ],
+                            }
+                        ],
+                        "Stop": [{"hooks": [{"type": "command", "command": "echo keep-me"}]}],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        count = _cleanup_mod._remove_mcp_configs(dry_run=False)
+
+        assert count == 1
+        remaining = json.loads(cfg_path.read_text())
+        assert remaining["hooks"]["UserPromptSubmit"] == []
+        assert remaining["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo keep-me"
 
     def test_dry_run_does_not_write_codex_config(self, fake_home):
         codex_dir = fake_home / ".codex"

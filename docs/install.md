@@ -21,7 +21,7 @@ Then wire everything up:
 
 ```bash
 slowave setup --dry-run   # preview what will change
-slowave setup             # apply: MCP configs, lifecycle instructions, hooks, services
+slowave setup             # apply: MCP configs, lifecycle instructions, services
 slowave doctor            # verify: daemon health, client detection
 ```
 
@@ -52,7 +52,6 @@ To configure a single client, or to find client-specific details:
 | MCP config | All | Patches each client's MCP config so `slowave_*` tools appear |
 | Lifecycle instructions | Claude Code, Cline, Windsurf, OpenCode, Codex | Injects the mandatory Slowave block automatically |
 | Lifecycle instructions | Claude Desktop, Cursor | Prints the block to paste — requires one manual step |
-| Enforcement hooks | Claude Code, Codex | Adds `UserPromptSubmit` + `Stop` hooks so the client calls Slowave every turn |
 | HTTP daemon | All | Installs as launchd/systemd/Task Scheduler — auto-starts |
 | Background worker | All | Installs as launchd/systemd/Task Scheduler — consolidates events |
 | Daily backup | All | Installs as launchd/systemd/Task Scheduler — gzip snapshot of the database |
@@ -62,7 +61,6 @@ Options:
 ```
 slowave setup --client [claude-code|claude-desktop|cline|cursor|opencode|windsurf|codex|all]
               --no-worker       # skip worker service install
-              --no-hooks        # skip Claude Code / Codex hooks
               --dry-run         # preview without writing
 ```
 
@@ -111,7 +109,6 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | File | Purpose | What Changes |
 |---|---|---|
 | `~/.claude.json` | Claude Code MCP config | Adds `mcpServers.slowave` entry (user-scope MCP registry) |
-| `~/.claude/settings.json` | Claude Code hooks | Adds `hooks.UserPromptSubmit` and `hooks.Stop` |
 | `~/.claude/CLAUDE.md` | Claude Code instructions | Prepends lifecycle block |
 | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 | `~/.cline/rules/slowave.md` | Cline instructions | Prepends lifecycle block |
@@ -123,7 +120,7 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Prepends lifecycle block |
 | `~/.config/opencode/opencode.json` | OpenCode MCP + instructions config | Adds `mcp.slowave` and registers instructions file |
 | `~/.config/opencode/slowave-instructions.md` | OpenCode lifecycle instructions | Creates Slowave-owned instruction file |
-| `~/.codex/config.toml` | Codex MCP config + hooks | Adds `[mcp_servers.slowave]` and `[[hooks.UserPromptSubmit/Stop]]` (single combined write) |
+| `~/.codex/config.toml` | Codex MCP config | Adds `[mcp_servers.slowave]` |
 | `~/.codex/AGENTS.md` | Codex instructions | Prepends lifecycle block |
 | `~/Library/LaunchAgents/com.slowave.worker.plist` | Background worker | launchd plist, loads with `launchctl` |
 | `~/Library/LaunchAgents/com.slowave.daemon.plist` | HTTP MCP daemon | launchd plist, auto-starts on load |
@@ -134,7 +131,6 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | File | Purpose | What Changes |
 |---|---|---|
 | `~/.claude.json` | Claude Code MCP config | Same as macOS |
-| `~/.claude/settings.json` | Claude Code hooks | Same as macOS |
 | `~/.claude/CLAUDE.md` | Claude Code instructions | Same as macOS |
 | `~/.config/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 | `~/.cline/rules/slowave.md` | Cline instructions | Same as macOS |
@@ -149,7 +145,7 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | `~/.cursor/mcp.json` | Cursor native MCP config | Same as macOS |
 | `~/.codeium/windsurf/mcp_config.json` | Windsurf MCP config | Same as macOS |
 | `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Same as macOS |
-| `~/.codex/config.toml` | Codex MCP config + hooks | Same as macOS |
+| `~/.codex/config.toml` | Codex MCP config | Same as macOS |
 | `~/.codex/AGENTS.md` | Codex instructions | Same as macOS |
 
 ### Windows
@@ -157,7 +153,6 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | File | Purpose | What Changes |
 |---|---|---|
 | `%USERPROFILE%\.claude.json` | Claude Code MCP config | Same as macOS |
-| `%USERPROFILE%\.claude\settings.json` | Claude Code hooks | Same as macOS |
 | `%USERPROFILE%\.claude\CLAUDE.md` | Claude Code instructions | Same as macOS |
 | `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 | `%USERPROFILE%\.clinerules` | Cline instructions | Same as macOS |
@@ -171,7 +166,7 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | `%USERPROFILE%\.cursor\mcp.json` | Cursor native MCP config | Same as macOS |
 | `%APPDATA%\Codeium\windsurf\mcp_config.json` | Windsurf MCP config | Same as macOS |
 | `%APPDATA%\Codeium\windsurf\memories\global_rules.md` | Windsurf global rules | Same as macOS |
-| `%USERPROFILE%\.codex\config.toml` | Codex MCP config + hooks | Same as macOS |
+| `%USERPROFILE%\.codex\config.toml` | Codex MCP config | Same as macOS |
 | `%USERPROFILE%\.codex\AGENTS.md` | Codex instructions | Same as macOS |
 
 ---
@@ -282,12 +277,12 @@ slowave uninstall
 ```
 
 `slowave uninstall` removes every Slowave-managed client integration: MCP
-entries, generated lifecycle instructions and hooks, plus the HTTP daemon,
+entries, generated lifecycle instructions, plus the HTTP daemon,
 background worker, and daily-backup services. It preserves:
 
 - the effective runtime root, including the SQLite database and archives
 - setup-created `*.bak.*` configuration backups
-- unrelated client configuration, MCP entries, hooks, and instruction content
+- unrelated client configuration, MCP entries, and instruction content
 - the installed Slowave package
 
 Claude Desktop and Cursor lifecycle instructions are pasted into their UI and

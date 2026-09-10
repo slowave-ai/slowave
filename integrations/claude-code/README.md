@@ -13,7 +13,6 @@ slowave setup --client claude-code
 
 `slowave setup` handles everything automatically:
 - Adds the MCP server entry to `~/.claude.json` (user-scope MCP registry)
-- Injects `UserPromptSubmit` + `Stop` enforcement hooks into `~/.claude/settings.json` (fire every turn)
 - Injects the lifecycle instruction block into `~/.claude/CLAUDE.md`
 - Installs and starts the background worker and HTTP daemon as system services
 
@@ -27,14 +26,13 @@ Restart Claude Code.
 |---|---|
 | MCP server | `~/.claude.json` (user-scope MCP registry) |
 | Lifecycle instructions | `~/.claude/CLAUDE.md` |
-| Enforcement hooks | `UserPromptSubmit` + `Stop` in `~/.claude/settings.json` |
 | Background worker | launchd (macOS) / systemd (Linux) / Task Scheduler (Windows) |
 
 ---
 
 ## Lifecycle instructions
 
-`slowave setup` injects the lifecycle block into `~/.claude/CLAUDE.md` and installs enforcement hooks.
+`slowave setup` injects the lifecycle block into `~/.claude/CLAUDE.md`.
 
 **Full lifecycle documentation:** [docs/install.md#lifecycle-instruction-block](../../docs/install.md#lifecycle-instruction-block)
 
@@ -77,5 +75,5 @@ slowave doctor    # shows client detection and daemon health
 | Symptom | Fix |
 |---|---|
 | Tools don't appear | Run `slowave serve status`; restart Claude Code |
-| Tools appear but aren't called | `CLAUDE.md` block or hooks missing — re-run `slowave setup` |
-| Sessions are empty | Hooks should enforce this on every turn; check `~/.claude/settings.json` has the hook entries |
+| Tools appear but aren't called | The `CLAUDE.md` lifecycle block may be missing or stale — re-run `slowave setup` |
+| Sessions are empty | Check that the lifecycle block is installed and the `slowave_*` tools are available |

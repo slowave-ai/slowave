@@ -19,6 +19,15 @@ class _StubEncoder:
         return vector / np.linalg.norm(vector)
 
 
+class _CountingEncoder(_StubEncoder):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, text: str) -> np.ndarray:
+        self.calls += 1
+        return super().encode(text)
+
+
 def _engine() -> tuple[SlowaveEngine, str]:
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -61,6 +70,37 @@ def _snapshot(
             "schemas": [{"id": f"sch_{schema_id}", "pathway": pathway, "activation": 0.8}],
         },
     )
+
+
+def test_snapshot_reuses_supplied_cue_embedding() -> None:
+    engine, path = _engine()
+    try:
+        encoder = _CountingEncoder()
+        engine.encoder = encoder
+        cue = np.array([0.6, 0.8], dtype=np.float32)
+
+        engine.record_context_recall(
+            context_id="ctx_reused_embedding",
+            scope_id="project:access",
+            query="repair access evidence",
+            response={"schemas": []},
+            cue_embedding=cue,
+        )
+
+        row = (
+            engine.db.connect()
+            .execute(
+                "SELECT cue_embedding, cue_dim FROM context_recall_events WHERE context_id = ?",
+                ("ctx_reused_embedding",),
+            )
+            .fetchone()
+        )
+        assert encoder.calls == 0
+        assert row["cue_dim"] == 2
+        assert row["cue_embedding"] is not None
+    finally:
+        engine.close()
+        _cleanup(path)
 
 
 def test_irrelevant_writes_pathway_evidence_without_semantic_mutation() -> None:

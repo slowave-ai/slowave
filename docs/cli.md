@@ -165,7 +165,7 @@ deliberately different scopes:
 
 | Command | What it removes |
 |---|---|
-| `slowave uninstall [--dry-run]` | Slowave MCP entries, generated lifecycle instructions, hooks, and daemon, worker, and backup services. It preserves the runtime root, database archives, setup backups, and the installed package. |
+| `slowave uninstall [--dry-run]` | Slowave MCP entries, generated lifecycle instructions, and daemon, worker, and backup services. It preserves the runtime root, database archives, setup backups, and the installed package. |
 | `slowave purge [--dry-run]` | Everything removed by `uninstall`, plus local data in the runtime root and setup-created `*.bak.*` configuration backups. Database archives in `backups/` are retained. This is destructive and asks for confirmation. With legacy `SLOWAVE_DB`, only known Slowave artifacts are removed from its potentially shared parent directory. |
 
 `slowave cleanup` remains a compatibility alias for `slowave purge`; use
