@@ -127,6 +127,36 @@ def test_direct_fact_and_decision_via_mcp(
     _run(scenario())
 
 
+def test_remembered_instruction_is_retrieved_in_a_later_mcp_session(tmp_path: Path) -> None:
+    """A public instruction remains eligible after its creating session closes."""
+
+    async def scenario() -> None:
+        scope = "project:delivery"
+        instruction = "Before committing code, run the linter and type-checker."
+        async with open_harness(tmp_path / "instruction-retrieval.db") as harness:
+            ids = await _seed(harness, scope, ((instruction, "instruction"),))
+            retrieval, observation = await harness.activate(
+                "remembered_instruction",
+                "What must we run before committing code?",
+                "retrieve the pre-commit instruction",
+                scope,
+            )
+            result = evaluate(
+                RetrievalGold(
+                    case_id="remembered_instruction",
+                    family="instruction_retrieval",
+                    surface="activate",
+                    scope=scope,
+                    required_contents=(instruction,),
+                ),
+                observation,
+            )
+            await _finish(harness, retrieval, used_ids={ids[instruction]})
+            _assert_passed(harness, result)
+
+    _run(scenario())
+
+
 def test_semantic_paraphrase_via_mcp(tmp_path: Path) -> None:
     async def assessed_scenario() -> None:
         db_path = tmp_path / "paraphrase-assessed.db"

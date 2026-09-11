@@ -118,6 +118,7 @@ _DEFAULT_ALLOWED_CLASSES = (
     "preference",
     "interaction_preference",
     "constraint",
+    "instruction",
     "habit",
     "decision",
     "lesson",
@@ -701,7 +702,7 @@ class WorkingMemoryGate:
         reasons.append(f"salience={salience:.2f}")
 
         schema_class = _lower(facets.get("schema_class"))
-        if schema_class in {"preference", "interaction_preference", "constraint"}:
+        if schema_class in {"preference", "interaction_preference", "constraint", "instruction"}:
             prior += 0.12
             reasons.append(schema_class)
         elif schema_class in {"decision", "lesson", "habit", "fact", "procedure", "warning"}:
