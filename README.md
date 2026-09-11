@@ -26,6 +26,8 @@ Slowave addresses this with a continuous feedback loop between the agent and its
 
 > **remember → recall → use → feedback → reinforce / weaken → decay**
 
+Slowave adapts the salience of stored memories based on agent feedbacks.
+
 Over time, the agent’s feedback shapes what Slowave returns without needing a separate LLM judge inside the memory layer.
 
 Memory becomes something continuously shaped by use rather than a static collection of facts waiting to be retrieved.
@@ -44,22 +46,14 @@ Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Dev
 Every new agent session has the codebase but not necessarily the context behind
 it: previous decisions, constraints, failed attempts, the thinking process.
 
-The **missing context** is what makes an agent repeat a rejected design,
-miss an operational constraint, or make you explain (again and again) the project principles.
+That missing context makes agents repeat rejected designs, miss operational
+constraints, and force you to restate project principles.
 
-Slowave turns those durable judgments into a shared project memory. It is not a
-markdown-transcript replay system or another LLM layer on top of your agent.
+Slowave turns those durable judgments into shared project memory: scoped,
+inspectable, and available to later tasks.
 
-The connected agent already understands the conversation, task, and outcome.
-It decides what is worth preserving and whether retrieved context helped,
-was irrelevant, or became stale. Slowave makes those decisions persistent,
-inspectable, and useful in later tasks—without LLM calls inside its memory core.
-
-Install Slowave if you feel you're **missing the continuity** in your daily work with your LLM agent.
-
-The first useful payoff is simply not having to repeat the same constraint in the next task.
-
-Over time, the way you work becomes **reusable context** for your agent.
+The first useful payoff is simply not having to repeat the same constraint in
+the next task. Over time, the way you work becomes reusable context for your agent.
 
 ## Installation
 
@@ -82,9 +76,10 @@ To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
 
 Slowave is transparent to your work.
 
-You still ask your agent to do normal work: fix a regression, add a migration,
-review a pull request. When it encounters a durable fact or decision, the
-installed lifecycle instructs your agent to preserve that claim. 
+You keep working with your agent as usual. 
+
+When it encounters a durable fact or decision, the installed lifecycle directs it to preserve that claim.
+
 On a later task, Slowave can return a compact, scoped set of relevant recorded memories to your agent, so that it can act upon its own memories. 
 
 What you will see while working with your agent:
@@ -217,7 +212,7 @@ production-quality claim.
 
 ## Documentation
 
-- <a href="" target="_blank">Mintlify</a>: full auto-generated documentation 
+- [Mintlify documentation](https://slowave-ai.mintlify.app/): full auto-generated documentation
 - [design.md](docs/design.md): design rationale, boundaries, and positioning
 - [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
 - [install.md](docs/install.md): installation, setup, lifecycle instructions, modified files, and removal
