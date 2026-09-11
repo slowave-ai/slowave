@@ -12,10 +12,23 @@
 ---
 
 AI agents have large context windows, but that context ends with your current session.
-Open a new session, switch from Claude Code to Codex, and you reconstruct the same decisions, constraints, and failed attempts.
+Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, and failed attempts.
 
-Slowave gives your agents one local, shared memory. The agent decides what
-is worth preserving. Slowave keeps it scoped, retrievable, auditable over time.
+Slowave gives your agents one local, shared memory.
+
+Many AI memory systems focus on storing information and retrieving semantically relevant context.
+
+Slowave starts from a different premise:
+
+> **Agent memory isn't only a retrieval problem. Memory quality is driven by how facts retained in memory can help an agent achieve its future goals.**
+
+Slowave addresses this with a continuous feedback loop between the agent and its memory:
+
+> **remember → recall → use → feedback → reinforce / weaken → decay**
+
+Over time, the agent’s feedback shapes what Slowave returns without needing a separate LLM judge inside the memory layer.
+
+Memory becomes something continuously shaped by use rather than a static collection of facts waiting to be retrieved.
 
 - **Keep context across tasks**: Your agents can reuse recorded decisions, preferences, constraints, and lessons instead of making you repeat them.
 - **Improves with use:** Useful memories strengthen, irrelevant ones lose priority, stale knowledge can be suppressed or superseded.
@@ -28,20 +41,19 @@ Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Dev
 
 ## Why Slowave?
 
-Every new agent session has the codebase but not necessarily the full context behind
-it: your previous interactions with your agent, your decisions, your thinking process.
+Every new agent session has the codebase but not necessarily the context behind
+it: previous decisions, constraints, failed attempts, the thinking process.
 
 The **missing context** is what makes an agent repeat a rejected design,
 miss an operational constraint, or make you explain (again and again) the project principles.
 
-Slowave turns those durable judgments into a shared project memory.
+Slowave turns those durable judgments into a shared project memory. It is not a
+markdown-transcript replay system or another LLM layer on top of your agent.
 
-It is **not** a markdown-transcript-replay system and it is not another LLM layer on top of your agent.
-
-Slowave maintains your memory locally with brain-inspired algorithms without LLM calls. 
-
-It returns a bounded working set, keeps it within scope, and records feedback about whether it was
-useful or out of date. Your LLM agent remains responsible for reasoning.
+The connected agent already understands the conversation, task, and outcome.
+It decides what is worth preserving and whether retrieved context helped,
+was irrelevant, or became stale. Slowave makes those decisions persistent,
+inspectable, and useful in later tasks—without LLM calls inside its memory core.
 
 Install Slowave if you feel you're **missing the continuity** in your daily work with your LLM agent.
 
@@ -219,9 +231,8 @@ Slowave is open source under the AGPL-3.0-or-later license.
 
 Contributions are welcome, especially in:
 
+- installation and setup quality
 - client integrations
-- recall quality improvements
-- evaluation datasets
 - performance optimization
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting a pull request.
