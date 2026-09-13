@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 
+from slowave.core.retrieval_matching import MatchResult
 from slowave.symbolic.schema_store import Schema
 
 _STOPWORDS = {
@@ -412,6 +413,65 @@ class WorkingMemoryGate:
             items=selected,
             rendered=_render(selected),
             cue_terms=sorted(cue_terms),
+            suppressed=suppressed,
+            activation_trace=traces,
+        )
+
+    def select_matched(
+        self,
+        candidates: Iterable[Schema],
+        *,
+        matches: dict[int, MatchResult],
+        cue: MemoryCue,
+        policy: GatePolicy | None = None,
+    ) -> WorkingMemoryState:
+        """Select schemas using the shared matcher, retaining local eligibility.
+
+        Matching decides topical relevance and rank.  The gate still owns
+        status, scope, class, and output-budget policy; it must not recreate a
+        second lexical/cosine formula.
+        """
+        policy = policy or GatePolicy()
+        suppressed: dict[str, int] = {}
+        traces: list[ActivationTrace] = []
+        items: list[WorkingMemoryItem] = []
+        for schema in candidates:
+            ok, reason = self._eligible(schema, cue=cue, policy=policy)
+            match = matches.get(schema.id)
+            if not ok:
+                suppressed[reason] = suppressed.get(reason, 0) + 1
+                traces.append(ActivationTrace(schema.id, 0.0, reason, False))
+                continue
+            if match is None:
+                suppressed["no_channel_evidence"] = suppressed.get("no_channel_evidence", 0) + 1
+                traces.append(ActivationTrace(schema.id, 0.0, "no_channel_evidence", False))
+                continue
+            if not match.relevance_passed:
+                suppressed[match.relevance_reason] = suppressed.get(match.relevance_reason, 0) + 1
+                traces.append(
+                    ActivationTrace(
+                        schema.id, match.normalized_rank_score, match.relevance_reason, False
+                    )
+                )
+                continue
+            items.append(
+                WorkingMemoryItem(
+                    schema=schema,
+                    activation=match.normalized_rank_score,
+                    reason=f"{match.scoring_policy_version}:{match.relevance_reason}",
+                    text=_compact(schema.content_text, policy.max_item_chars),
+                )
+            )
+            traces.append(ActivationTrace(schema.id, match.normalized_rank_score, "selected", True))
+        items.sort(key=lambda item: (-item.activation, item.schema.id))
+        items = _mmr_deduplicate(items, cos_threshold=0.92)
+        if policy.require_explicit_multi_answer and not _cue_requests_multiple_answers(cue):
+            items = items[:1]
+        selected = _apply_budget(items[: max(policy.max_items * 3, policy.max_items)], policy)
+        return WorkingMemoryState(
+            items=selected,
+            rendered=_render(selected),
+            cue_terms=[],
             suppressed=suppressed,
             activation_trace=traces,
         )

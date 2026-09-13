@@ -919,29 +919,6 @@ class TestFTSVsPromotedEmbeddingScore:
         winning_score = max(fts_score, promoted_score)
         assert winning_score == pytest.approx(fts_score, abs=1e-6)
 
-    def test_max_used_not_conditional_assignment(self):
-        """
-        Verify the actual code uses max() unconditionally for promoted schemas,
-        not a guarded `if _sid not in schema_scores` assignment.
-        Inspects the source text directly — simpler and more robust than AST.
-        """
-        import inspect
-        import textwrap
-
-        from slowave.core.services import retrieval as _ret_mod
-
-        src = textwrap.dedent(inspect.getsource(_ret_mod.RetrievalService.recall))
-
-        # The guarded old form should not appear
-        assert (
-            "if _sid not in schema_scores" not in src
-        ), "Old guard 'if _sid not in schema_scores' still present — fix not applied"
-
-        # The unconditional max() form must be present
-        assert (
-            "schema_scores[_sid] = max(schema_scores.get(_sid" in src
-        ), "Expected 'schema_scores[_sid] = max(schema_scores.get(_sid, ...), _score)' not found"
-
 
 # ---------------------------------------------------------------------------
 # 6. ConsolidationService._refresh_generalization (2026-07-23): recompute

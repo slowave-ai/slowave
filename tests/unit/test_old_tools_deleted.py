@@ -117,6 +117,7 @@ class TestOldToolsDeleted:
             "query",
             "session_id",
             "scope",
+            "semantic_context",
             "task_context",
             "evidence",
             "continue_from",
@@ -127,6 +128,7 @@ class TestOldToolsDeleted:
             "initial_goal",
             "scope",
             "continuity_id",
+            "semantic_context",
             "task_context",
         }
         assert set(activate["required"]) == {"task", "initial_goal", "scope"}

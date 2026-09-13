@@ -49,9 +49,7 @@ _INTERNAL_FACET_KEYS: frozenset[str] = frozenset({"vsa_vec"})
 # to the MCP product surface; library/benchmark callers retain their existing
 # defaults, including Recall@20. Calibrated on the frozen 60-call live replay.
 _MCP_ACTIVATE_LIMIT_DEFAULT = 2
-_MCP_ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.20
 _MCP_RECALL_TOP_K_DEFAULT = 2
-_MCP_RECALL_MIN_RELEVANCE_DEFAULT = 0.40
 _MCP_FROZEN_CANDIDATE_LIMIT = _MCP_RECALL_TOP_K_DEFAULT + 8
 _MCP_CONTINUATION_PAGE_SIZE = 2
 _MCP_FIELD_RESPONSE_CHARS = 160
@@ -210,6 +208,7 @@ class ActivateArguments(_StrictMCPModel):
     scope: Annotated[str, Field(min_length=3)]
     continuity_id: str | None = None
     task_context: dict[str, JsonValue] | None = None
+    semantic_context: str | None = None
 
 
 class RecallArguments(_StrictMCPModel):
@@ -217,6 +216,7 @@ class RecallArguments(_StrictMCPModel):
     scope: Annotated[str, Field(min_length=3)]
     query: str | None = None
     task_context: dict[str, JsonValue] | None = None
+    semantic_context: str | None = None
     evidence: Literal["references", "full"] = "references"
     continue_from: str | None = None
 
@@ -226,6 +226,7 @@ class RecallArguments(_StrictMCPModel):
             if (
                 self.query is not None
                 or self.task_context is not None
+                or self.semantic_context is not None
                 or self.evidence != "references"
             ):
                 raise ValueError(
@@ -1047,6 +1048,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         scope: Any = None,
         continuity_id: Any = None,
         task_context: Any = None,
+        semantic_context: Any = None,
     ) -> dict[str, Any]:
         """Prime working memory with relevant context. Opens an implicit session.
 
@@ -1093,6 +1095,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     "scope": scope,
                     "continuity_id": continuity_id,
                     "task_context": task_context,
+                    "semantic_context": semantic_context,
                 }
             )
         except ValidationError as exc:
@@ -1117,6 +1120,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope=request.scope,
                 initial_goal=request.initial_goal,
                 task_context=request.task_context,
+                semantic_context=request.semantic_context,
                 continuity_id=request.continuity_id,
                 mode="strict_scope",
                 limit=_MCP_ACTIVATE_LIMIT_DEFAULT,
@@ -1124,7 +1128,6 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 include_peripheral=False,
                 include_schemas=True,
                 include_diagnostics=False,
-                min_relevance=_MCP_ACTIVATE_MIN_RELEVANCE_DEFAULT,
                 manage_continuity=True,
                 continuity_integration=str(provenance["integration"]),
             )
@@ -1166,6 +1169,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         scope: Any = None,
         query: Any = None,
         task_context: Any = None,
+        semantic_context: Any = None,
         evidence: Any = "references",
         continue_from: Any = None,
     ) -> dict[str, Any]:
@@ -1204,6 +1208,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     "scope": scope,
                     "query": query,
                     "task_context": task_context,
+                    "semantic_context": semantic_context,
                     "evidence": evidence,
                     "continue_from": continue_from,
                 }
@@ -1241,8 +1246,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 evidence=request.evidence == "full",
                 scope=request.scope,
                 mode="strict_scope",
-                min_relevance=_MCP_RECALL_MIN_RELEVANCE_DEFAULT,
                 task_context=request.task_context,
+                semantic_context=request.semantic_context,
             )
             full_data = _canonical_recall_result(
                 result, scope=request.scope, evidence=request.evidence

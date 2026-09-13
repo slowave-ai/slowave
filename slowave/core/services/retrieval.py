@@ -7,7 +7,6 @@ pipeline can be read, tested, and reasoned about independently.
 from __future__ import annotations
 
 import dataclasses
-import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,8 +21,14 @@ from slowave.core.context import (
     WorkingMemoryState,
     _distinctive_terms,
     _render,
+    _requires_distinctive_match,
     _schema_terms,
     spread_relation_activation,
+)
+from slowave.core.retrieval_matching import (
+    CandidateSignals,
+    MatchingConfig,
+    match_candidates,
 )
 from slowave.core.scope import normalize_scope
 from slowave.latent.episodic_store import EpisodicStore
@@ -67,7 +72,10 @@ _TRIVIAL_CUE_MIN_CHARS = 12
 # identical, maximal result (noise_free 18.2%->90.9%, empty_correct
 # 0%->100%, zero all_relevant regression); 0.30 is the least-aggressive
 # value in that plateau.
-_RECALL_MIN_RELEVANCE_DEFAULT = 0.30
+# Retained as a compatibility argument for library callers.  Schema admission
+# now uses ``MatchingConfig.dense_relevance_floor`` plus lexical evidence,
+# rather than a score floor whose units depended on the candidate source.
+_RECALL_MIN_RELEVANCE_DEFAULT = 0.20
 
 # Default floor for context_brief()/activate()'s min_relevance param, on
 # WorkingMemoryGate's 0-1 relevance scale (cosine*0.40 + lexical_weight*
@@ -79,7 +87,7 @@ _RECALL_MIN_RELEVANCE_DEFAULT = 0.30
 # empty_correct 0%->100%, zero all_relevant regression), so 0.10 is chosen
 # as a mid-plateau value with margin under real (continuous, not
 # axis-aligned) embedding similarity -- not the corpus-optimal edge value.
-_ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.10
+_ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.20
 
 # WP-5 (associative retrieval ablations, plan Phase 3): which schema_relations
 # edge types are allowed to seed a graph-propagated neighbor at all, in both
@@ -231,17 +239,6 @@ def _normalize_episode_text(text: str) -> str:
     return text
 
 
-def _norm_salience(s: float) -> float:
-    """Normalise raw salience [0, ∞) → [0, 1) via sigmoid.
-
-    Fixes P1: raw salience ranges 0.01–4.0+ so salience_weight
-    multiplication is unnormalised.  The sigmoid compresses the
-    range while preserving monotonicity, giving salience a
-    controlled contribution to the ranking score.
-    """
-    return 2.0 / (1.0 + math.exp(-s / 2.0)) - 1.0
-
-
 class RetrievalService:
     """Multi-mechanism semantic recall and working-memory gating."""
 
@@ -375,101 +372,43 @@ class RetrievalService:
 
         scope_id = normalize_scope(scope=scope) if scope else None
 
-        schema_scores: dict[int, float] = {}
-        for sid, score in self.schemas.search_embedding(
-            q, limit=max(20, top_k * 4), scope_id=scope_id
-        ):
-            schema_scores[sid] = max(schema_scores.get(sid, -1e9), score + 0.25)
-
-        # FTS candidates: scope-filter early to avoid collecting candidates
-        # that will be discarded later. FTS doesn't support scope natively,
-        # so we fetch schemas and filter by scope_id immediately.
-        for sid in self.schemas.search_fts(query, limit=max(10, top_k * 2)):
-            if scope_id:
-                try:
-                    s = self.schemas.get(sid)
-                    if s.scope_id and s.scope_id != scope_id:
-                        continue
-                except KeyError:
-                    continue
-            schema_scores[sid] = max(schema_scores.get(sid, -1e9), 0.35)
-
-        proto_ids = [p.id for p in retrieved.prototypes]
-        for s in self.schemas.get_many_by_prototypes(proto_ids):
-            if scope_id and s.scope_id and s.scope_id != scope_id:
-                continue
-            schema_scores[s.id] = max(schema_scores.get(s.id, -1e9), 0.15 + s.salience * 0.05)
-
-        # Profile-layer injection: always included, but needs_review schemas only
-        # surface in broad/debug modes (same gate as the rest of recall).
-        conn = self.db.connect()
-        profile_statuses = ("active",)
-        if mode in ("broad", "debug"):
-            profile_statuses = ("active", "needs_review")
-
-        profile_sql = (
-            "SELECT id FROM schemas "
-            "WHERE status IN ('" + "','".join(profile_statuses) + "') "
-            "AND json_extract(facets_json, '$.memory_layer') = 'profile' "
+        depth = max(20, top_k * 8)
+        dense = self.schemas.search_embedding(q, limit=depth, scope_id=scope_id)
+        lexical = self.schemas.search_fts_candidates(query, limit=depth, scope_id=scope_id)
+        signals: dict[int, CandidateSignals] = {}
+        for rank, (sid, cosine) in enumerate(dense, 1):
+            signals[sid] = CandidateSignals(memory_id=sid, dense_cosine=cosine, dense_rank=rank)
+        for sid, bm25, rank, tokens in lexical:
+            prior = signals.get(sid, CandidateSignals(memory_id=sid))
+            signals[sid] = CandidateSignals(
+                memory_id=sid,
+                dense_cosine=prior.dense_cosine,
+                dense_rank=prior.dense_rank,
+                lexical_score=bm25,
+                lexical_rank=rank,
+                lexical_specific=bool(tokens),
+            )
+        schemas_all = self.schemas.get_many(signals.keys())
+        by_id = {schema.id: schema for schema in schemas_all}
+        signals = {
+            sid: CandidateSignals(**{**signal.__dict__, "salience": by_id[sid].salience})
+            for sid, signal in signals.items()
+            if sid in by_id
+        }
+        matches = {
+            item.memory_id: item
+            for item in match_candidates(
+                signals.values(), config=MatchingConfig(dense_relevance_floor=min_relevance)
+            )
+        }
+        # Raw cosine is passed only to consumers that explicitly need cosine;
+        # fusion scores are never smuggled through the old semantic field.
+        schema_scores: dict[int, float] = {
+            sid: signal.dense_cosine or 0.0 for sid, signal in signals.items()
+        }
+        distinctive_terms = (
+            _distinctive_terms(query) if _requires_distinctive_match(query) else set()
         )
-        profile_args: list[Any] = []
-        if scope_id:
-            profile_sql += "AND (scope_id = ? OR scope_id IS NULL) "
-            profile_args.append(scope_id)
-        profile_sql += "ORDER BY salience DESC LIMIT ?"
-        profile_args.append(top_k * 2)
-
-        profile_rows = conn.execute(profile_sql, profile_args).fetchall()
-        for row in profile_rows:
-            sid = int(row["id"])
-            if sid not in schema_scores:
-                schema_scores[sid] = 0.30
-
-        # Stage 11: inject promoted schemas that the scoped embedding search
-        # would have missed.  search_embedding(scope_id=scope_id) only returns
-        # schemas belonging to the current scope; promoted schemas (stage >= 1)
-        # from other scopes are invisible to that search.
-        # We score them using the same cosine + 0.25 formula as line 139 so
-        # that natural paraphrases work without FTS overlap.  Schemas without
-        # a stored embedding fall back to a small flat baseline (0.10) so they
-        # can still enter the candidate set and be ranked by salience.
-        if scope_id and mode == "strict_scope":
-            import numpy as _np
-
-            from slowave.utils.vec import unpack_f32
-
-            _qn = float(_np.linalg.norm(q)) + 1e-12
-            promoted_rows = conn.execute(
-                "SELECT id, embedding, dim FROM schemas "
-                "WHERE generalization_stage >= 1 "
-                "AND status = 'active' "
-                "AND (scope_id IS NOT NULL AND scope_id != ?)",
-                (scope_id,),
-            ).fetchall()
-            for _row in promoted_rows:
-                _sid = int(_row["id"])
-                # Always compute the promoted embedding score and take max() against
-                # any score already present (e.g. from FTS at 0.35).  Without this,
-                # an FTS hit at 0.35 would block the cosine score: after the Stage 2
-                # multiplier (0.70×) the FTS score lands at 0.245, which is below the
-                # cross_scope_min_score floor of 0.30 and the schema is dropped.  The
-                # cosine+0.25 score for the same lexically-matching query is typically
-                # much higher and would pass — but it was never computed.
-                # Using max() mirrors lines 139-144 where all three scoring paths
-                # (embedding, FTS, prototype) compete and the best score wins.
-                _score = 0.10  # fallback when no embedding stored
-                if _row["embedding"] is not None and _row["dim"]:
-                    try:
-                        _v = unpack_f32(_row["embedding"], int(_row["dim"]))
-                        _vn = float(_np.linalg.norm(_v)) + 1e-12
-                        _cosine = float(q.dot(_v) / (_qn * _vn))
-                        _score = max(0.0, _cosine) + 0.25
-                    except Exception:
-                        pass
-                schema_scores[_sid] = max(schema_scores.get(_sid, -1e9), _score)
-
-        schemas_all = self.schemas.get_many(schema_scores.keys())
-        distinctive_terms = _distinctive_terms(query)
 
         # Mode-gated status filter; when strict_scope, also enforce scope.
         if mode == "debug":
@@ -500,13 +439,15 @@ class RetrievalService:
             filtered_schemas.append(s)
 
         def _rank_score(s: Schema) -> float:
-            return schema_scores.get(
-                s.id, 0.0
-            ) + self._retrieval_cfg.salience_weight * _norm_salience(s.salience)
+            match = matches.get(s.id)
+            if match is not None:
+                return match.final_rank_score
+            # Graph-only neighbors have no direct lexical/dense rank. Their
+            # propagated activation is the only meaningful ranking signal.
+            return schema_scores.get(s.id, 0.0)
 
-        schemas = sorted(filtered_schemas, key=_rank_score, reverse=True)
-        if min_relevance > 0.0:
-            schemas = [s for s in schemas if schema_scores.get(s.id, 0.0) >= min_relevance]
+        schemas = [s for s in filtered_schemas if matches[s.id].relevance_passed]
+        schemas.sort(key=lambda s: (-_rank_score(s), s.id))
         schemas = schemas[:top_k]
 
         # Relation-graph spreading activation: schemas linked to one of the
@@ -525,7 +466,7 @@ class RetrievalService:
             {}
             if graph_channels == "off"
             else spread_relation_activation(
-                {s.id: schema_scores.get(s.id, 0.0) for s in schemas},
+                {s.id: matches[s.id].normalized_rank_score for s in schemas},
                 fetch_relations=self._fetch_all_relations,
                 min_activation=_RECALL_GRAPH_MIN_ACTIVATION,
                 relation_filter=_relation_filter_for(graph_channels),
@@ -744,6 +685,7 @@ class RetrievalService:
         situation: dict[str, Any] | None = None,
         requirements: list[str] | tuple[str, ...] | None = None,
         application: str | None = None,
+        semantic_context: str | None = None,
         topics: list[str] | tuple[str, ...] | None = None,
         entities: list[str] | tuple[str, ...] | None = None,
         limit: int = 8,
@@ -801,8 +743,8 @@ class RetrievalService:
         cue_text = " ".join(
             [
                 query or "",
+                semantic_context or "",
                 application or "",
-                scope_id or "",
                 goal or "",
                 task_type or "",
                 " ".join(f"{k} {v}" for k, v in sorted((situation or {}).items())),
@@ -859,22 +801,45 @@ class RetrievalService:
             add_many(self.schemas.list(limit=global_fetch_limit, status="stale"))
 
         cue_embedding = None
+        match_signals: dict[int, CandidateSignals] = {}
         if cue_text:
             cue_fetch_limit = max(10, limit) if trivial_cue else max(50, limit * 8)
-            for sid in self.schemas.search_fts(cue_text, limit=cue_fetch_limit):
+            # Scope is an eligibility boundary, never text embedded in the
+            # semantic query.  The store applies it before lexical truncation.
+            for sid, bm25, rank, tokens in self.schemas.search_fts_candidates(
+                cue_text, limit=cue_fetch_limit, scope_id=scope_id
+            ):
                 try:
                     candidates_by_id[sid] = self.schemas.get(sid)
                 except KeyError:
                     continue
+                match_signals[sid] = CandidateSignals(
+                    memory_id=sid,
+                    lexical_score=bm25,
+                    lexical_rank=rank,
+                    lexical_specific=bool(tokens),
+                )
             if self.encoder is not None:
                 cue_embedding = self.encoder.encode(cue_text)
-                for sid, _score in self.schemas.search_embedding(
-                    cue_embedding, limit=cue_fetch_limit
+                for rank, (sid, score) in enumerate(
+                    self.schemas.search_embedding(
+                        cue_embedding, limit=cue_fetch_limit, scope_id=scope_id
+                    ),
+                    1,
                 ):
                     try:
                         candidates_by_id[sid] = self.schemas.get(sid)
                     except KeyError:
                         continue
+                    previous = match_signals.get(sid, CandidateSignals(memory_id=sid))
+                    match_signals[sid] = CandidateSignals(
+                        memory_id=sid,
+                        dense_cosine=score,
+                        dense_rank=rank,
+                        lexical_score=previous.lexical_score,
+                        lexical_rank=previous.lexical_rank,
+                        lexical_specific=previous.lexical_specific,
+                    )
 
         cue = MemoryCue(
             query=query,
@@ -896,8 +861,19 @@ class RetrievalService:
             exploration_slots=0 if not include_peripheral else GatePolicy.exploration_slots,
             require_explicit_multi_answer=limit == 2 and not include_peripheral,
         )
-        state = self.working_memory_gate.select(
-            candidates_by_id.values(), cue=cue, policy=policy, cue_embedding=cue_embedding
+        match_signals = {
+            sid: CandidateSignals(**{**signal.__dict__, "salience": candidates_by_id[sid].salience})
+            for sid, signal in match_signals.items()
+            if sid in candidates_by_id
+        }
+        matches = {
+            item.memory_id: item
+            for item in match_candidates(
+                match_signals.values(), config=MatchingConfig(dense_relevance_floor=min_relevance)
+            )
+        }
+        state = self.working_memory_gate.select_matched(
+            candidates_by_id.values(), matches=matches, cue=cue, policy=policy
         )
         if graph_channels != "off":
             state = self.working_memory_gate.expand_via_relations(

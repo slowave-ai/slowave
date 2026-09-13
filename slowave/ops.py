@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from slowave.core.config import DEFAULT_RECALL_TOP_K
+from slowave.core.context import WorkingMemoryItem
 from slowave.core.continuity import resolve_continuity
 from slowave.core.engine import SlowaveEngine
 from slowave.core.lifecycle import is_slowave_lifecycle
@@ -245,6 +246,7 @@ def activate(
     initial_goal: str | None = None,
     retrieval_context: dict[str, Any] | None = None,
     task_context: dict[str, Any] | None = None,
+    semantic_context: str | None = None,
     continuity_id: str | None = None,
     task_type: str | None = None,
     situation: dict[str, Any] | None = None,
@@ -317,11 +319,10 @@ def activate(
         task_context if task_context is not None else retrieval_context,
         "task_context",
     )
-    cue_situation = (
-        resolved_context
-        if task_context is not None or retrieval_context is not None
-        else situation or {}
-    )
+    # task_context is durable/logged structured metadata.  It must never be
+    # serialized into an embedding query.  Callers supply a short explicit
+    # semantic_context when it truly clarifies the information need.
+    cue_situation = situation or {}
     continuity_id = continuity_id.strip() if continuity_id else None
     situation = situation or {}
     requirements = requirements or []
@@ -372,6 +373,7 @@ def activate(
         requirements=requirements,
         topics=topics,
         entities=entities,
+        application=semantic_context,
         mode=mode,
         limit=limit,
         include_peripheral=include_peripheral,
@@ -379,13 +381,18 @@ def activate(
     )
 
     scope_id = scope.strip() if scope else None
+    # RRF rank scores are intentionally not activation magnitudes. The matcher
+    # exposes a normalized fusion signal for this downstream policy so the
+    # continuity ceiling remains meaningful after the scoring migration.
     core_activation = max((float(item.activation) for item in brief.items), default=0.0)
     reinstatement_ceiling = (
         _CONTEXT_REINSTATEMENT_CONTEXTUAL_MAX_CORE_ACTIVATION
         if resolved_context
         else _CONTEXT_REINSTATEMENT_MAX_CORE_ACTIVATION
     )
-    if continuity_state == "started" and core_activation < reinstatement_ceiling:
+    if continuity_state == "started" and (
+        bool(resolved_context) or core_activation < reinstatement_ceiling
+    ):
         # Fetch a larger *eligible* pool using the same strict-scope, active
         # and relevance gates.  Selection is MMR-diversified against the core,
         # rather than a flat [:5] slice.
@@ -398,13 +405,31 @@ def activate(
             requirements=requirements,
             topics=topics,
             entities=entities,
+            application=semantic_context,
             mode=mode,
             limit=5,
             include_peripheral=False,
             **_brief_kwargs,
         )
+        candidate_items = list(candidate_brief.items)
+        if resolved_context and scope_id:
+            # Structured task context can request broad start-of-session
+            # orientation, but it is never embedded as query text. Build an
+            # explicit, labelled reinstatement pool from current same-scope
+            # memories; relevance matching remains unchanged.
+            existing_ids = {item.schema.id for item in candidate_items}
+            candidate_items.extend(
+                WorkingMemoryItem(
+                    schema=schema,
+                    activation=1.0 / rank,
+                    reason="context_reinstatement_pool",
+                    text=(schema.content_text or "")[:500],
+                )
+                for rank, schema in enumerate(eng.context(scope=scope_id, limit=5), 1)
+                if schema.id not in existing_ids
+            )
         selected = _select_context_reinstatement(
-            candidates=candidate_brief.items,
+            candidates=candidate_items,
             core=brief.items,
             scope_id=scope_id,
             max_items=3,
@@ -617,6 +642,7 @@ def recall(
     min_neighbor_relevance: float | None = None,
     task_context: dict[str, Any] | None = None,
     retrieval_context: dict[str, Any] | None = None,
+    semantic_context: str | None = None,
 ) -> dict[str, Any]:
     """Semantic retrieval.
 
@@ -668,9 +694,7 @@ def recall(
     session_context.update(context_delta)
     retrieval_context = session_context
     effective_query = " ".join(
-        part
-        for part in (query, json.dumps(retrieval_context, ensure_ascii=False, sort_keys=True))
-        if part and part != "{}"
+        part.strip() for part in (query, semantic_context or "") if part.strip()
     )
     result = eng.recall(
         effective_query,

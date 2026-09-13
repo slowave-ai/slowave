@@ -12,7 +12,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, List
 
 import numpy as np
 
@@ -1519,27 +1519,111 @@ class SchemaStore:
         rows = conn.execute(sql, tuple(args)).fetchall()
         return [self._row_to_schema(r) for r in rows]
 
-    def search_fts(
-        self, query: str, limit: int = 20, *, include_inactive: bool = False
-    ) -> list[int]:  # type: ignore[valid-type]
+    @staticmethod
+    def lexical_tokens(query: str) -> List[str]:
+        """Return conservative Unicode lexical tokens for FTS queries.
+
+        ``unicode61`` is a useful baseline for space-separated languages but
+        not a universal segmenter.  Dense retrieval remains the fallback for
+        scripts without useful word boundaries.  Tokens are later bound as
+        quoted FTS phrases, so punctuation never becomes MATCH syntax.
+        """
+        tokens: List[str] = []
+        for raw in re.findall(r"[^\W_]+(?:[_./:-][^\W_]+)*", query, flags=re.UNICODE):
+            variants = [raw]
+            variants.extend(part for part in re.split(r"[_./:-]+", raw) if part)
+            for token in variants:
+                token = token.strip()
+                if len(token) >= 2 and token not in tokens:
+                    tokens.append(token)
+        return tokens
+
+    @classmethod
+    def _safe_fts_query(cls, query: str) -> tuple[str | None, List[str]]:
+        tokens = cls.lexical_tokens(query)
+        if not tokens:
+            return None, []
+        # Candidate generation uses explicit OR semantics: a long natural
+        # language cue should not require every goal/topic word to occur in a
+        # short canonical claim. Quoting each bound token prevents punctuation,
+        # JSON, and FTS operators from changing the expression.
+        return " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens), tokens
+
+    def search_fts_candidates(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        scope_id: str | None = None,
+        include_inactive: bool = False,
+    ) -> List[tuple[int, float, int, List[str]]]:
+        """Return safe FTS candidates as ``(id, bm25, rank, tokens)``.
+
+        SQLite FTS5 ranks smaller BM25 values first.  Scope/status filtering
+        occurs in SQL before ``LIMIT`` so inaccessible hits cannot consume the
+        lexical window.
+        """
+        expression, tokens = self._safe_fts_query(query)
+        if expression is None:
+            return []
         conn = self.db.connect()
         try:
-            if include_inactive:
-                rows = conn.execute(
-                    "SELECT rowid FROM schemas_fts WHERE schemas_fts MATCH ? ORDER BY rank LIMIT ?",
-                    (query, int(limit)),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT rowid FROM schemas_fts "
-                    "WHERE schemas_fts MATCH ? "
-                    "AND rowid IN (SELECT id FROM schemas WHERE status IN ('active', 'needs_review')) "
-                    "ORDER BY rank LIMIT ?",
-                    (query, int(limit)),
-                ).fetchall()
+            sql = (
+                "SELECT f.rowid, f.rank, s.content_text FROM schemas_fts f "
+                "JOIN schemas s ON s.id = f.rowid WHERE schemas_fts MATCH ? "
+            )
+            args: List[Any] = [expression]
+            if not include_inactive:
+                sql += "AND s.status IN ('active', 'needs_review') "
+            if scope_id is not None:
+                sql += (
+                    "AND (s.scope_id = ? OR s.scope_id IS NULL "
+                    "OR s.scope_id IN ('global', 'user') OR s.generalization_stage >= 2) "
+                )
+                args.append(scope_id)
+            sql += "ORDER BY f.rank ASC, f.rowid ASC LIMIT ?"
+            args.append(int(limit))
+            rows = conn.execute(sql, tuple(args)).fetchall()
         except Exception:
             return []
-        return [int(r["rowid"]) for r in rows]
+        query_terms = {token.casefold() for token in tokens}
+        weak_terms = {
+            "the",
+            "this",
+            "that",
+            "what",
+            "which",
+            "who",
+            "was",
+            "were",
+            "are",
+            "for",
+            "from",
+            "with",
+            "about",
+            "into",
+            "used",
+            "uses",
+            "use",
+            "deployment",
+        }
+        results: List[tuple[int, float, int, List[str]]] = []
+        for index, row in enumerate(rows, 1):
+            content_terms = {
+                token.casefold() for token in self.lexical_tokens(str(row["content_text"] or ""))
+            }
+            matched_terms = sorted((query_terms & content_terms) - weak_terms)
+            results.append((int(row["rowid"]), float(row["rank"]), index, matched_terms))
+        return results
+
+    def search_fts(
+        self, query: str, limit: int = 20, *, include_inactive: bool = False
+    ) -> List[int]:
+        """Backward-compatible ID-only lexical search."""
+        return [
+            row[0]
+            for row in self.search_fts_candidates(query, limit, include_inactive=include_inactive)
+        ]
 
     def search_embedding(
         self,
@@ -1548,19 +1632,22 @@ class SchemaStore:
         limit: int = 20,
         scope_id: str | None = None,
         include_inactive: bool = False,
-    ) -> list[tuple[int, float]]:  # type: ignore[valid-type]
+    ) -> List[tuple[int, float]]:
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         qn = float(np.linalg.norm(q)) + 1e-12
         conn = self.db.connect()
         sql = "SELECT id, embedding, dim FROM schemas WHERE embedding IS NOT NULL"
         args: list[Any] = []
         if scope_id is not None:
-            sql += " AND scope_id = ?"
+            sql += (
+                " AND (scope_id = ? OR scope_id IS NULL "
+                "OR scope_id IN ('global', 'user') OR generalization_stage >= 2)"
+            )
             args.append(scope_id)
         if not include_inactive:
             sql += " AND status IN ('active', 'needs_review')"
         rows = conn.execute(sql, tuple(args)).fetchall()
-        scored: list[tuple[int, float]] = []
+        scored: List[tuple[int, float]] = []
         for r in rows:
             try:
                 v = unpack_f32(r["embedding"], int(r["dim"]))

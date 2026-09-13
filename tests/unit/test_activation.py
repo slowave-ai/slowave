@@ -97,8 +97,7 @@ def test_recall_inherits_and_updates_session_task_context(monkeypatch) -> None:
         )
 
         def fake_recall(query: str, **_kwargs):
-            assert '"runtime": "python"' in query
-            assert '"service": "api"' in query
+            assert query == "check runtime"
             return SimpleNamespace(
                 schemas=[],
                 related_schemas=[],

@@ -99,7 +99,7 @@ def test_context_brief_uses_topics_without_requiring_project() -> None:
 
         assert [item.schema.id for item in brief.items] == [food]
         assert brief.items[0].activation >= 0.20
-        assert "cue_overlap" in brief.items[0].reason
+        assert "schema-rrf-v1:lexical_evidence" in brief.items[0].reason
     finally:
         eng.close()
         _cleanup(path)
@@ -136,7 +136,7 @@ def test_context_brief_treats_project_as_one_environmental_cue() -> None:
         )
 
         assert [item.schema.id for item in brief.items] == [slowave]
-        assert "scope_match=project:slowave" in brief.items[0].reason
+        assert "schema-rrf-v1:lexical_evidence" in brief.items[0].reason
     finally:
         eng.close()
         _cleanup(path)

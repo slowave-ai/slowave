@@ -285,7 +285,7 @@ def test_recall_surfaces_relates_to_neighbor_via_graph_expansion():
         # WP-5.1 (2026-07-29) flipped the production graph_channels default
         # to "off" -- this test exercises graph-expansion mechanics
         # specifically, so it opts back in explicitly.
-        result = eng.recall("vegetarian meal planning recipes", top_k=5, graph_channels="combined")
+        result = eng.recall("meal planning recipes", top_k=5, graph_channels="combined")
         ids = [s.id for s in result.schemas]
         related_ids = [s.id for s in result.related_schemas]
 

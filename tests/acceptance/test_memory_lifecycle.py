@@ -157,6 +157,42 @@ def test_remembered_instruction_is_retrieved_in_a_later_mcp_session(tmp_path: Pa
     _run(scenario())
 
 
+@pytest.mark.requires_model
+def test_english_instruction_is_retrieved_by_italian_query_in_new_session(
+    tmp_path: Path,
+) -> None:
+    """The production multilingual encoder preserves a cross-session instruction."""
+
+    async def scenario() -> None:
+        scope = "project:multilingual-instruction"
+        instruction = "Remember to always run the linter and type-checker before committing code."
+        async with open_harness(
+            tmp_path / "multilingual-instruction.db",
+            extra_env={"SLOWAVE_ACCEPTANCE_ENCODER": "production"},
+        ) as harness:
+            ids = await _seed(harness, scope, ((instruction, "instruction"),))
+            retrieval, observation = await harness.activate(
+                "italian_instruction_recall",
+                "Cosa ti devi ricordare di fare prima di committare codice?",
+                "recuperare l'istruzione prima del commit",
+                scope,
+            )
+            result = evaluate(
+                RetrievalGold(
+                    case_id="italian_instruction_recall",
+                    family="multilingual_instruction_retrieval",
+                    surface="activate",
+                    scope=scope,
+                    required_contents=(instruction,),
+                ),
+                observation,
+            )
+            await _finish(harness, retrieval, used_ids={ids[instruction]})
+            _assert_passed(harness, result)
+
+    _run(scenario())
+
+
 def test_semantic_paraphrase_via_mcp(tmp_path: Path) -> None:
     async def assessed_scenario() -> None:
         db_path = tmp_path / "paraphrase-assessed.db"
