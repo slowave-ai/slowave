@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.3...slowave-v0.20.0) (2026-09-13)
+
+
+### Features
+
+* shared multilingual retrieval ([#150](https://github.com/slowave-ai/slowave/issues/150)) ([0b47a8c](https://github.com/slowave-ai/slowave/commit/0b47a8c8866b6a5a2d40eaf161e6d71f8de8dc31))
+
 ## [0.19.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.2...slowave-v0.19.3) (2026-09-11)
 
 
