@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.2...slowave-v0.19.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* include instructions in retrieval ([#148](https://github.com/slowave-ai/slowave/issues/148)) ([5dff50e](https://github.com/slowave-ai/slowave/commit/5dff50e8068ee35a7f582b4926b42aa4464964ca))
+
 ## [0.19.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.1...slowave-v0.19.2) (2026-09-10)
 
 
