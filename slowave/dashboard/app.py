@@ -61,6 +61,13 @@ _PRODUCT_LIST_ROUTES = {
     "/docs",
 }
 _PRODUCT_DETAIL_ROUTE = re.compile(r"^/(memory|retrieval|procedures|activity)/[^/]+$")
+# Schema routes must be exact.  In particular, an action suffix such as
+# ``/delete-preview`` is not a schema id and must never reach ``int()`` in the
+# generic detail handler.
+_SCHEMA_DELETE_PREVIEW_ROUTE = re.compile(
+    r"^/api/schemas/(?:sch_)?(?P<schema_id>\d+)/delete-preview$"
+)
+_SCHEMA_DETAIL_ROUTE = re.compile(r"^/api/schemas/(?:sch_)?(?P<schema_id>\d+)$")
 
 
 def _is_product_route(path: str) -> bool:
@@ -174,12 +181,12 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_json(_procedure_detail(db_path, unquote(path.split("/")[-1])))
                 elif path == "/api/graph/schemas":
                     self._send_json(_schema_graph_payload(db_path, qs))
-                elif path.startswith("/api/schemas/") and path.endswith("/delete-preview"):
-                    schema_id = int(path.split("/")[-2].replace("sch_", ""))
-                    self._send_json(_schema_delete_preview(db_path, schema_id))
-                elif path.startswith("/api/schemas/"):
-                    schema_id = int(path.split("/")[-1].replace("sch_", ""))
-                    self._send_json(_schema_detail(db_path, schema_id))
+                elif schema_preview_match := _SCHEMA_DELETE_PREVIEW_ROUTE.fullmatch(path):
+                    self._send_json(
+                        _schema_delete_preview(db_path, int(schema_preview_match["schema_id"]))
+                    )
+                elif schema_detail_match := _SCHEMA_DETAIL_ROUTE.fullmatch(path):
+                    self._send_json(_schema_detail(db_path, int(schema_detail_match["schema_id"])))
                 elif path == "/api/worker/runs":
                     self._send_json(_worker_runs_payload(db_path, qs))
                 elif path == "/api/generalization":

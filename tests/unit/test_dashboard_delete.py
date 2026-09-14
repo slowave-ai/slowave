@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.request import urlopen
 
 from slowave import ops
 from slowave.core.config import SlowaveConfig
@@ -14,6 +17,7 @@ from slowave.core.engine import SlowaveEngine
 from slowave.dashboard.app import (
     _delete_procedure_action,
     _delete_schema_action,
+    _make_handler,
     _procedure_delete_preview,
     _schema_delete_preview,
 )
@@ -99,6 +103,37 @@ def test_schema_hard_delete_previews_and_removes_dependents() -> None:
         ).fetchone()[0]
         assert f"sch_{schema_id}" not in feedback
     finally:
+        eng.close()
+        _cleanup(path)
+
+
+def test_schema_delete_preview_is_dispatched_before_generic_detail_route() -> None:
+    """The preview suffix must never be parsed as a numeric schema ID."""
+    eng, path = _engine()
+    server = None
+    try:
+        schema_id = eng.schemas.create(
+            content_text="preview this durable memory",
+            facets={},
+            tags=[],
+            embedding=None,
+            dedupe=False,
+        )
+        handler = _make_handler(db_path=path, refresh_ms=1000, allow_actions=True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        url = f"http://127.0.0.1:{server.server_port}/api/schemas/{schema_id}/delete-preview"
+        with urlopen(url) as response:
+            payload = json.loads(response.read())
+
+        assert payload["entity"]["id"] == f"sch_{schema_id}"
+        assert "invalid request" not in payload
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
         eng.close()
         _cleanup(path)
 
