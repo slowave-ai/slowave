@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   api,
   navigate,
@@ -539,9 +540,67 @@ const memoryStateOptions = [
   "active",
   "needs_review",
   "stale",
-  "forgotten",
   "archived",
 ];
+
+function DeleteConfirmation({
+  previewUrl,
+  onCancel,
+  onConfirm,
+}: {
+  previewUrl: string;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const preview = useApi<Json>(previewUrl);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+  const affected = preview.data?.affected || [];
+  const summary = preview.data?.summary || {};
+  const confirm = async () => {
+    setDeleting(true);
+    setError("");
+    try {
+      await onConfirm();
+    } catch (cause) {
+      setError((cause as Error).message);
+      setDeleting(false);
+    }
+  };
+  return createPortal(
+    <div className="confirmation" role="dialog" aria-modal="true" aria-label="Delete permanently">
+      <div className="delete-confirmation">
+        <h3>Delete permanently?</h3>
+        <p>This cannot be undone. The selected record and the affected references below will be permanently removed or scrubbed.</p>
+        {preview.loading && !preview.data ? <LoadingRows rows={3} /> : preview.error && !preview.data ? (
+          <InlineError error={preview.error} retry={preview.reload} />
+        ) : (
+          <>
+            <p><strong>Selected {preview.data?.entity?.kind}:</strong> {preview.data?.entity?.preview || preview.data?.entity?.id}</p>
+            <p className="neutral"><strong>{affected.length}</strong> affected record{affected.length === 1 ? "" : "s"} · {Object.entries(summary).map(([action, count]) => `${count} ${action}`).join(" · ") || "selected record only"}</p>
+            {affected.length ? <div className="delete-preview" aria-label="Affected records">
+              {affected.map((item: any, index: number) => (
+                <div className="delete-preview-row" key={`${item.kind}-${item.id}-${index}`}>
+                  <strong>{item.kind}</strong>
+                  <span>{item.action}</span>
+                  <p>{item.preview || item.id}</p>
+                </div>
+              ))}
+            </div> : <p className="neutral">No dependent records were found.</p>}
+          </>
+        )}
+        {error && <InlineError error={error} />}
+        <div className="confirmation-actions">
+          <button className="button secondary" disabled={deleting} onClick={onCancel}>Cancel</button>
+          <button className="button danger" disabled={!preview.data || deleting} onClick={confirm}>
+            {deleting ? "Deleting…" : "Delete permanently"}
+          </button>
+        </div>
+      </div>
+    </div>
+    , document.body,
+  );
+}
 
 function MemoryUseRateBar({ used, retrieved }: { used: unknown; retrieved: unknown }) {
   const percent = getRatePercent(used, retrieved);
@@ -1019,37 +1078,33 @@ export function MemoryPage({ location }: PageProps) {
         <MemoryDetail
           id={detailId}
           onClose={() => closeDetail("/memory", location)}
+          onDeleted={request.reload}
         />
       )}
     </div>
   );
 }
 
-function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
+function MemoryDetail({ id, onClose, onDeleted }: {
+  id: string;
+  onClose: () => void;
+  onDeleted?: () => Promise<void>;
+}) {
   const request = useApi<Json>(`/api/schemas/${encodeURIComponent(id)}`);
   const [confirm, setConfirm] = useState(false);
-  const [reason, setReason] = useState("");
   const [actionError, setActionError] = useState("");
   const data = request.data;
   const memory = data?.schema;
-  const mutate = async () => {
+  const remove = async () => {
     if (!memory) return;
     setActionError("");
     try {
-      const action = memory.status === "forgotten" ? "unforget" : "forget";
-      await api(`/api/schemas/${memory.schema_id}/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body:
-          action === "forget"
-            ? JSON.stringify({ reason: reason || null })
-            : undefined,
-      });
-      setConfirm(false);
-      setReason("");
-      await request.reload();
+      await api(`/api/schemas/${memory.schema_id}/delete`, { method: "POST" });
+      await onDeleted?.();
+      onClose();
     } catch (error) {
       setActionError((error as Error).message);
+      throw error;
     }
   };
   return (
@@ -1081,19 +1136,10 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
               title="Summary"
               actions={
                 allowActions ? (
-                  <button
-                    className={
-                      memory.status === "forgotten"
-                        ? "button secondary"
-                        : "button danger-secondary"
-                    }
-                    onClick={() => setConfirm(true)}
-                  >
-                    {memory.status === "forgotten" ? "Restore memory" : "Forget"}
-                  </button>
+                  <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button>
                 ) : (
                   <p className="notice compact">
-                    This dashboard was launched read-only. Forget/restore is unavailable.
+                    This dashboard was launched read-only. Delete is unavailable.
                   </p>
                 )
               }
@@ -1101,9 +1147,7 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
             <dl className="key-values">
               <dt>Effect on retrieval</dt>
               <dd>
-                {memory.status === "forgotten"
-                  ? "Suppressed from future retrieval; source evidence remains."
-                  : memory.status === "stale"
+                {memory.status === "stale"
                     ? "Retained as historical context but not treated as current."
                     : "Eligible for future retrieval when scope and relevance rules admit it."}
               </dd>
@@ -1181,18 +1225,13 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
               )}
             </Section>
             <Section title="Lifecycle and feedback">
-              {data.feedback?.length || data.audit?.length ? (
+              {data.feedback?.length ? (
                 <div className="activity-stream">
                   {[
                     ...(data.feedback || []).map((item: any) => ({
                       ...item,
                       ts: item.created_at,
                       label: `Feedback: ${item.assessment || item.status}`,
-                    })),
-                    ...(data.audit || []).map((item: any) => ({
-                      ...item,
-                      ts: item.created_ts,
-                      label: `Dashboard action: ${item.action}`,
                     })),
                   ]
                     .sort((a, b) => b.ts - a.ts)
@@ -1215,7 +1254,7 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 </div>
               ) : (
                 <p className="neutral">
-                  No recorded feedback or suppress/restore audit entries.
+                  No recorded feedback entries.
                 </p>
               )}
             </Section>
@@ -1269,58 +1308,7 @@ function MemoryDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 <dt>Incoming relations</dt><dd>{data.incoming?.length || 0}</dd>
               </dl>
             </details>
-            {confirm && (
-              <div
-                className="confirmation"
-                role="dialog"
-                aria-modal="true"
-                aria-label={
-                  memory.status === "forgotten"
-                    ? "Restore memory"
-                    : "Suppress memory"
-                }
-              >
-                <div>
-                  <h3>
-                    {memory.status === "forgotten"
-                      ? "Restore this memory?"
-                      : "Suppress this memory?"}
-                  </h3>
-                  <p>
-                    {memory.status === "forgotten"
-                      ? "Restore eligibility for future retrieval where scope and relevance rules admit it."
-                      : "Suppress from future retrieval across all scopes where it would otherwise be eligible. Source evidence is retained. This can be reversed."}
-                  </p>
-                  {memory.status !== "forgotten" && (
-                    <label>
-                      Optional audit reason
-                      <textarea
-                        value={reason}
-                        onChange={(e) => setReason(e.target.value)}
-                      />
-                    </label>
-                  )}
-                  <div>
-                    <button
-                      className="button secondary"
-                      onClick={() => setConfirm(false)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className={
-                        memory.status === "forgotten"
-                          ? "button primary"
-                          : "button danger"
-                      }
-                      onClick={mutate}
-                    >
-                      Confirm
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+            {confirm && <DeleteConfirmation previewUrl={`/api/schemas/${memory.schema_id}/delete-preview`} onCancel={() => setConfirm(false)} onConfirm={remove} />}
           </>
         ) : <EmptyState title="Memory not found">This memory no longer exists or is not available in the current database.</EmptyState>
       }
@@ -2116,16 +2104,35 @@ export function ProceduresPage({ location }: PageProps) {
         <ProcedureDetail
           id={detailId}
           onClose={() => closeDetail("/procedures", location)}
+          onDeleted={request.reload}
         />
       )}
     </div>
   );
 }
 
-function ProcedureDetail({ id, onClose }: { id: string; onClose: () => void }) {
+function ProcedureDetail({ id, onClose, onDeleted }: {
+  id: string;
+  onClose: () => void;
+  onDeleted?: () => Promise<void>;
+}) {
   const request = useApi<Json>(`/api/procedures/${encodeURIComponent(id)}`);
+  const [confirm, setConfirm] = useState(false);
+  const [actionError, setActionError] = useState("");
   const p = request.data?.procedure;
   const source = p?.source_session;
+  const remove = async () => {
+    if (!p) return;
+    setActionError("");
+    try {
+      await api(`/api/procedures/${encodeURIComponent(p.id)}/delete`, { method: "POST" });
+      await onDeleted?.();
+      onClose();
+    } catch (error) {
+      setActionError((error as Error).message);
+      throw error;
+    }
+  };
   return (
     <Inspector
       title="Procedure"
@@ -2134,7 +2141,7 @@ function ProcedureDetail({ id, onClose }: { id: string; onClose: () => void }) {
       onClose={onClose}
     >
       <InlineError
-        error={request.error}
+        error={request.error || actionError}
         retained={Boolean(p)}
         retry={request.reload}
       />
@@ -2149,6 +2156,9 @@ function ProcedureDetail({ id, onClose }: { id: string; onClose: () => void }) {
               Created from execution evidence; not an automatically validated
               general playbook.
             </p>
+            {allowActions ? (
+              <div className="detail-actions"><button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button></div>
+            ) : <p className="notice compact">This dashboard was launched read-only. Delete is unavailable.</p>}
             <dl className="key-values">
               <dt>Created</dt>
               <dd>{formatDate(p.created_at)}</dd>
@@ -2301,6 +2311,7 @@ function ProcedureDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <summary>Advanced</summary>
               <dl className="key-values wide">{Object.entries(p.evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value)}</dd></Fragment>)}</dl>
             </details>
+            {confirm && <DeleteConfirmation previewUrl={`/api/procedures/${encodeURIComponent(p.id)}/delete-preview`} onCancel={() => setConfirm(false)} onConfirm={remove} />}
           </>
         ) : <EmptyState title="Procedure not found">This procedure no longer exists or is not available in the current database.</EmptyState>
       }

@@ -278,18 +278,9 @@ class Consolidator:
         # One-schema-per-primary-prototype (dedup fix #1): schema identity is
         # its primary prototype. Re-consolidating the SAME prototype
         # reactivates and updates that single engram in place instead of
-        # writing a fresh duplicate. The lookup is status-agnostic: a copy
-        # that was retired by explicit client feedback is the same engram and
-        # must not be recreated as a duplicate. Replay may reinforce active
-        # schemas but must never undo a client-owned lifecycle decision.
+        # writing a fresh duplicate.
         existing_proto = self.schemas.find_by_primary_prototype(prototype_id)
         if existing_proto is not None:
-            if existing_proto.status == "forgotten":
-                # Respect an explicit human forget: do not resurrect it, do
-                # not recreate a duplicate of it.
-                if diag is not None:
-                    diag["near_dup_intercepts"] += 1
-                return "skipped", existing_proto.id
             self.schemas.reinforce_schema(
                 existing_proto.id,
                 prototype_ids=[prototype_id],
@@ -332,27 +323,6 @@ class Consolidator:
                     if diag is not None:
                         diag["near_dup_intercepts"] += 1
                     return "reinforced", existing.id
-
-            # Forgotten-schema guard: search_embedding() excludes non-active/
-            # needs_review rows by default, so a forgotten schema never
-            # surfaces in `near` above -- without this second check, every
-            # consolidation pass would silently recreate it as a fresh
-            # duplicate. Re-searching with include_inactive=True and checking
-            # specifically for a forgotten match lets us skip instead, without
-            # either reinforcing it back to active (would silently undo the
-            # user's forget) or creating a duplicate (would defeat it).
-            near_incl = self.schemas.search_embedding(
-                claim_embedding, limit=1, include_inactive=True
-            )
-            if near_incl and near_incl[0][1] >= near_dup_cosine:
-                try:
-                    forgotten_existing = self.schemas.get(near_incl[0][0])
-                except KeyError:
-                    forgotten_existing = None
-                if forgotten_existing is not None and forgotten_existing.status == "forgotten":
-                    if diag is not None:
-                        diag["near_dup_intercepts"] += 1
-                    return "skipped", forgotten_existing.id
 
         related = self._best_related_schema(
             claim=claim_text,

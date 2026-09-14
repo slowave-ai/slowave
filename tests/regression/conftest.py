@@ -37,7 +37,6 @@ _PHASES: dict[str, str] = {
     "test_relations_prototype_coactivation": "Relations — Prototype-level co-activation edges",
     "test_relations_schema_coactivation": "Relations — Schema-level co-activation edges + cross-scope isolation",
     "test_relations_graph_expansion_respects_cross_scope_isolation": "Relations — Graph-expansion cross-scope isolation",
-    "test_forget_unforget_lifecycle": "Forget / unforget lifecycle",
 }
 
 

@@ -832,16 +832,6 @@ class SlowaveEngine:
     def dedup_schemas_exact(self, *, dry_run: bool = True) -> dict[str, Any]:
         return self.schemas.dedup_exact(dry_run=dry_run)
 
-    def forget_schema(self, schema_id: int, *, reason: str | None = None) -> None:
-        """Suppress a schema from retrieval. CLI/dashboard-initiated only --
-        deliberately not exposed as an MCP tool (see schema_store.VALID_STATUS
-        comment for the trust-boundary rationale)."""
-        self.schemas.forget(schema_id, reason=reason)
-
-    def unforget_schema(self, schema_id: int) -> str:
-        """Undo forget_schema(), returning the schema to its prior status."""
-        return self.schemas.unforget(schema_id)
-
     def decay_schemas(self, *, idle_days: float = 30.0, dry_run: bool = False) -> dict[str, Any]:
         """Decay salience of active schemas that have never been recalled.
 

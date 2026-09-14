@@ -8,12 +8,9 @@ FeedbackService.retrieval_feedback():
    otherwise a client that hallucinates or reuses an id from a different
    retrieval/scope could silently mutate memory it never saw.
 
-2. Forgotten-schema protection: "forgotten" is a human-only, CLI/dashboard-
-   initiated suppression (see schema_store.py's VALID_STATUS comment). An
-   ordinary feedback call must never mutate a forgotten schema, and the
-   wrong+failure status escalation to "needs_review" must only fire from
-   "active" — not resurrect a forgotten/superseded/contradicted/archived
-   schema back into needs_review visibility.
+2. Terminal-schema protection: wrong+failure status escalation must only fire
+   from active or needs_review schemas; it must not resurrect a resolved
+   stale or archived schema.
 """
 
 from __future__ import annotations
@@ -104,34 +101,7 @@ class TestReinforceRejectsUnauthorizedSchemaIds:
             _cleanup(path)
 
 
-class TestForgottenSchemaIsProtectedFromFeedback:
-    def test_forgotten_schema_is_not_mutated_by_feedback(self) -> None:
-        eng, path = _tmp_engine()
-        try:
-            sid = _schema(eng, "human-forgotten schema", 4)
-            eng.schemas.forget(sid)
-            assert eng.schemas.get(sid).status == "forgotten"
-
-            ctx = "ctx_forgotten_1"
-            eng.record_context_recall(
-                context_id=ctx,
-                response={"schemas": [{"id": f"sch_{sid}", "activation": 0.5}]},
-            )
-            eng.retrieval_feedback(
-                retrieval_id=ctx,
-                retrieval_type="context",
-                feedback="wrong",
-                outcome="failure",
-                wrong_memory_ids=[f"sch_{sid}"],
-            )
-
-            after = eng.schemas.get(sid)
-            assert after.status == "forgotten"
-            assert after.salience == 1.0
-        finally:
-            eng.close()
-            _cleanup(path)
-
+class TestTerminalSchemaIsProtectedFromFeedback:
     def test_wrong_failure_does_not_reescalate_superseded_schema(self) -> None:
         eng, path = _tmp_engine()
         try:

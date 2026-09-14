@@ -112,7 +112,6 @@ workflow and returns a retrieval ID for `reinforce`.
 | `slowave schema [--needs-review]` | List schemas. |
 | `slowave show sch_N\|epi_N\|evt_N` | Inspect one schema, episode, or raw event. |
 | `slowave dashboard` | Start the local dashboard (default `127.0.0.1:8765`). Use `--no-open` for a headless host. |
-| `slowave forget sch_N` / `unforget sch_N` | Suppress or restore a reviewed schema. These are intentionally human-only; MCP has no equivalent. |
 | `slowave consolidate` | Run one replay and latent-consolidation pass. |
 | `slowave worker --once` | Run one consolidation pass; omit `--once` for the background loop. |
 | `slowave dedup-schemas` | Preview exact duplicate schemas; add `--apply` to merge them. |
@@ -120,8 +119,8 @@ workflow and returns a retrieval ID for `reinforce`.
 | `slowave migrate-data [--dry-run] [--yes]` | Explicitly migrate legacy `~/.slowave` runtime data to the native per-user root; preserves the source for rollback. |
 
 Use `slowave dashboard --no-allow-actions` when the dashboard must be
-strictly read-only. The dashboard's Forget and Unforget buttons are enabled by
-default.
+strictly read-only. When enabled, the dashboard offers previewed, permanent
+deletion for individual memories and procedures.
 
 ## Setup and diagnostics
 

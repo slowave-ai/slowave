@@ -14,21 +14,21 @@
 AI agents have large context windows, but that context ends with your current session.
 Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, and failed attempts.
 
-Slowave gives your agents one local, shared memory.
+Slowave gives your agents one local, shared memory, without requiring a separate LLM for memory maintenance.
 
-Many AI memory systems focus on storing information and retrieving semantically relevant context.
+Slowave is designed as an adaptive memory layer rather than a static retrieval or summarisation system; it approaches agent memory from a different angle:
 
-Slowave starts from a different premise:
+> **An effective memory system should help an agent achieve its goals.**
 
-> **Agent memory isn't only a retrieval problem. Memory quality is driven by how facts retained in memory can help an agent achieve its future goals.**
+Agent memory is not only a retrieval problem. A useful memory system should retain what helps the agent, weaken what does not, and continuously adapt based on use.
 
-Slowave addresses this with a continuous feedback loop between the agent and its memory:
+Slowave addresses this with a continuous feedback loop between your agent and its memory:
 
 > **remember → recall → use → feedback → reinforce / weaken → decay**
 
-Slowave adapts the salience of stored memories based on agent feedbacks.
+Slowave adapts the salience of stored memories based on your agent's feedback.
 
-Over time, the agent’s feedback shapes what Slowave returns without needing a separate LLM judge inside the memory layer.
+Over time, your agent’s feedback shapes what Slowave returns without needing a separate LLM judge inside the memory layer.
 
 Memory becomes something continuously shaped by use rather than a static collection of facts waiting to be retrieved.
 
@@ -39,24 +39,23 @@ Memory becomes something continuously shaped by use rather than a static collect
 - **No LLM API key:** The memory core performs maintenance and retrieval without LLM calls or an LLM API key.
 - **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
 
-Supported integrations include Claude Code, Codex, Cursor, Cline, Windsurf / Devin Desktop, OpenCode, and Claude Desktop. See [platform coverage and manual steps](#supported-clients).
+The first useful payoff is simply not having to repeat the same constraint in the next task. 
 
-## Why Slowave?
+Over time, the way you work becomes reusable context for your agent.
 
-Every new agent session has the codebase but not necessarily the context behind
-it: previous decisions, constraints, failed attempts, the thinking process.
+### Supported integrations:
 
-That missing context makes agents repeat rejected designs, miss operational
-constraints, and force you to restate project principles.
+- Claude Code
+- Codex
+- Cursor
+- Cline 
+- Windsurf / Devin Desktop 
+- OpenCode
+- Claude Desktop 
 
-Slowave turns those durable judgments into shared project memory: scoped,
-inspectable, and available to later tasks.
-
-The first useful payoff is simply not having to repeat the same constraint in
-the next task. Over time, the way you work becomes reusable context for your agent.
+See [platform coverage and manual steps](#supported-clients).
 
 ## Installation
-
 
 ### Quick start
 ```bash
@@ -78,7 +77,7 @@ Slowave is transparent to your work.
 
 You keep working with your agent as usual. 
 
-When it encounters a durable fact or decision, the installed lifecycle directs it to preserve that claim.
+When your agent encounters a durable fact or decision, the installed lifecycle directs it to preserve that claim.
 
 On a later task, Slowave can return a compact, scoped set of relevant recorded memories to your agent, so that it can act upon its own memories. 
 
@@ -105,7 +104,7 @@ Start the local dashboard with:
 slowave dashboard
 ```
 
-Opens the dashboard in your browser, where you can inspect:
+Open the dashboard in your browser, where you can inspect:
 
 - **Memories:** browse saved decisions, constraints, and lessons.
 - **Procedures:** review reusable step-by-step methods from past work.
@@ -151,7 +150,7 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
 >
-> Memory is stored in plaintext in the current OS user's application-data directory. Slowave does not send it to a hosted memory service. See [runtime data and migration](docs/install.md#runtime-data-location-and-migration).
+> Memory is stored in plaintext in the current OS user's application-data directory. Slowave does not send it to a hosted memory service. See [runtime data location](docs/install.md#runtime-data-location).
 
 
 ## How Slowave memory works
@@ -199,7 +198,9 @@ See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for 
 - Scopes reduce accidental context leakage; use separate stores when hard isolation is required.
 - Slowave adds token overhead from tool calls and retrieved context.
 - The local SQLite database is plaintext by default; protect it with OS permissions or full-disk encryption.
-- Slowave is public beta software. APIs, configuration, and storage schema may change, and migrations are not guaranteed before stable release.
+
+> [!IMPORTANT]
+> Slowave is public beta software. APIs, configuration, and storage schema may change, and migrations are not guaranteed before stable release.
 
 ## Evaluation
 

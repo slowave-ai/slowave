@@ -299,6 +299,22 @@ class SQLiteDB:
                 "UPDATE schemas SET status='stale', stale_reason='contradicted' "
                 "WHERE status='contradicted' AND (stale_reason IS NULL OR stale_reason='')"
             )
+            # Forget/unforget was removed in favour of explicit hard deletion.
+            # Preserve previously suppressed schemas by restoring their recorded
+            # prior state before removing the obsolete audit table.
+            if conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_forget_log'"
+            ).fetchone():
+                conn.execute(
+                    "UPDATE schemas SET status = COALESCE(("
+                    "SELECT CASE prior_status "
+                    "WHEN 'superseded' THEN 'stale' WHEN 'contradicted' THEN 'stale' "
+                    "WHEN 'forgotten' THEN 'active' ELSE prior_status END "
+                    "FROM schema_forget_log WHERE schema_id = schemas.id "
+                    "AND action = 'forget' ORDER BY id DESC LIMIT 1"
+                    "), 'active') WHERE status = 'forgotten'"
+                )
+                conn.execute("DROP TABLE schema_forget_log")
         conn.commit()
 
         if conn.execute(

@@ -269,23 +269,6 @@ CREATE TABLE IF NOT EXISTS schema_coactivation (
 CREATE INDEX IF NOT EXISTS idx_schema_coactivation_src ON schema_coactivation(src_schema_id);
 CREATE INDEX IF NOT EXISTS idx_schema_coactivation_dst ON schema_coactivation(dst_schema_id);
 
--- Audit log for user-initiated schema forget/unforget (CLI/dashboard only,
--- never MCP -- see private/docs decision on trust boundary). prior_status
--- records what the schema's status was before a forget, so unforget() can
--- put it back exactly where it was rather than always defaulting to active.
--- Named "unforget" rather than "restore" to avoid colliding with the
--- unrelated `slowave restore` DB-backup command (slowave/cli/backup.py).
-CREATE TABLE IF NOT EXISTS schema_forget_log (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  schema_id     INTEGER NOT NULL,
-  action        TEXT NOT NULL,  -- 'forget' | 'unforget'
-  prior_status  TEXT NOT NULL,
-  reason        TEXT,
-  created_ts    INTEGER NOT NULL,
-  FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_schema_forget_log_schema ON schema_forget_log(schema_id);
-
 -- Debug/audit trace for consolidation experiments. This is intentionally
 -- Trace log for consolidation passes. Append-only, local to benchmark/dev use.
 -- Consolidation is zero-LLM; this table records only geometric/embedding-derived

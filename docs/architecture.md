@@ -125,9 +125,7 @@ Each stored experience has a recording time and can retain an optional source ti
 
 ## Memory lifecycle states and human control
 
-Active memory normally participates in retrieval. Feedback can mark memory stale or record a superseding replacement, while deduplication can archive an exact duplicate. A person can suppress a memory through the CLI or dashboard; suppression is reversible and does not delete its source evidence.
-
-There is intentionally no agent-facing MCP forget tool. Forgetting is a human decision made after inspecting a specific memory, not an inference from conversation text.
+Active memory normally participates in retrieval. Feedback can mark memory stale or record a superseding replacement, while deduplication can archive an exact duplicate. A dashboard operator can permanently delete a reviewed memory or procedure after inspecting the full impact preview; dependent references are removed or scrubbed as part of that action.
 
 ---
 

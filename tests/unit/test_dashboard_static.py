@@ -71,7 +71,7 @@ def test_static_shell_preserves_action_gate(tmp_path: Path) -> None:
     server = _server(tmp_path, allow_actions=False)
     try:
         request = Request(
-            f"http://127.0.0.1:{server.server_port}/api/schemas/1/forget",
+            f"http://127.0.0.1:{server.server_port}/api/schemas/1/delete",
             method="POST",
         )
         try:

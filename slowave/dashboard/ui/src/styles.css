@@ -733,7 +733,6 @@ main {
   border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
   color: var(--danger);
 }
-.status-forgotten i,
 .status-suppressed i {
   width: 7px;
   height: 1px;
@@ -932,7 +931,6 @@ main {
 .memory-state-active { border-top: 3px solid var(--success); }
 .memory-state-needs_review { border-top: 3px solid var(--warning); }
 .memory-state-stale { border-top: 3px solid var(--danger); }
-.memory-state-forgotten { border-top: 3px solid var(--muted); }
 .memory-state-archived { border-top: 3px solid var(--border); }
 .filter-bar {
   position: relative;
@@ -1600,11 +1598,35 @@ pre {
   min-height: 88px;
   resize: vertical;
 }
-.confirmation > div > div {
+.confirmation-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+.delete-confirmation {
+  width: min(680px, 100%) !important;
+}
+.delete-preview {
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.delete-preview > div {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(110px, 0.5fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-muted);
+}
+.delete-preview > div:last-child { border-bottom: 0; }
+.delete-preview span { color: var(--danger); font-size: 12px; }
+.delete-preview p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+@media (max-width: 560px) {
+  .delete-preview > div { grid-template-columns: minmax(0, 1fr) auto; }
+  .delete-preview > div p { grid-column: 1 / -1; margin-top: 0; }
 }
 .service-row {
   display: grid;

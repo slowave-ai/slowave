@@ -74,7 +74,6 @@ export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect
           { selector: 'node[status = "active"]', style: { "background-color": palette.success } },
           { selector: 'node[status = "needs_review"]', style: { "background-color": palette.warning } },
           { selector: 'node[status = "stale"]', style: { "background-color": palette.danger } },
-          { selector: 'node[status = "forgotten"]', style: { "background-color": palette.muted } },
           { selector: 'node[status = "archived"]', style: { "background-color": palette.muted, "background-opacity": 0.65 } },
           { selector: "node:selected", style: { label: "data(label)", "text-opacity": 1, "text-background-opacity": 0.85, "text-background-color": "#161b22", "text-background-padding": "4px", "text-margin-y": "-12px", "border-width": 3, "border-color": palette.link } as any },
           {

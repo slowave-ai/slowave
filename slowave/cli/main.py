@@ -776,65 +776,6 @@ def _parse_schema_ref(ref: str) -> int:
     return int(ref[4:])
 
 
-@cli.command("forget")
-@click.argument("ref")
-@click.option("--reason", default=None, help="Optional note on why this is being forgotten.")
-@click.pass_context
-def forget_cmd(ctx: click.Context, ref: str, reason: str | None) -> None:
-    """Suppress a schema from all future retrieval.
-
-    CLI/dashboard only -- there is deliberately no MCP equivalent (forgetting
-    requires a human looking at a specific memory, not an agent inferring
-    intent). Reversible via `slowave unforget`.
-    """
-    sid = _parse_schema_ref(ref)
-    eng = _build_engine(ctx.obj["db"], disable_encoder=True)
-    try:
-        schema = eng.get_schema(sid)
-    except KeyError:
-        _print({"error": "not found"}, ctx.obj["json"])
-        eng.close()
-        return
-    warning = None
-    if schema.generalization_stage >= 1:
-        warning = (
-            f"sch_{sid} is generalized (generalization_stage={schema.generalization_stage}); "
-            "forgetting it removes it from every scope that reuses it, not just this one."
-        )
-    prior_status = schema.status
-    eng.forget_schema(sid, reason=reason)
-    eng.close()
-    result: dict[str, Any] = {
-        "schema_id": f"sch_{sid}",
-        "status": "forgotten",
-        "prior_status": prior_status,
-    }
-    if warning:
-        result["warning"] = warning
-    _print(result, ctx.obj["json"])
-    if not ctx.obj["json"] and warning:
-        click.echo(f"  warning: {warning}")
-
-
-@cli.command("unforget")
-@click.argument("ref")
-@click.pass_context
-def unforget_cmd(ctx: click.Context, ref: str) -> None:
-    """Undo `slowave forget`, returning a schema to its prior status.
-
-    Named "unforget" rather than "restore" to avoid colliding with the
-    unrelated `slowave restore` DB-backup command.
-    """
-    sid = _parse_schema_ref(ref)
-    eng = _build_engine(ctx.obj["db"], disable_encoder=True)
-    try:
-        restored_status = eng.unforget_schema(sid)
-        _print({"schema_id": f"sch_{sid}", "status": restored_status}, ctx.obj["json"])
-    except KeyError as e:
-        _print({"error": str(e)}, ctx.obj["json"])
-    eng.close()
-
-
 @cli.command("stats")
 @click.option("--scope", default=None, help="Filter by scope (e.g., project:myrepo).")
 @click.option("--verbose", is_flag=True, help="Detailed breakdown.")

@@ -97,21 +97,6 @@ def test_same_prototype_active_keeps_active(consolidator):
     assert new_id == 7
 
 
-def test_same_prototype_forgotten_is_skipped_not_resurrected(consolidator):
-    """A forgotten same-prototype schema is skipped: not resurrected, and no
-    duplicate is created either."""
-    forgotten = MagicMock(id=7, status="forgotten", scope_id="p:t")
-    consolidator.schemas.find_by_primary_prototype.return_value = forgotten
-
-    outcome, new_id = consolidator._write_latent_schema(prototype_id=7, schema=make_latent_schema())
-
-    consolidator.schemas.reinforce_schema.assert_not_called()
-    consolidator.schemas.create.assert_not_called()
-    consolidator.schemas.update_status.assert_not_called()
-    assert outcome == "skipped"
-    assert new_id == 7
-
-
 def test_cross_prototype_relation_never_retires_existing_schema(consolidator):
     from slowave.latent.schema import GeometricVerdict
 

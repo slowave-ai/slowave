@@ -223,7 +223,7 @@ The dashboard queries the database directly on every request. If data appears
 stale, the consolidation worker may not have run recently, or the daemon has
 not written events yet.
 
-### Forget/Unforget buttons not working
+### Delete buttons not available
 
 Start the dashboard with the actions flag:
 

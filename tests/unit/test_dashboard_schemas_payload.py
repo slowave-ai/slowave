@@ -67,8 +67,7 @@ def test_known_status_filter_still_works():
         sid = eng.schemas.create(
             content_text="an active schema", facets={}, tags=[], embedding=None, dedupe=False
         )
-        eng.schemas.forget(sid)
-        payload = _schemas_payload(path, {"status": ["forgotten"]})
+        payload = _schemas_payload(path, {"status": ["active"]})
         assert len(payload["schemas"]) == 1
         assert payload["schemas"][0]["id"] == f"sch_{sid}"
     finally:

@@ -204,7 +204,7 @@ runtime root's `backups/` directory.
 | Linux | `~/.config/systemd/user/slowave-backup.timer` | `systemctl --user status slowave-backup.timer` |
 | Windows | Task Scheduler: `SlowaveBackup` | `Get-ScheduledTask -TaskName SlowaveBackup` |
 
-### Runtime data location and migration
+### Runtime data location
 
 Slowave isolates runtime data by operating-system user. The default root is
 the native application-data directory selected by `platformdirs`:
@@ -218,27 +218,6 @@ the native application-data directory selected by `platformdirs`:
 The database, SQLite sidecars, daemon PID, logs, backups, setup sentinel, and
 diagnostic logs stay beneath that root. `slowave doctor` prints the effective
 root and database path.
-
-Set `SLOWAVE_HOME` to relocate the complete runtime tree for CI, containers,
-portable installs, or an intentionally shared operator-managed deployment.
-`SLOWAVE_DB` remains a legacy exact-database override; its parent becomes the
-runtime root. Setting both variables is an error. A shared root is not
-multi-tenant isolation: run one daemon under the intended service account and
-protect the directory with OS permissions.
-
-After upgrading an installation that used `~/.slowave`, migrate explicitly:
-
-```bash
-slowave migrate-data --dry-run
-slowave migrate-data
-slowave doctor
-```
-
-Migration stops a legacy daemon if necessary, copies SQLite through its online
-backup API, validates `PRAGMA integrity_check`, and promotes a staged directory.
-It refuses to merge into a non-empty destination and preserves `~/.slowave` for
-rollback. To roll back, stop the new daemon and run commands with
-`SLOWAVE_HOME=~/.slowave` (or point `SLOWAVE_DB` at the exact legacy database).
 
 ---
 

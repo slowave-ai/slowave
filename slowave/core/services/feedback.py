@@ -528,8 +528,6 @@ class FeedbackService:
             if self.cfg.apply_positive_learning and fb_label in ("useful", "partially_useful"):
                 for schema_id in used_ids:
                     try:
-                        if self.schemas.get(schema_id).status == "forgotten":
-                            continue
                         if fb_label == "useful":
                             self.schemas.reinforce(
                                 schema_id,
@@ -793,8 +791,6 @@ class FeedbackService:
             assessment = item["assessment"]
             stale_reason = item.get("stale_reason")
             schema = self.schemas.get(schema_id)
-            if schema.status == "forgotten":
-                continue
             if assessment == "used":
                 # Conflicting feedback is append-only evidence, not authority
                 # to resurrect a memory already retired by stale/wrong input.

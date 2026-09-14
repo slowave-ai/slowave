@@ -2,8 +2,8 @@
 
 Dependency-free at runtime: stdlib HTTP server + SQLite read APIs + packaged
 React UI assets.
-The dashboard is local-only by default, with its mutating schema actions
-(forget/unforget) available in the normal dashboard command.
+The dashboard is local-only by default. Its optional mutating actions provide
+explicit, previewed hard deletion of memories and procedures.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ VALID_SCHEMA_STATUSES = (
     "needs_review",
     "stale",
     "archived",
-    "forgotten",
 )
 # Contradiction and supersession are client-feedback lifecycle decisions. The
 # dashboard displays their resulting statuses; geometry only reports topical
@@ -167,10 +166,17 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_json(_activity_payload(db_path, qs))
                 elif path.startswith("/api/activity/"):
                     self._send_json(_activity_detail(db_path, unquote(path.split("/")[-1])))
+                elif path.startswith("/api/procedures/") and path.endswith("/delete-preview"):
+                    self._send_json(
+                        _procedure_delete_preview(db_path, unquote(path.split("/")[-2]))
+                    )
                 elif path.startswith("/api/procedures/"):
                     self._send_json(_procedure_detail(db_path, unquote(path.split("/")[-1])))
                 elif path == "/api/graph/schemas":
                     self._send_json(_schema_graph_payload(db_path, qs))
+                elif path.startswith("/api/schemas/") and path.endswith("/delete-preview"):
+                    schema_id = int(path.split("/")[-2].replace("sch_", ""))
+                    self._send_json(_schema_delete_preview(db_path, schema_id))
                 elif path.startswith("/api/schemas/"):
                     schema_id = int(path.split("/")[-1].replace("sch_", ""))
                     self._send_json(_schema_detail(db_path, schema_id))
@@ -228,20 +234,11 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             try:
-                if path.startswith("/api/schemas/") and path.endswith("/forget"):
+                if path.startswith("/api/schemas/") and path.endswith("/delete"):
                     schema_id = int(path.split("/")[-2])
-                    length = int(self.headers.get("Content-Length", 0) or 0)
-                    body = self.rfile.read(length) if length else b""
-                    reason = None
-                    if body:
-                        try:
-                            reason = json.loads(body).get("reason")
-                        except Exception:
-                            reason = None
-                    self._send_json(_forget_schema_action(db_path, schema_id, reason))
-                elif path.startswith("/api/schemas/") and path.endswith("/unforget"):
-                    schema_id = int(path.split("/")[-2])
-                    self._send_json(_unforget_schema_action(db_path, schema_id))
+                    self._send_json(_delete_schema_action(db_path, schema_id))
+                elif path.startswith("/api/procedures/") and path.endswith("/delete"):
+                    self._send_json(_delete_procedure_action(db_path, unquote(path.split("/")[-2])))
                 else:
                     self._send_json(
                         {"error": "not found", "path": path},
@@ -1592,7 +1589,6 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             pass
         retrievals: list[dict[str, Any]] = []
         feedback: list[dict[str, Any]] = []
-        audit: list[dict[str, Any]] = []
         try:
             retrievals = [
                 dict(r)
@@ -1621,17 +1617,6 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             ]
         except sqlite3.Error:
             pass
-        try:
-            audit = [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT action, prior_status, reason, created_ts FROM schema_forget_log "
-                    "WHERE schema_id = ? ORDER BY created_ts DESC LIMIT 50",
-                    (schema_id,),
-                ).fetchall()
-            ]
-        except sqlite3.Error:
-            pass
         return {
             "schema": schema,
             "evidence": evidence,
@@ -1641,118 +1626,323 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             "coact_incoming": coact_incoming,
             "retrievals": retrievals,
             "feedback": feedback,
-            "audit": audit,
         }
     finally:
         conn.close()
 
 
-# Mutating actions below are only reachable when the server instance allows
-# actions; the standard dashboard command enables them. Logic
-# is intentionally a standalone copy of SchemaStore.forget/unforget rather than
-# importing schema_store.py, matching this module's "dependency-free: stdlib
-# HTTP server + SQLite" design (see module docstring, and VALID_SCHEMA_STATUSES
-# above which already duplicates schema_store.py's copy for the same reason).
-def _ensure_schema_forget_log(conn: sqlite3.Connection) -> None:
-    """Create schema_forget_log if missing.
-
-    The dashboard talks to the DB via raw sqlite3 (_connect), never through
-    SlowaveEngine/SQLiteDB.init_schema() -- so a DB whose schema was last
-    initialized before this table existed (i.e. any DB only ever opened by
-    the dashboard, never by a CLI command that constructs an engine) would
-    otherwise 500 with "no such table: schema_forget_log" the first time
-    Forget is clicked. Mirrors the CREATE TABLE in storage/schema.sql.
-    """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS schema_forget_log (
-          id            INTEGER PRIMARY KEY AUTOINCREMENT,
-          schema_id     INTEGER NOT NULL,
-          action        TEXT NOT NULL,
-          prior_status  TEXT NOT NULL,
-          reason        TEXT,
-          created_ts    INTEGER NOT NULL,
-          FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE
-        )
-        """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_schema_forget_log_schema " "ON schema_forget_log(schema_id)"
+# Dashboard hard deletion is deliberately local-only and always preceded by a
+# preview. Procedures are embedded in task_complete raw-event metadata rather
+# than living in their own table, so their definition is removed in-place.
+_DROP_REFERENCE = object()
+_SNAPSHOT_JSON_FIELDS = [
+    ("context_recall_events", "context_id", "memory_ids_json"),
+    ("context_recall_events", "context_id", "response_json"),
+    ("context_recall_events", "context_id", "suppressed_json"),
+    ("retrieval_continuations", "cursor_id", "candidates_json"),
+]
+_FEEDBACK_JSON_FIELDS = [
+    ("context_feedback_events", "id", name)
+    for name in (
+        "used_memory_ids_json",
+        "irrelevant_memory_ids_json",
+        "stale_memory_ids_json",
+        "wrong_memory_ids_json",
+        "used_procedure_ids_json",
+        "irrelevant_procedure_ids_json",
+        "stale_procedure_ids_json",
+        "wrong_procedure_ids_json",
     )
+]
 
 
-def _forget_schema_action(db_path: str, schema_id: int, reason: str | None) -> dict[str, Any]:
+def _short_preview(value: Any, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else f"{text[:limit - 1]}…"
+
+
+def _remove_entity_reference(value: Any, entity_id: str) -> tuple[Any, bool]:
+    if isinstance(value, list):
+        result, changed = [], False
+        for item in value:
+            if item == entity_id:
+                changed = True
+                continue
+            cleaned, item_changed = _remove_entity_reference(item, entity_id)
+            if cleaned is _DROP_REFERENCE:
+                changed = True
+                continue
+            result.append(cleaned)
+            changed = changed or item_changed
+        return result, changed
+    if isinstance(value, dict):
+        if any(value.get(key) == entity_id for key in ("id", "memory_id", "procedure_id")):
+            return _DROP_REFERENCE, True
+        result, changed = {}, False
+        for key, item in value.items():
+            if item == entity_id and key in {
+                "memory_id",
+                "procedure_id",
+                "target_id",
+                "replacement_target_id",
+            }:
+                changed = True
+                continue
+            cleaned, item_changed = _remove_entity_reference(item, entity_id)
+            if cleaned is _DROP_REFERENCE:
+                changed = True
+                continue
+            result[key] = cleaned
+            changed = changed or item_changed
+        return result, changed
+    return value, False
+
+
+def _json_reference_rows(
+    conn: sqlite3.Connection, entity_id: str, fields: list[tuple[str, str, str]]
+) -> list[dict[str, Any]]:
+    affected: list[dict[str, Any]] = []
+    for table, id_column, json_column in fields:
+        for row in conn.execute(f"SELECT {id_column}, {json_column} FROM {table}").fetchall():
+            decoded = _json_loads(row[json_column], None)
+            if decoded is not None and _remove_entity_reference(decoded, entity_id)[1]:
+                affected.append(
+                    {
+                        "kind": table.replace("_", " "),
+                        "id": str(row[id_column]),
+                        "action": "reference removed",
+                        "preview": _short_preview(decoded),
+                    }
+                )
+    return affected
+
+
+def _scrub_json_references(
+    conn: sqlite3.Connection, entity_id: str, fields: list[tuple[str, str, str]]
+) -> None:
+    for table, id_column, json_column in fields:
+        for row in conn.execute(f"SELECT {id_column}, {json_column} FROM {table}").fetchall():
+            decoded = _json_loads(row[json_column], None)
+            if decoded is None:
+                continue
+            cleaned, changed = _remove_entity_reference(decoded, entity_id)
+            if changed:
+                conn.execute(
+                    f"UPDATE {table} SET {json_column}=? WHERE {id_column}=?",
+                    (json.dumps(cleaned, ensure_ascii=False), row[id_column]),
+                )
+
+
+def _preview_summary(affected: list[dict[str, Any]]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for item in affected:
+        summary[item["action"]] = summary.get(item["action"], 0) + 1
+    return summary
+
+
+def _schema_delete_preview_conn(conn: sqlite3.Connection, schema_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT content_text FROM schemas WHERE id=?", (schema_id,)).fetchone()
+    if row is None:
+        return {"error": "schema not found", "schema_id": schema_id}
+    entity_id, affected = f"sch_{schema_id}", []
+    for table, where, params, kind in (
+        ("schema_evidence", "schema_id=?", (schema_id,), "evidence link"),
+        ("schema_prototype_map", "schema_id=?", (schema_id,), "prototype link"),
+        (
+            "schema_relations",
+            "src_schema_id=? OR dst_schema_id=?",
+            (schema_id, schema_id),
+            "memory relation",
+        ),
+        (
+            "schema_coactivation",
+            "src_schema_id=? OR dst_schema_id=?",
+            (schema_id, schema_id),
+            "co-activation link",
+        ),
+        ("schema_retrieval_evidence", "schema_id=?", (schema_id,), "retrieval evidence"),
+    ):
+        try:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[
+                0
+            ]
+        except sqlite3.Error:
+            count = 0
+        affected.extend(
+            {"kind": kind, "id": f"{table}:{n + 1}", "action": "deleted", "preview": kind}
+            for n in range(count)
+        )
+    for item in conn.execute(
+        "SELECT context_id, content_text FROM context_recall_items WHERE memory_id IN (?, ?)",
+        (entity_id, str(schema_id)),
+    ).fetchall():
+        affected.append(
+            {
+                "kind": "retrieval item",
+                "id": str(item["context_id"]),
+                "action": "deleted",
+                "preview": _short_preview(item["content_text"]),
+            }
+        )
+    for item in conn.execute(
+        "SELECT event_id, reason, contribution FROM feedback_events WHERE (target_kind='memory' AND target_id IN (?, ?)) OR replacement_target_id IN (?, ?)",
+        (entity_id, str(schema_id), entity_id, str(schema_id)),
+    ).fetchall():
+        affected.append(
+            {
+                "kind": "feedback event",
+                "id": str(item["event_id"]),
+                "action": "deleted",
+                "preview": _short_preview(item["reason"] or item["contribution"]),
+            }
+        )
+    affected.extend(
+        _json_reference_rows(conn, entity_id, _SNAPSHOT_JSON_FIELDS + _FEEDBACK_JSON_FIELDS)
+    )
+    return {
+        "entity": {
+            "kind": "memory",
+            "id": entity_id,
+            "preview": _short_preview(row["content_text"]),
+        },
+        "affected": affected,
+        "summary": _preview_summary(affected),
+    }
+
+
+def _schema_delete_preview(db_path: str, schema_id: int) -> dict[str, Any]:
     conn = _connect(db_path)
     try:
-        _ensure_schema_forget_log(conn)
-        row = conn.execute(
-            "SELECT status, generalization_stage FROM schemas WHERE id = ?",
-            (schema_id,),
-        ).fetchone()
-        if row is None:
-            return {"error": "schema not found", "schema_id": schema_id}
-        prior_status = str(row["status"])
-        if prior_status == "forgotten":
-            return {
-                "schema_id": f"sch_{schema_id}",
-                "status": "forgotten",
-                "prior_status": "forgotten",
-            }
-        now = int(time.time())
-        conn.execute(
-            "INSERT INTO schema_forget_log (schema_id, action, prior_status, reason, created_ts) "
-            "VALUES (?, 'forget', ?, ?, ?)",
-            (schema_id, prior_status, reason, now),
-        )
-        conn.execute(
-            "UPDATE schemas SET status = 'forgotten', last_updated_ts = ? WHERE id = ?",
-            (now, schema_id),
-        )
-        conn.commit()
-        result: dict[str, Any] = {
-            "schema_id": f"sch_{schema_id}",
-            "status": "forgotten",
-            "prior_status": prior_status,
-        }
-        gen_stage = int(row["generalization_stage"] or 0)
-        if gen_stage >= 1:
-            result["warning"] = (
-                f"sch_{schema_id} is generalized (generalization_stage={gen_stage}); "
-                "forgetting it removes it from every scope that reuses it, not just this one."
-            )
-        return result
+        return _schema_delete_preview_conn(conn, schema_id)
     finally:
         conn.close()
 
 
-def _unforget_schema_action(db_path: str, schema_id: int) -> dict[str, Any]:
+def _delete_schema_action(db_path: str, schema_id: int) -> dict[str, Any]:
     conn = _connect(db_path)
     try:
-        _ensure_schema_forget_log(conn)
-        row = conn.execute("SELECT status FROM schemas WHERE id = ?", (schema_id,)).fetchone()
-        if row is None:
-            return {"error": "schema not found", "schema_id": schema_id}
-        if str(row["status"]) != "forgotten":
-            return {
-                "error": "schema is not currently forgotten",
-                "schema_id": schema_id,
-            }
-        log_row = conn.execute(
-            "SELECT prior_status FROM schema_forget_log "
-            "WHERE schema_id = ? AND action = 'forget' ORDER BY id DESC LIMIT 1",
-            (schema_id,),
-        ).fetchone()
-        prior_status = str(log_row["prior_status"]) if log_row is not None else "active"
-        now = int(time.time())
+        preview = _schema_delete_preview_conn(conn, schema_id)
+        if preview.get("error"):
+            return preview
+        entity_id = f"sch_{schema_id}"
         conn.execute(
-            "INSERT INTO schema_forget_log (schema_id, action, prior_status, reason, created_ts) "
-            "VALUES (?, 'unforget', ?, NULL, ?)",
-            (schema_id, prior_status, now),
+            "DELETE FROM context_recall_items WHERE memory_id IN (?, ?)",
+            (entity_id, str(schema_id)),
         )
         conn.execute(
-            "UPDATE schemas SET status = ?, last_updated_ts = ? WHERE id = ?",
-            (prior_status, now, schema_id),
+            "DELETE FROM feedback_events WHERE (target_kind='memory' AND target_id IN (?, ?)) OR replacement_target_id IN (?, ?)",
+            (entity_id, str(schema_id), entity_id, str(schema_id)),
+        )
+        _scrub_json_references(conn, entity_id, _SNAPSHOT_JSON_FIELDS + _FEEDBACK_JSON_FIELDS)
+        conn.execute("DELETE FROM schemas WHERE id=?", (schema_id,))
+        conn.commit()
+        return {"deleted": True, "entity": preview["entity"], "summary": preview["summary"]}
+    finally:
+        conn.close()
+
+
+def _procedure_source(conn: sqlite3.Connection, procedure_id: str) -> sqlite3.Row | None:
+    if not procedure_id.startswith("proc_"):
+        return None
+    for row in conn.execute(
+        "SELECT id, metadata_json FROM raw_events WHERE session_id=? AND type='task_complete' ORDER BY id DESC",
+        (procedure_id.removeprefix("proc_"),),
+    ).fetchall():
+        if isinstance(_json_dict(row["metadata_json"]).get("procedure"), dict):
+            return row
+    return None
+
+
+def _procedure_delete_preview_conn(conn: sqlite3.Connection, procedure_id: str) -> dict[str, Any]:
+    source = _procedure_source(conn, procedure_id)
+    if source is None:
+        return {"error": "procedure not found", "procedure_id": procedure_id}
+    procedure = _json_dict(source["metadata_json"]).get("procedure") or {}
+    affected = [
+        {
+            "kind": "procedure definition",
+            "id": str(source["id"]),
+            "action": "deleted",
+            "preview": _short_preview(procedure.get("summary")),
+        }
+    ]
+    for item in conn.execute(
+        "SELECT context_id, content_text FROM context_recall_items WHERE memory_id=?",
+        (procedure_id,),
+    ).fetchall():
+        affected.append(
+            {
+                "kind": "retrieval item",
+                "id": str(item["context_id"]),
+                "action": "deleted",
+                "preview": _short_preview(item["content_text"]),
+            }
+        )
+    for item in conn.execute(
+        "SELECT event_id, reason, contribution FROM feedback_events WHERE (target_kind='procedure' AND target_id=?) OR replacement_target_id=?",
+        (procedure_id, procedure_id),
+    ).fetchall():
+        affected.append(
+            {
+                "kind": "feedback event",
+                "id": str(item["event_id"]),
+                "action": "deleted",
+                "preview": _short_preview(item["reason"] or item["contribution"]),
+            }
+        )
+    affected.extend(
+        _json_reference_rows(
+            conn,
+            procedure_id,
+            [("raw_events", "id", "metadata_json")] + _SNAPSHOT_JSON_FIELDS + _FEEDBACK_JSON_FIELDS,
+        )
+    )
+    return {
+        "entity": {
+            "kind": "procedure",
+            "id": procedure_id,
+            "preview": _short_preview(procedure.get("summary")),
+        },
+        "affected": affected,
+        "summary": _preview_summary(affected),
+    }
+
+
+def _procedure_delete_preview(db_path: str, procedure_id: str) -> dict[str, Any]:
+    conn = _connect(db_path)
+    try:
+        return _procedure_delete_preview_conn(conn, procedure_id)
+    finally:
+        conn.close()
+
+
+def _delete_procedure_action(db_path: str, procedure_id: str) -> dict[str, Any]:
+    conn = _connect(db_path)
+    try:
+        preview = _procedure_delete_preview_conn(conn, procedure_id)
+        if preview.get("error"):
+            return preview
+        source = _procedure_source(conn, procedure_id)
+        if source is None:
+            return {"error": "procedure not found", "procedure_id": procedure_id}
+        source_metadata = _json_dict(source["metadata_json"])
+        source_metadata.pop("procedure", None)
+        conn.execute(
+            "UPDATE raw_events SET metadata_json=? WHERE id=?",
+            (json.dumps(source_metadata, ensure_ascii=False), source["id"]),
+        )
+        conn.execute("DELETE FROM context_recall_items WHERE memory_id=?", (procedure_id,))
+        conn.execute(
+            "DELETE FROM feedback_events WHERE (target_kind='procedure' AND target_id=?) OR replacement_target_id=?",
+            (procedure_id, procedure_id),
+        )
+        _scrub_json_references(
+            conn,
+            procedure_id,
+            [("raw_events", "id", "metadata_json")] + _SNAPSHOT_JSON_FIELDS + _FEEDBACK_JSON_FIELDS,
         )
         conn.commit()
-        return {"schema_id": f"sch_{schema_id}", "status": prior_status}
+        return {"deleted": True, "entity": preview["entity"], "summary": preview["summary"]}
     finally:
         conn.close()
 

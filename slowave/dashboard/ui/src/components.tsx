@@ -47,8 +47,6 @@ export const glossary: Record<string, string> = {
     "Memory records currently marked for review because they may need confirmation or correction.",
   stale_state:
     "Memory records currently marked stale because they may be out of date.",
-  forgotten_state:
-    "Memory records suppressed from ordinary retrieval because they were explicitly forgotten.",
   archived_state:
     "Memory records retained for history but excluded from the active library.",
   retrievals_total:
@@ -352,7 +350,6 @@ const labels: Record<string, string> = {
   active: "Active",
   needs_review: "Needs review",
   stale: "Stale",
-  forgotten: "Suppressed",
   archived: "Archived",
   complete: "Complete",
   incomplete: "Incomplete",
