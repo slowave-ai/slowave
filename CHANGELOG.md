@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.2...slowave-v0.20.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* add MCP Registry metadata ([#156](https://github.com/slowave-ai/slowave/issues/156)) ([8dc6861](https://github.com/slowave-ai/slowave/commit/8dc686149ad9c475e59b44b74ee1df72917e5ca8))
+
 ## [0.20.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.1...slowave-v0.20.2) (2026-09-14)
 
 
