@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.0...slowave-v0.20.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* hard delete memories from dashboard + readme ([#152](https://github.com/slowave-ai/slowave/issues/152)) ([9e0b089](https://github.com/slowave-ai/slowave/commit/9e0b089a48b55e77ae019ad250dc8c70e19ce430))
+
 ## [0.20.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.19.3...slowave-v0.20.0) (2026-09-13)
 
 
