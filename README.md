@@ -3,6 +3,8 @@
 [![PyPI Status](https://img.shields.io/pypi/status/slowave?color=orange)](https://pypi.org/project/slowave/)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
+<!-- mcp-name: io.github.slowave-ai/slowave -->
+
 ---
 
 <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="300"/>
