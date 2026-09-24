@@ -494,6 +494,34 @@ CREATE INDEX IF NOT EXISTS idx_feedback_events_created ON feedback_events(create
 CREATE INDEX IF NOT EXISTS idx_feedback_events_source ON feedback_events(source_contract, source_feedback_id);
 
 -- ============================================================================
+-- Derived procedure search index
+-- ============================================================================
+--
+-- Procedure payloads remain in raw_events as canonical task-completion
+-- evidence.  This table is an independently rebuildable projection used only
+-- to retrieve advisory procedures by the activation that originally produced
+-- them.  It is populated best-effort on startup and after each procedure
+-- commit; malformed historical records are skipped and logged rather than
+-- blocking database startup.
+CREATE TABLE IF NOT EXISTS procedure_search_documents (
+  procedure_id          TEXT PRIMARY KEY,
+  source_session_id     TEXT NOT NULL,
+  source_context_id     TEXT,
+  scope_id              TEXT,
+  completed_at          INTEGER NOT NULL,
+  applicability_text    TEXT NOT NULL,
+  strategy_text         TEXT NOT NULL,
+  context_json          TEXT NOT NULL DEFAULT '{}',
+  outcome               TEXT NOT NULL DEFAULT 'unknown',
+  verification_status   TEXT NOT NULL DEFAULT 'unverified',
+  updated_at            INTEGER NOT NULL,
+  FOREIGN KEY (source_session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_context_id) REFERENCES context_recall_events(context_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedure_search_scope ON procedure_search_documents(scope_id);
+CREATE INDEX IF NOT EXISTS idx_procedure_search_completed ON procedure_search_documents(completed_at);
+
+-- ============================================================================
 -- Retrieval-access evidence
 -- ============================================================================
 

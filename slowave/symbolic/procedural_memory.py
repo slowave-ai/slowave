@@ -8,6 +8,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from slowave.symbolic.procedure_search import (
+    ProcedureLexicalCandidate,
+    load_procedure_search_documents,
+)
+
 _NAME = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 _SCALAR = (str, int, float, bool)
 _FAILED_PROCEDURE_WARNING = (
@@ -17,6 +22,11 @@ _HELPED_BONUS = 0.03
 _HELPED_BONUS_CAP = 0.09
 _HARMED_PENALTY = 0.06
 _HARMED_PENALTY_CAP = 0.18
+_PROCEDURE_RRF_K = 60
+_APPLICABILITY_WEIGHT = 2.0
+_STRATEGY_WEIGHT = 1.0
+_LEXICAL_WEIGHT = 1.0
+_DENSE_RELEVANCE_FLOOR = 0.60
 
 
 def _clean_name(value: Any, field: str) -> str:
@@ -266,6 +276,7 @@ def validate_procedure_uses(value: list[dict[str, Any]] | None) -> list[dict[str
 def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, Any]]:
     """Load standalone procedures and aggregate their observed influence."""
 
+    documents = load_procedure_search_documents(conn, scope=scope)
     params: list[Any] = []
     where = "WHERE e.type='task_complete'"
     if scope:
@@ -317,6 +328,17 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
             },
             "contributions": [],
         }
+        document = documents.get(item["id"])
+        if document is not None:
+            item["applicability_text"] = document.applicability_text
+            item["strategy_text"] = document.strategy_text
+        else:
+            # A failed optional migration must preserve the old retrieval
+            # behaviour instead of hiding otherwise valid procedures.
+            item["applicability_text"] = str(row["goal"])
+            item["strategy_text"] = " ".join(
+                (item["summary"], *(step["summary"] for step in item["steps"]))
+            )
         procedures.append(item)
         by_id[item["id"]] = item
     for use, downstream in influence_rows:
@@ -389,51 +411,97 @@ def retrieve_procedures(
     *,
     query: str,
     retrieval_context: dict[str, Any] | None = None,
+    lexical_candidates: dict[str, ProcedureLexicalCandidate] | None = None,
     encoder: Any = None,
     limit: int = 3,
-    min_similarity: float = 0.5,
+    min_similarity: float = _DENSE_RELEVANCE_FLOOR,
 ) -> list[dict[str, Any]]:
-    """Admit procedures by raw semantics, then rank with bounded use evidence."""
+    """Retrieve advisory procedures with source applicability, strategy, and FTS evidence."""
 
-    cue = " ".join((query, json.dumps(retrieval_context or {}, ensure_ascii=False)))
+    # Structured task context is checked field-by-field below.  Serializing it
+    # into the semantic cue made arbitrary metadata dominate the old cosine
+    # representation and diverged from schema retrieval's cue discipline.
+    cue = query.strip()
+    if not procedures:
+        return []
+    lexical_candidates = lexical_candidates or {}
     cue_terms = set(re.findall(r"\w+", cue.casefold()))
-    # Avoid an embedding inference when this scope has no procedures.  This
-    # is the normal case for new projects and the result is necessarily empty.
-    query_vector = encoder.encode(cue) if encoder is not None and procedures else None
-    ranked: list[tuple[float, dict[str, Any]]] = []
+    query_vector = encoder.encode(cue) if encoder is not None else None
+    scored: list[tuple[dict[str, Any], float, float]] = []
     for item in procedures:
-        text = " ".join(
-            (
-                item["goal"],
-                item["summary"],
-                *(step["summary"] for step in item["steps"]),
-                *item["caveats"],
-                item["outcome_summary"],
-                *(entry["contribution"] for entry in item["contributions"]),
-                json.dumps(item["context"], ensure_ascii=False),
-            )
-        )
+        applicability = str(item.get("applicability_text") or item["goal"])
+        strategy = str(item.get("strategy_text") or item["summary"])
         if query_vector is not None:
-            candidate_vector = encoder.encode(text)
-            semantic = max(0.0, float(query_vector.dot(candidate_vector)))
+            applicability_score = max(0.0, float(query_vector.dot(encoder.encode(applicability))))
+            strategy_score = max(0.0, float(query_vector.dot(encoder.encode(strategy))))
         else:
-            terms = set(re.findall(r"\w+", text.casefold()))
-            semantic = len(cue_terms & terms) / len(cue_terms) if cue_terms else 0.0
+            applicability_score = _lexical_overlap(cue_terms, applicability)
+            strategy_score = _lexical_overlap(cue_terms, strategy)
+        scored.append((item, applicability_score, strategy_score))
+
+    applicability_ranks = _ranks(scored, index=1)
+    strategy_ranks = _ranks(scored, index=2)
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for item, applicability_score, strategy_score in scored:
+        lexical = lexical_candidates.get(str(item["id"]))
+        if not _contexts_compatible(item.get("context"), retrieval_context):
+            continue
+        dense_pass = max(applicability_score, strategy_score) >= min_similarity
+        lexical_pass = lexical is not None and lexical.specific
+        if not (dense_pass or lexical_pass):
+            continue
         evidence = item["evidence"]
-        # One helpful report resolves a near tie (0.03), while one harmful
-        # report outweighs two helpful reports (0.06): safety evidence must
-        # dominate endorsement. Three reports saturate each side so repeated
-        # feedback cannot overpower semantic relevance or admission.
         utility = min(_HELPED_BONUS_CAP, evidence["helped"] * _HELPED_BONUS) - min(
             _HARMED_PENALTY_CAP, evidence["harmed"] * _HARMED_PENALTY
         )
-        score = semantic + utility
-        if semantic >= min_similarity:
-            result = dict(item)
-            result["score"] = round(score, 4)
-            ranked.append((score, result))
+        fusion = (
+            _rrf(applicability_ranks[str(item["id"])], _APPLICABILITY_WEIGHT)
+            + _rrf(strategy_ranks[str(item["id"])], _STRATEGY_WEIGHT)
+            + _rrf(lexical.rank if lexical is not None else None, _LEXICAL_WEIGHT)
+        )
+        result = dict(item)
+        result["score"] = round(fusion + utility, 4)
+        result["match"] = {
+            "applicability": round(applicability_score, 4),
+            "strategy": round(strategy_score, 4),
+            "lexical": lexical is not None and lexical.specific,
+        }
+        ranked.append((fusion + utility, result))
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
     return [item for _, item in ranked[: max(0, limit)]]
+
+
+def _ranks(scored: list[tuple[dict[str, Any], float, float]], *, index: int) -> dict[str, int]:
+    if index == 1:
+        ordered = sorted(scored, key=lambda value: (-value[1], str(value[0]["id"])))
+    else:
+        ordered = sorted(scored, key=lambda value: (-value[2], str(value[0]["id"])))
+    return {
+        str(item["id"]): rank for rank, (item, _applicability, _strategy) in enumerate(ordered, 1)
+    }
+
+
+def _rrf(rank: int | None, weight: float) -> float:
+    return 0.0 if rank is None else weight / (_PROCEDURE_RRF_K + rank)
+
+
+def _lexical_overlap(cue_terms: set[str], text: str) -> float:
+    terms = set(re.findall(r"\w+", text.casefold()))
+    return len(cue_terms & terms) / len(cue_terms) if cue_terms else 0.0
+
+
+def _contexts_compatible(
+    procedure_context: dict[str, Any] | None, retrieval_context: dict[str, Any] | None
+) -> bool:
+    left = flatten_facets(procedure_context)
+    right = flatten_facets(retrieval_context)
+    # A runbook for one checkout instance may still be useful for search.  A
+    # concrete identifier narrows an occurrence, whereas an incompatible
+    # failure mode or environment changes the procedure's applicability.
+    shared = {
+        key for key in left.keys() & right.keys() if not key.rsplit(".", 1)[-1].endswith("_id")
+    }
+    return all(not left[key].isdisjoint(right[key]) for key in shared)
 
 
 def step_alignment(left: Iterable[ProcedureStep], right: Iterable[ProcedureStep]) -> float:

@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
-
-import pytest
 
 from tests.acceptance.mcp_harness import open_harness
 
@@ -15,11 +12,6 @@ def _run(coro) -> None:
     asyncio.run(coro)
 
 
-@pytest.mark.xfail(
-    condition=os.environ.get("SLOWAVE_ACCEPTANCE_ENCODER", "deterministic") == "deterministic",
-    strict=True,
-    reason="Procedure retrieval needs production semantic similarity; the deterministic encoder only validates the public transport contract.",
-)
 def test_successful_procedure_is_retrieved_and_marked_helpful(tmp_path: Path) -> None:
     """Verified guidance is reusable for a later, related task in the same scope."""
 

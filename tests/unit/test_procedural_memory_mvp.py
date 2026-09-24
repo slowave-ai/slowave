@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections import Counter
 
 import pytest
 
@@ -12,6 +13,11 @@ from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
 from slowave.mcp.session_reaper import _reap_once
 from slowave.symbolic.procedural_memory import flatten_facets, retrieve_procedures
+from slowave.symbolic.procedure_search import (
+    _has_discriminative_term,
+    backfill_procedure_search,
+    search_procedure_fts,
+)
 
 
 def _engine() -> tuple[SlowaveEngine, str]:
@@ -97,7 +103,7 @@ class _CountingEncoder:
         raise AssertionError("an empty procedure set must not be embedded")
 
 
-def test_procedure_retrieval_requires_point_five_raw_similarity() -> None:
+def test_procedure_retrieval_requires_point_six_dense_similarity() -> None:
     procedure = {
         "id": "proc_example",
         "goal": "repair service",
@@ -113,10 +119,10 @@ def test_procedure_retrieval_requires_point_five_raw_similarity() -> None:
         },
     }
 
-    assert not retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.4999))
-    admitted = retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.5))
+    assert not retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.5999))
+    admitted = retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.6))
     assert [item["id"] for item in admitted] == ["proc_example"]
-    assert admitted[0]["score"] == 0.59
+    assert admitted[0]["match"] == {"applicability": 0.6, "strategy": 0.6, "lexical": False}
 
 
 def test_procedure_retrieval_skips_embedding_for_empty_set() -> None:
@@ -124,6 +130,11 @@ def test_procedure_retrieval_skips_embedding_for_empty_set() -> None:
 
     assert retrieve_procedures([], query="repair", encoder=encoder) == []
     assert encoder.calls == 0
+
+
+def test_lexical_specificity_uses_corpus_frequency_not_english_stopwords() -> None:
+    assert _has_discriminative_term({"reparar"}, 4, Counter({"reparar": 1}))
+    assert not _has_discriminative_term({"reparar"}, 4, Counter({"reparar": 4}))
 
 
 def test_activate_can_omit_duplicate_schemas_and_diagnostics() -> None:
@@ -202,7 +213,103 @@ def test_structured_attempt_round_trip_and_retrieval() -> None:
         _cleanup(path)
 
 
-def test_context_difference_does_not_gate_precedent_retrieval() -> None:
+def test_procedure_search_backfills_from_canonical_completion_events() -> None:
+    eng, path = _engine()
+    try:
+        session_id = _attempt(eng, "checkout")
+        conn = eng.db.connect()
+        document = conn.execute(
+            "SELECT applicability_text, strategy_text FROM procedure_search_documents "
+            "WHERE procedure_id = ?",
+            (f"proc_{session_id}",),
+        ).fetchone()
+        assert document is not None
+        assert "repair checkout crashloop" in document["applicability_text"]
+        assert "Diagnose and repair" in document["strategy_text"]
+        assert f"proc_{session_id}" in search_procedure_fts(
+            conn,
+            query="repair checkout crashloop",
+            scope="project:aiops",
+        )
+
+        # The durable projection remains available if lexical FTS support is
+        # unavailable; the accelerator can be restored on a later release.
+        conn.execute("DROP TABLE procedure_search_fts")
+        conn.execute("DELETE FROM procedure_search_documents")
+        conn.commit()
+        assert backfill_procedure_search(conn) == 1
+        assert conn.execute(
+            "SELECT 1 FROM procedure_search_documents WHERE procedure_id = ?",
+            (f"proc_{session_id}",),
+        ).fetchone()
+
+        # A release reopens an existing database.  Rebuild the derived rows
+        # from the event log to verify that the startup migration is complete
+        # and idempotent rather than depending on a newly written procedure.
+        eng.db.init_schema(SlowaveConfig.default_schema_path())
+        restored = conn.execute(
+            "SELECT procedure_id FROM procedure_search_documents WHERE procedure_id = ?",
+            (f"proc_{session_id}",),
+        ).fetchone()
+        assert restored is not None
+        assert f"proc_{session_id}" in search_procedure_fts(
+            conn,
+            query="repair checkout crashloop",
+            scope="project:aiops",
+        )
+    finally:
+        eng.close()
+        _cleanup(path)
+
+
+def test_malformed_historical_procedure_does_not_break_backfill() -> None:
+    eng, path = _engine()
+    try:
+        session_id = eng.session_start(
+            agent="test",
+            scope="project:aiops",
+            initial_goal="repair checkout",
+        )
+        eng.raw_log.append(
+            session_id=session_id,
+            type="task_complete",
+            content="malformed historical procedure",
+            metadata={"procedure": {"version": 2, "summary": "broken", "steps": "not a list"}},
+        )
+
+        assert backfill_procedure_search(eng.db.connect()) == 0
+        assert (
+            eng.db.connect()
+            .execute(
+                "SELECT 1 FROM procedure_search_documents WHERE procedure_id = ?",
+                (f"proc_{session_id}",),
+            )
+            .fetchone()
+            is None
+        )
+
+        # Legacy diagnostic state is removed during schema migration and is
+        # not needed to keep the best-effort backfill safe.
+        conn = eng.db.connect()
+        conn.execute(
+            "CREATE TABLE procedure_search_backfill_errors "
+            "(id INTEGER PRIMARY KEY, procedure_id TEXT, error_text TEXT, created_at INTEGER)"
+        )
+        conn.commit()
+        eng.db.init_schema(SlowaveConfig.default_schema_path())
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='procedure_search_backfill_errors'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        eng.close()
+        _cleanup(path)
+
+
+def test_conflicting_procedure_context_blocks_retrieval() -> None:
     eng, path = _engine()
     try:
         _attempt(eng, "checkout")
@@ -214,7 +321,7 @@ def test_context_difference_does_not_gate_precedent_retrieval() -> None:
             initial_goal="repair kubernetes service",
             retrieval_context={"aiops": {"platform": "kubernetes", "failure": "latency"}},
         )
-        assert len(conflict["procedures"]) == 2
+        assert conflict["procedures"] == []
         different_service = ops.activate(
             eng,
             query="repair kubernetes service",

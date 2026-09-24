@@ -419,4 +419,33 @@ class SQLiteDB:
         # them rather than leave orphaned rows no code path can ever read.
         conn.execute("DELETE FROM schema_relations WHERE relation = 'part_of'")
 
+        # The procedure search projection no longer persists migration
+        # diagnostics. Historical failures are logged and retried on the next
+        # startup, so remove the obsolete write-only table from older DBs.
+        try:
+            conn.execute("DROP TABLE IF EXISTS procedure_search_backfill_errors")
+        except Exception:
+            pass
+
+        # Procedure search is a derived, advisory projection.  Keep its FTS
+        # accelerator optional: SQLite builds without FTS5 still retain the
+        # canonical projection and fall back to dense retrieval.
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS procedure_search_fts USING fts5("
+                "procedure_id UNINDEXED, applicability_text, strategy_text)"
+            )
+        except Exception:
+            # The search documents are useful without lexical acceleration.
+            # Leave this optional capability for a later startup to retry.
+            pass
+        try:
+            from slowave.symbolic.procedure_search import backfill_procedure_search
+
+            backfill_procedure_search(conn)
+        except Exception:
+            # Keep schema initialization available even if an optional search
+            # index cannot be materialized.  The next startup can retry it.
+            pass
+
         conn.commit()

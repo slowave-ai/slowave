@@ -31,6 +31,11 @@ from slowave.symbolic.procedural_memory import (
     validate_procedure,
     validate_procedure_uses,
 )
+from slowave.symbolic.procedure_search import (
+    backfill_procedure_search,
+    procedure_cue,
+    search_procedure_fts,
+)
 
 # Start-only reinstatement is for a broad, under-specified client opening, not
 # a way to pad a clearly answered question with neighbouring facets.  This is
@@ -453,10 +458,23 @@ def activate(
     scope_warning = _scope_fragmentation_warning(eng, scope_id) if cold_start and scope_id else None
 
     procedures = load_procedures(eng.db.connect(), scope=scope_id)
+    procedure_query = procedure_cue(
+        query=query,
+        goal=resolved_goal,
+        semantic_context=semantic_context,
+        task_type=task_type,
+        situation=cue_situation,
+        requirements=requirements,
+        topics=topics,
+        entities=entities,
+    )
     procedure_hits = retrieve_procedures(
         procedures,
-        query=query,
+        query=procedure_query,
         retrieval_context=resolved_context,
+        lexical_candidates=search_procedure_fts(
+            eng.db.connect(), query=procedure_query, scope=scope_id
+        ),
         encoder=getattr(eng, "encoder", None),
     )
     _schema_items = []
@@ -714,10 +732,14 @@ def recall(
         eng.db.connect().commit()
     recall_id = f"rec_{uuid.uuid4().hex[:12]}"
     procedures = load_procedures(eng.db.connect(), scope=scope)
+    procedure_query = procedure_cue(query=query, semantic_context=semantic_context)
     procedure_hits = retrieve_procedures(
         procedures,
-        query=query,
+        query=procedure_query,
         retrieval_context=retrieval_context,
+        lexical_candidates=search_procedure_fts(
+            eng.db.connect(), query=procedure_query, scope=scope
+        ),
         encoder=getattr(eng, "encoder", None),
     )
     _internal = _retrieval_exposure_snapshot(
@@ -1013,6 +1035,10 @@ def commit(
             ),
         )
         conn.commit()
+    # Keep the derived advisory search document in sync with a new or updated
+    # procedure.  The helper catches malformed historical/current data so a
+    # search-index failure cannot prevent a canonical commit from closing.
+    backfill_procedure_search(eng.db.connect(), session_id=session_id)
     final_feedback_status = (
         prior_feedback_status
         if already_ended and prior_feedback_status == "incomplete"
