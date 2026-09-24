@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.3...slowave-v0.20.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* procedures retrieval ([#158](https://github.com/slowave-ai/slowave/issues/158)) ([04e1601](https://github.com/slowave-ai/slowave/commit/04e16015d350b98a1425d7d6911d32cac3abeaaa))
+
 ## [0.20.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.2...slowave-v0.20.3) (2026-09-14)
 
 
