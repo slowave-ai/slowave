@@ -9,7 +9,7 @@
   <b>Living memory layer across your coding agents and AI tools.</b>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/pypi/v/slowave?color=2f6f4e)](https://pypi.org/project/slowave/" />
+  <a href="https://pypi.org/project/slowave/"><img src="https://img.shields.io/pypi/v/slowave?color=2f6f4e" alt="PyPI version" /></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-4c6f91" />
   <img src="https://img.shields.io/pypi/status/slowave?color=orange" />
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
@@ -22,39 +22,37 @@
 ---
 AI agents have large context windows, but that context ends with your current session.
 Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, and failed attempts.
+
 Slowave gives your agents one local, shared memory, without requiring a separate LLM for memory maintenance.
 
-Slowave is designed as an adaptive memory layer rather than a static retrieval or summarisation system. 
-It approaches agent memory from a different angle:
+Slowave is an adaptive memory layer that approaches agent memory from a specific angle:
 
-> **Memory and reasoning feed each other in a continuous loop.**
+> **Reasoning and memory form a continuous feedback loop.**
 
 ```mermaid
 graph LR
     LLM["Reasoning<br/>(Claude, Codex, etc.)"]
     MEM["Memory<br/>(Slowave)"]
-
-    MEM -->|Retrieve| LLM
+    
     LLM -->|Feedback| MEM
+    MEM -->|Retrieve| LLM
     MEM -->|Adapt| MEM
 ```
 
-Agent memory is not only a retrieval problem. A useful memory system should retain what helps the agent achieving its goal, weaken what does not, and continuously adapt based on use. Slowave addresses this with a continuous feedback loop between your agent and its memory:
+Slowave retains what helps agents achieve their goals, weakens what does not, and continuously adapts based on use. It does this through a continuous feedback loop between your agent and its memory:
 
 > **remember → recall → use → feedback → reinforce / weaken → decay**
 
-Slowave adapts the salience of stored memories based on your agent's feedback.
+Over time, your agent’s feedback shapes what Slowave returns, and your memories become reusable context for your agent to achieve its goals.
 
-Over time, your agent’s feedback shapes what Slowave returns without needing a separate LLM judge inside the memory layer.
-
-Memory becomes something continuously shaped by use rather than a static collection of facts waiting to be retrieved.
+Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
 
 - **Keep context across tasks**: Your agents can reuse recorded decisions, preferences, constraints, and lessons instead of making you repeat them.
 - **Improves with use:** Useful memories strengthen, irrelevant ones lose priority, stale knowledge can be suppressed or superseded.
 - **Learns from experience:** Decisions, outcomes, and multi-step solutions can become reusable memories and procedures.
 - **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
 - **No LLM API key:** The memory core performs maintenance and retrieval without LLM calls or an LLM API key.
-- **Inspectable:** Review memories, retrievals, feedback, procedures, and system activity in the local dashboard.
+- **Inspectable and measurable:** Review memories, retrievals, feedback, procedures, and system performance in the local dashboard.
 
 The first useful payoff is simply not having to repeat the same constraint in the next task. 
 
@@ -110,7 +108,7 @@ Start the local dashboard with:
 slowave dashboard
 ```
 
-Open the dashboard in your browser, where you can inspect:
+In the dashboard, inspect:
 
 - **Memories:** browse saved decisions, constraints, and lessons.
 - **Procedures:** review reusable step-by-step methods from past work.
@@ -118,6 +116,14 @@ Open the dashboard in your browser, where you can inspect:
 - **Activity:** follow recent sessions, memory updates, and feedback.
 - **Memory graph:** explore connections between related memories.
 - **System health:** check the database, worker, backups, and local services.
+
+Track memory health and retrieval effectiveness with:
+
+- **Active memories:** the number of memories currently available for retrieval.
+- **Memory retrieval coverage:** the share of active memories retrieved at least once during the selected period.
+- **Assessed memories used:** the share of assessed retrieved memories explicitly marked as useful.
+- **Retrieval match rate:** the share of eligible retrievals that returned at least one admitted item.
+- **Feedback coverage:** the share of retrievals with complete feedback recorded.
 
 
 <p align="center">
@@ -169,8 +175,6 @@ Slowave works through 5 simple MCP tools:
 - `Commit`: save the task outcome and any reusable procedure.
 
 A **background worker** consolidates relevant memories and procedures.
-
-See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for more details.
 
 ### Slowave MCP lifecycle
 

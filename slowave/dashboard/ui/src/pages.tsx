@@ -190,12 +190,14 @@ function ActivityLanes({ data }: { data?: Json }) {
     raw_events: true,
     episodes: true,
     schemas: true,
+    procedures: true,
   });
   const channels = data?.channels || {};
   const definitions = [
     ["raw_events", "Raw Events"],
     ["episodes", "Episodes"],
     ["schemas", "Memories"],
+    ["procedures", "Procedures"],
   ] as const;
   const nonzero = definitions.reduce(
     (sum, [key]) =>
@@ -287,7 +289,8 @@ function ActivityLanes({ data }: { data?: Json }) {
             Raw events are individual observations Slowave captures. Episodes
             group related observations into a past interaction. Memories are
             durable facts or guidance distilled from those episodes for future
-            retrieval.
+            retrieval. Procedures are reusable step-by-step methods captured
+            from completed work.
           </DefinitionTooltip>
         </>
       }
@@ -299,7 +302,7 @@ function ActivityLanes({ data }: { data?: Json }) {
         <svg
           viewBox={`0 0 ${width} ${chartHeight}`}
           role="img"
-          aria-label="Stacked activity chart for Raw Events, Episodes, and Memories"
+          aria-label="Stacked activity chart for Raw Events, Episodes, Memories, and Procedures"
         >
           {axisTicks.map((value) => {
             const y = baseline - (value / axisMax) * maxBarHeight;
@@ -405,6 +408,7 @@ function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) 
   const matched = Math.max(0, retrievals - Number(data.retrievals_no_match ?? 0));
   const feedbackComplete = Number(data.retrievals_feedback_complete ?? 0);
   const activeScopes = Number(summary?.active_scopes ?? 0);
+  const procedures = Number(summary?.current_procedures ?? 0);
   return (
     <div className="memory-health-section">
       <Section title="Memory health">
@@ -415,6 +419,7 @@ function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) 
           <RateMetricCard title="Retrieval match rate" numerator={matched} denominator={retrievals} tooltip="Eligible retrieval operations returning at least one admitted item divided by eligible retrieval operations. An empty result is not proof that no stored memory was relevant." className="metric-no-match" secondary={`${(retrievals - matched).toLocaleString()} empty`} />
           <RateMetricCard title="Feedback coverage" numerator={feedbackComplete} denominator={retrievals} tooltip={glossary.retrievals_feedback_complete} className="metric-feedback" />
           <MetricCard title="Active scopes" value={activeScopes.toLocaleString()} tooltip={glossary.active_scopes} href="/memory" className="metric-scopes" />
+          <MetricCard title="Procedures" value={procedures.toLocaleString()} tooltip="Reusable step-by-step methods captured from completed work." href="/procedures" className="metric-procedures" />
         </div>
       </Section>
     </div>

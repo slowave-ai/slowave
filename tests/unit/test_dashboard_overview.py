@@ -66,6 +66,8 @@ def test_react_home_separates_service_observations_and_activity_lanes() -> None:
     assert "Activity captured" in app
     assert "Episodes" in app
     assert "Memories" in app
+    assert 'title="Procedures"' in app
+    assert "current_procedures" in app
     assert "Since you last looked" not in app
 
 
@@ -74,3 +76,20 @@ def test_react_activity_chart_reserves_space_for_y_axis_labels() -> None:
 
     assert "left = 56" in source
     assert "right-aligned Y-axis labels remain inside the SVG viewport" in source
+
+
+def test_pulse_includes_procedures_in_its_timeline(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "pulse.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE raw_events (ts INTEGER NOT NULL)")
+    conn.execute("CREATE TABLE episodic_memories (ts INTEGER NOT NULL)")
+    conn.execute("CREATE TABLE schemas (first_formed_ts INTEGER NOT NULL)")
+    conn.execute("CREATE TABLE procedure_search_documents (completed_at INTEGER NOT NULL)")
+    conn.execute("INSERT INTO procedure_search_documents VALUES (6500)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(dashboard_app.time, "time", lambda: 10_000)
+
+    payload = dashboard_app._pulse_payload(str(db_path), {"hours": ["1"], "bucket_m": ["5"]})
+
+    assert sum(bucket["n"] for bucket in payload["channels"]["procedures"]) == 1

@@ -558,14 +558,15 @@ def _status_payload(db_path: str) -> dict[str, Any]:
 
 
 def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
-    """Return three zero-filled bucket series for the EEG multi-channel view.
+    """Return four zero-filled bucket series for the Home activity view.
 
     Channels:
       - raw_events   : incoming observations (raw_events.ts)
       - episodes     : consolidation pulses  (episodic_memories.ts)
       - schemas      : durable memory writes (schemas.first_formed_ts)
+      - procedures   : captured procedures (procedure_search_documents.completed_at)
 
-    All three share the same bucket grid so they can be overlaid on one canvas.
+    All channels share the same bucket grid so they can be stacked on one canvas.
 
     Query params:
         - hours:    look-back window in hours  (default 2, max 8760)
@@ -613,11 +614,13 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         raw_rows = _bucket_rows(conn, "raw_events", "ts")
         epi_rows = _bucket_rows(conn, "episodic_memories", "ts")
         sch_rows = _bucket_rows(conn, "schemas", "first_formed_ts")
+        procedure_rows = _bucket_rows(conn, "procedure_search_documents", "completed_at")
 
         channels = {
             "raw_events": _bucketize(raw_rows),
             "episodes": _bucketize(epi_rows),
             "schemas": _bucketize(sch_rows),
+            "procedures": _bucketize(procedure_rows),
         }
         global_max = max(
             (b["n"] for ch in channels.values() for b in ch),
@@ -640,19 +643,24 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
 
 
 def _earliest_memory_history_ts(db_path: str, *, fallback: int) -> int:
-    """Return the first retained user-memory record timestamp, if available."""
+    """Return the first retained memory or procedure timestamp, if available."""
     if not os.path.exists(db_path):
         return fallback
     conn = _connect(db_path)
     try:
-        rows = conn.execute(
-            "SELECT MIN(ts) AS ts FROM raw_events "
-            "UNION ALL SELECT MIN(ts) AS ts FROM episodic_memories "
-            "UNION ALL SELECT MIN(first_formed_ts) AS ts FROM schemas"
-        ).fetchall()
-        timestamps = [
-            int(row["ts"]) for row in rows if row["ts"] is not None and int(row["ts"]) > 0
-        ]
+        timestamps: list[int] = []
+        for table, column in (
+            ("raw_events", "ts"),
+            ("episodic_memories", "ts"),
+            ("schemas", "first_formed_ts"),
+            ("procedure_search_documents", "completed_at"),
+        ):
+            try:
+                row = conn.execute(f"SELECT MIN({column}) AS ts FROM {table}").fetchone()
+            except sqlite3.Error:
+                continue
+            if row and row["ts"] is not None and int(row["ts"]) > 0:
+                timestamps.append(int(row["ts"]))
         return min(timestamps, default=fallback)
     except sqlite3.Error:
         return fallback
@@ -2554,10 +2562,16 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             scopes = conn.execute(
                 "SELECT COUNT(DISTINCT scope_id) AS n FROM sessions WHERE scope_id IS NOT NULL"
             ).fetchone()
+            procedures = conn.execute(
+                "SELECT COUNT(*) AS n FROM procedure_search_documents"
+                + (" WHERE scope_id = ?" if scope else ""),
+                scope_args,
+            ).fetchone()
             base["at_a_glance"] = {
                 "current_memories": int(current["n"] if current else 0),
                 "changed_memories": int(changed["n"] if changed else 0),
                 "active_scopes": int(scopes["n"] if scopes else 0),
+                "current_procedures": int(procedures["n"] if procedures else 0),
             }
         except sqlite3.Error:
             pass

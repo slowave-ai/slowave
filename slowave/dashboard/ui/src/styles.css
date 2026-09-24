@@ -488,6 +488,7 @@ main {
 .effectiveness-card.metric-irrelevant { --metric-accent: var(--warning); }
 .effectiveness-card.metric-no-match { --metric-accent: var(--accent-episode); }
 .effectiveness-card.metric-feedback { --metric-accent: var(--accent-activity); }
+.effectiveness-card.metric-procedures { --metric-accent: var(--accent-procedure); }
 .effectiveness-card.metric-scopes { --metric-accent: var(--accent-memory); }
 .effectiveness-grid {
   display: grid;
@@ -861,6 +862,7 @@ main {
 .lane-toggle-raw_events { border-color: var(--accent-activity) !important; color: var(--accent-activity) !important; }
 .lane-toggle-episodes { border-color: var(--accent-episode) !important; color: var(--accent-episode) !important; }
 .lane-toggle-schemas { border-color: var(--accent-memory) !important; color: var(--accent-memory) !important; }
+.lane-toggle-procedures { border-color: var(--accent-procedure) !important; color: var(--accent-procedure) !important; }
 .lane-chart svg {
   display: block;
   width: 100%;
@@ -908,6 +910,7 @@ main {
 .lane-chart .lane-raw_events { fill: var(--accent-activity); }
 .lane-chart .lane-episodes { fill: var(--accent-episode); }
 .lane-chart .lane-schemas { fill: var(--accent-memory); }
+.lane-chart .lane-procedures { fill: var(--accent-procedure); }
 .lane-chart .lane-label { font: 600 11px var(--font); }
 .lane-chart .lane-label-raw_events { fill: var(--accent-activity); }
 .lane-chart .lane-label-episodes { fill: var(--accent-episode); }
@@ -920,6 +923,7 @@ main {
 .lane-tooltip-raw_events { color: var(--accent-activity) !important; }
 .lane-tooltip-episodes { color: var(--accent-episode) !important; }
 .lane-tooltip-schemas { color: var(--accent-memory) !important; }
+.lane-tooltip-procedures { color: var(--accent-procedure) !important; }
 .lane-chart a:focus rect,
 .lane-chart a:hover rect {
   opacity: 1;
