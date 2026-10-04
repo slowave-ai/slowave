@@ -377,6 +377,58 @@ CREATE INDEX IF NOT EXISTS idx_context_recall_session ON context_recall_events(s
 CREATE INDEX IF NOT EXISTS idx_context_recall_scope ON context_recall_events(scope_id);
 CREATE INDEX IF NOT EXISTS idx_context_recall_created ON context_recall_events(created_at);
 
+-- Internal policy-decision audit trail. These rows never authorize feedback:
+-- context_recall_items remains the exposure ledger.
+CREATE TABLE IF NOT EXISTS retrieval_decisions (
+  retrieval_id TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  policy_role TEXT NOT NULL CHECK (policy_role IN ('current', 'shadow', 'historical', 'replay')),
+  trace_origin TEXT NOT NULL CHECK (trace_origin IN ('prospective', 'legacy_observed', 'replayed')),
+  task_needs_json TEXT NOT NULL DEFAULT '[]',
+  action_intent TEXT NOT NULL DEFAULT 'uncertain',
+  action_intent_confidence REAL,
+  action_intent_reason TEXT,
+  encoder_id TEXT NOT NULL DEFAULT 'unknown',
+  config_hash TEXT NOT NULL,
+  frozen_portfolio_json TEXT NOT NULL DEFAULT '[]',
+  catalog_truncated INTEGER NOT NULL DEFAULT 0,
+  trace_complete INTEGER NOT NULL DEFAULT 1,
+  source_policy_version TEXT,
+  source_created_at INTEGER,
+  reconstruction_reason TEXT,
+  observed_at INTEGER,
+  replayed_at INTEGER,
+  replay_config_hash TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (retrieval_id, policy_version),
+  FOREIGN KEY (retrieval_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_decisions_created ON retrieval_decisions(created_at);
+
+CREATE TABLE IF NOT EXISTS retrieval_candidate_decisions (
+  retrieval_id TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  candidate_kind TEXT NOT NULL CHECK (candidate_kind IN ('memory', 'procedure')),
+  candidate_id TEXT NOT NULL,
+  eligible INTEGER NOT NULL,
+  context_compatibility TEXT NOT NULL DEFAULT 'unknown',
+  dense_category TEXT NOT NULL DEFAULT 'unknown',
+  lexical_category TEXT NOT NULL DEFAULT 'unknown',
+  applicability_category TEXT NOT NULL DEFAULT 'unknown',
+  novelty_category TEXT NOT NULL DEFAULT 'unknown',
+  evidence_category TEXT NOT NULL DEFAULT 'unknown',
+  covered_need_indexes_json TEXT NOT NULL DEFAULT '[]',
+  marginal_contribution TEXT NOT NULL DEFAULT 'unknown',
+  decision TEXT NOT NULL CHECK (decision IN ('selected', 'rejected', 'suppressed')),
+  reason_code TEXT NOT NULL,
+  redundant_with TEXT,
+  portfolio_position INTEGER,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (retrieval_id, policy_version, candidate_kind, candidate_id),
+  FOREIGN KEY (retrieval_id, policy_version) REFERENCES retrieval_decisions(retrieval_id, policy_version) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_candidate_decisions_decision ON retrieval_candidate_decisions(decision);
+
 -- Frozen, resumable retrieval pages.  Each opaque cursor addresses an
 -- immutable candidate snapshot and offset; replaying a cursor is therefore
 -- deterministic and cannot drift as salience or the store changes.

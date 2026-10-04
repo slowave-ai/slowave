@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from slowave.core.applicability_ranking import ApplicabilityConfig
 from slowave.core.feedback import FeedbackConfig
 from slowave.core.paths import default_db_path
 from slowave.latent.graph_manager import GraphConfig
@@ -38,6 +39,7 @@ class SlowaveConfig:
 
     # encoder
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    applicability: ApplicabilityConfig = field(default_factory=ApplicabilityConfig)
 
     # slowwave core configs
     salience: SalienceConfig = field(default_factory=SalienceConfig)
@@ -107,3 +109,11 @@ class SlowaveConfig:
     @staticmethod
     def default_schema_path() -> str:
         return str(Path(__file__).resolve().parent.parent / "storage" / "schema.sql")
+
+
+# Shared retrieval bounds and floors. These live at the neutral core layer so
+# core services and the MCP transport layer import the same values without a
+# layering inversion.
+MAX_PREVIEW_CHARS = 1024
+ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.20
+RECALL_MIN_RELEVANCE_DEFAULT = 0.20

@@ -205,13 +205,28 @@ class GatePolicy:
     # exposure data cross-scope generalization needs) without ever displacing
     # a relevant memory from the top of the brief.
     exploration_slots: int = 2
-    # Compact answer contexts can deliberately avoid filling a second slot
-    # unless the query asks for multiple answers.  This is opt-in so broader
+    # Compact answer contexts can deliberately avoid filling available slots
+    # unless the query asks for that many answers. This is opt-in so broader
     # working-memory callers retain their existing ranked-list semantics.
     require_explicit_multi_answer: bool = False
     allowed_classes: tuple[str, ...] = _DEFAULT_ALLOWED_CLASSES
     excluded_layers: tuple[str, ...] = _DEFAULT_EXCLUDED_LAYERS
     excluded_source_kinds: tuple[str, ...] = _DEFAULT_EXCLUDED_SOURCES
+
+    @classmethod
+    def catalog_bound(cls, candidates: int) -> "GatePolicy":
+        """Budget-free policy for declarative catalogs: admission checks only.
+
+        The catalog is the full admitted candidate set; item/character budgets
+        are transport decisions made later by the paging layer, not admission
+        decisions, so they are inflated out of the way here.
+        """
+        return cls(
+            max_items=max(1, candidates),
+            max_chars=10_000_000,
+            exploration_slots=0,
+            require_explicit_multi_answer=False,
+        )
 
 
 @dataclass(frozen=True)
@@ -222,6 +237,7 @@ class ActivationTrace:
     activation: float
     reason: str
     admitted: bool
+    rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +270,10 @@ class WorkingMemoryGate:
     low-source-quality memories are inhibited before a small capacity-limited
     state is rendered for the downstream agent.
     """
+
+    def eligible(self, schema: Schema, *, cue: MemoryCue, policy: GatePolicy) -> tuple[bool, str]:
+        """Public admission check used by services outside this class."""
+        return self._eligible(schema, cue=cue, policy=policy)
 
     def select(
         self,
@@ -435,6 +455,7 @@ class WorkingMemoryGate:
         suppressed: dict[str, int] = {}
         traces: list[ActivationTrace] = []
         items: list[WorkingMemoryItem] = []
+        matched_scores: dict[int, float] = {}
         for schema in candidates:
             ok, reason = self._eligible(schema, cue=cue, policy=policy)
             match = matches.get(schema.id)
@@ -462,12 +483,40 @@ class WorkingMemoryGate:
                     text=_compact(schema.content_text, policy.max_item_chars),
                 )
             )
-            traces.append(ActivationTrace(schema.id, match.normalized_rank_score, "selected", True))
+            matched_scores[schema.id] = match.normalized_rank_score
         items.sort(key=lambda item: (-item.activation, item.schema.id))
-        items = _mmr_deduplicate(items, cos_threshold=0.92)
+        ranked_items = list(items)
+        deduplicated = _mmr_deduplicate(ranked_items, cos_threshold=0.92)
+        deduplicated_ids = {item.schema.id for item in deduplicated}
+        focus_limited_ids: set[int] = set()
         if policy.require_explicit_multi_answer and not _cue_requests_multiple_answers(cue):
-            items = items[:1]
-        selected = _apply_budget(items[: max(policy.max_items * 3, policy.max_items)], policy)
+            selection_pool = deduplicated[:1]
+            focus_limited_ids = {item.schema.id for item in deduplicated[1:]}
+        else:
+            selection_pool = deduplicated
+        selected = _apply_budget(
+            selection_pool[: max(policy.max_items * 3, policy.max_items)], policy
+        )
+        selected_ids = {item.schema.id for item in selected}
+        for rank, item in enumerate(ranked_items, 1):
+            schema_id = item.schema.id
+            if schema_id in selected_ids:
+                reason, admitted = "selected", True
+            elif schema_id not in deduplicated_ids:
+                reason, admitted = "near_duplicate", False
+            elif schema_id in focus_limited_ids:
+                reason, admitted = "single_answer_focus", False
+            else:
+                reason, admitted = "response_budget", False
+            traces.append(
+                ActivationTrace(
+                    schema_id,
+                    matched_scores[schema_id],
+                    reason,
+                    admitted,
+                    rank=rank,
+                )
+            )
         return WorkingMemoryState(
             items=selected,
             rendered=_render(selected),

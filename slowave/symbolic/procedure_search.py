@@ -32,6 +32,9 @@ class ProcedureSearchDocument:
 class ProcedureLexicalCandidate:
     procedure_id: str
     rank: int
+    # Lexical admission is evidence that the precedent applies to the current
+    # goal.  Strategy/step overlap is useful for ordering applicable methods,
+    # but must not by itself make a method applicable.
     specific: bool
 
 
@@ -265,13 +268,10 @@ def search_procedure_fts(
     document_count, document_frequency = _document_frequency(conn, scope=scope)
     results: dict[str, ProcedureLexicalCandidate] = {}
     for rank, row in enumerate(rows, 1):
-        text_terms = {
-            token.casefold()
-            for token in _tokens(
-                _text(row["applicability_text"]) + " " + _text(row["strategy_text"])
-            )
+        applicability_terms = {
+            token.casefold() for token in _tokens(_text(row["applicability_text"]))
         }
-        overlap = query_terms & text_terms
+        overlap = query_terms & applicability_terms
         results[str(row["procedure_id"])] = ProcedureLexicalCandidate(
             procedure_id=str(row["procedure_id"]),
             rank=rank,

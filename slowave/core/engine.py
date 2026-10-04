@@ -374,6 +374,7 @@ class SlowaveEngine:
             graph=self.graph,
             schemas=self.schemas,
             encoder=self.encoder,
+            applicability_config=self.cfg.applicability,
             episode_text=self.episode_text,
             raw_log=self.raw_log,
             retrieval=self.retrieval,
@@ -806,6 +807,10 @@ class SlowaveEngine:
     def context_brief(self, **kwargs: Any) -> WorkingMemoryState:
         return self._retrieval.context_brief(**kwargs)
 
+    def relevant_catalog(self, cues: list[str], **kwargs: Any):
+        """Return the declarative relevance catalog used by public paging."""
+        return self._retrieval.relevant_catalog(cues, **kwargs)
+
     # ---- inspection -------------------------------------------------------
     def get_schema(self, schema_id: int) -> Schema:
         return self.schemas.get(schema_id)
@@ -848,6 +853,10 @@ class SlowaveEngine:
 
     def record_context_recall(self, *, context_id: str, **kwargs: Any) -> None:
         self._feedback.record_context_recall(context_id=context_id, **kwargs)
+
+    def backfill_legacy_decision_traces(self, *, batch_size: int = 100) -> int:
+        """Write bounded, metadata-only traces for retrievals predating Phase 1."""
+        return self._feedback.backfill_legacy_decision_traces(batch_size=batch_size)
 
     def retrieval_feedback(self, **kwargs: Any) -> dict[str, Any]:
         return self._feedback.retrieval_feedback(**kwargs)

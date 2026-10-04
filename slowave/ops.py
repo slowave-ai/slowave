@@ -13,13 +13,17 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 import numpy as np
 
-from slowave.core.config import DEFAULT_RECALL_TOP_K
-from slowave.core.context import WorkingMemoryItem
+from slowave.core.activation_selection import ActivationTask
+from slowave.core.config import (
+    ACTIVATE_MIN_RELEVANCE_DEFAULT,
+    DEFAULT_RECALL_TOP_K,
+)
+from slowave.core.context import ActivationTrace, WorkingMemoryItem, WorkingMemoryState
 from slowave.core.continuity import resolve_continuity
 from slowave.core.engine import SlowaveEngine
 from slowave.core.lifecycle import is_slowave_lifecycle
@@ -43,6 +47,215 @@ from slowave.symbolic.procedure_search import (
 # server-owned and language-neutral.
 _CONTEXT_REINSTATEMENT_MAX_CORE_ACTIVATION = 0.60
 _CONTEXT_REINSTATEMENT_CONTEXTUAL_MAX_CORE_ACTIVATION = 0.75
+_MAX_AUTOMATIC_TASK_FACETS = 3
+
+
+def task_facet_limit(
+    task: str, *, base_limit: int, max_limit: int = _MAX_AUTOMATIC_TASK_FACETS
+) -> int:
+    """Return a bounded wider budget for an explicit numbered or bulleted task.
+
+    The broadened path is deliberately narrow: it serves only tasks that name
+    at least three separate work items. Ordinary prose, including conjunctions,
+    retains the caller's compact budget.
+    """
+    facets = _explicit_task_facets(task, cap=max_limit)
+    return max(base_limit, len(facets)) if len(facets) >= 3 else base_limit
+
+
+def _explicit_task_facets(task: str, *, cap: int) -> list[str]:
+    """Extract a small, language-neutral ordered task list without rewriting it."""
+    facets = [
+        text.strip()
+        for text in re.findall(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", task)
+        if text.strip()
+    ]
+    return facets[:cap]
+
+
+def _relevant_set_needs(task: str) -> list[str]:
+    """Return the whole task plus explicit independent task items.
+
+    Retain the whole-task cue plus numbered/bulleted items. For legacy
+    question-style prompts, retain the existing bounded English/Spanish
+    conjunction split. This legacy decomposition is not required by the
+    experimental complementary selector's whole-task contribution model.
+    """
+    facets = _explicit_task_facets(task, cap=256)
+    if not facets and re.match(r"^\s*(?:what|which|how|tell me|give me|dime|cuál)\b", task, re.I):
+        facets = [
+            part.strip(" ,?.")
+            for part in re.split(r"\s+(?:and|y)\s+", task, flags=re.I)
+            if part.strip(" ,?.")
+        ][:4]
+    return [task, *facets]
+
+
+def _retrieval_policy_version(
+    *,
+    relevant_set: bool,
+    complementary_activation: bool,
+    facet_mode: bool,
+    continuity_state: str | None = None,
+    recall: bool = False,
+) -> str:
+    """Single source of truth for the policy label recorded on retrievals."""
+    if relevant_set:
+        if recall:
+            return "relevant-set-v2"
+        return "activation-complementary-v1" if complementary_activation else "relevant-set-v2"
+    if recall:
+        return "facet-v1" if facet_mode else "continuity-v1"
+    return "facet-v1" if facet_mode else ("continuity-v1" if continuity_state else "strict-v9")
+
+
+def _procedure_decision_candidates(
+    procedures: list[Any],
+    procedure_hits: list[dict[str, Any]],
+    procedure_suppressions: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Decision-trace rows for the procedure candidates of one retrieval."""
+    hit_ids = {hit["id"] for hit in procedure_hits}
+    suppression_ids = {entry["candidate_id"] for entry in procedure_suppressions}
+    suppressed_by = {
+        entry["candidate_id"]: entry.get("redundant_with") for entry in procedure_suppressions
+    }
+    return [
+        {
+            "candidate_kind": "procedure",
+            "candidate_id": item["id"],
+            "eligible": item["id"] in hit_ids,
+            "decision": (
+                "selected"
+                if item["id"] in hit_ids
+                else ("suppressed" if item["id"] in suppression_ids else "rejected")
+            ),
+            "reason_code": (
+                "selected"
+                if item["id"] in hit_ids
+                else ("redundant_with" if item["id"] in suppression_ids else "not_selected")
+            ),
+            "redundant_with": suppressed_by.get(item["id"]),
+        }
+        for item in procedures
+    ]
+
+
+@dataclass(frozen=True)
+class _SkippedRecall:
+    """Empty RecallResult stand-in for catalog-authoritative recall calls."""
+
+    schemas: tuple[Any, ...] = ()
+    schema_activations: dict[int, float] = field(default_factory=dict)
+    schema_rank_scores: dict[int, float] = field(default_factory=dict)
+    episode_texts: list[dict[str, Any]] = field(default_factory=list)
+    raw_events: list[dict[str, Any]] = field(default_factory=list)
+    related_schemas: tuple[Any, ...] = ()
+    related_schema_relations: dict[int, list[str]] = field(default_factory=dict)
+
+
+_ACTION_LEAD = re.compile(
+    r"^\s*(?:please\s+)?(?:add|apply|archive|build|change|create|deploy|execute|export|"
+    r"fix|grant|implement|issue|migrate|re-?drive|remove|repair\w*|retrain|run|ship|upgrade|update|"
+    r"verify|write|crea|reintenta|val[ií]d\w*|action\s*=)\b",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_ACTION = re.compile(
+    r"\b(?:take care of whatever|sort out|handle).*(?:situation|needs|check)\b", re.IGNORECASE
+)
+_ACTION_QUESTION = re.compile(r"^\s*(?:should|shall|can|could)\s+(?:i|we)\s+(.+)", re.IGNORECASE)
+
+
+def _shadow_task_interpretation(task: str, task_context: dict[str, Any] | None) -> dict[str, Any]:
+    """Derive bounded, deterministic Phase-2 interpretation; never selects."""
+    explicit = _explicit_task_facets(task, cap=4)
+    clauses = (
+        explicit
+        or [
+            clause.strip()
+            for clause in re.split(r"\s+(?:and|y)\s+", task, flags=re.IGNORECASE)
+            if clause.strip()
+        ][:4]
+    )
+    needs = [
+        {
+            "index": index,
+            "kind": (
+                "action"
+                if (_ACTION_LEAD.match(clause) or "action=" in clause.casefold())
+                else "factual"
+            ),
+            "source": "explicit_list_item" if explicit else "whole_task",
+            "text": clause,
+            "confidence": "high" if explicit else "medium",
+            "reason": "explicit_list_item" if explicit else "single_task_clause",
+        }
+        for index, clause in enumerate(clauses)
+        if clause
+    ]
+    context = task_context or {}
+    explicit_procedure = bool(context.get("procedure_id") or context.get("procedure_ids"))
+    action_count = sum(need["kind"] == "action" for need in needs)
+    factual_count = len(needs) - action_count
+    if _AMBIGUOUS_ACTION.search(task):
+        intent, confidence, reason = "uncertain", 0.5, "ambiguous_delegation"
+        if not explicit:
+            needs = [
+                {**needs[0], "kind": "mixed", "reason": "ambiguous_delegation"},
+                {
+                    "index": 1,
+                    "kind": "factual",
+                    "source": "task_clause",
+                    "text": "status or summary requested",
+                    "confidence": "medium",
+                    "reason": "explicit_status_clause",
+                },
+            ]
+    elif (question := _ACTION_QUESTION.match(task)) and _ACTION_LEAD.match(question.group(1)):
+        # Advice about performing an action still needs procedural evidence,
+        # including failed precedents. It is not authorization to execute it.
+        intent, confidence, reason = "uncertain", 0.7, "action_advice_question"
+        needs = [{**need, "kind": "mixed"} for need in needs]
+    elif explicit_procedure:
+        intent, confidence, reason = "action", 1.0, "explicit_procedure_context"
+    elif action_count:
+        intent, confidence, reason = "action", 0.9 if explicit else 0.7, "imperative_clause"
+    else:
+        intent, confidence, reason = "non_action", 0.8, "no_imperative_clause"
+    return {
+        "task_needs": needs,
+        "action_intent": intent,
+        "action_intent_confidence": confidence,
+        "action_intent_reason": reason,
+    }
+
+
+def _merge_facet_briefs(briefs: list[Any]) -> Any:
+    """Join one direct answer per explicit facet into a bounded context brief."""
+    base = briefs[0]
+    selected: list[WorkingMemoryItem] = []
+    selected_ids: set[int] = set()
+    traces: dict[int, ActivationTrace] = {}
+    suppressed: dict[str, int] = {}
+    for brief in briefs:
+        for item in brief.items:
+            if item.schema.id not in selected_ids:
+                selected.append(item)
+                selected_ids.add(item.schema.id)
+        for trace in brief.activation_trace:
+            existing = traces.get(trace.schema_id)
+            if existing is None or (trace.admitted and not existing.admitted):
+                traces[trace.schema_id] = trace
+        for reason, count in brief.suppressed.items():
+            suppressed[reason] = suppressed.get(reason, 0) + count
+    rendered = "\n".join(f"- [sch_{item.schema.id}] {item.text}" for item in selected)
+    return replace(
+        base,
+        items=selected,
+        rendered=rendered,
+        suppressed=suppressed,
+        activation_trace=list(traces.values()),
+    )
 
 
 def _fragmentation_key(scope_id: str) -> str:
@@ -271,6 +484,8 @@ def activate(
     manage_continuity: bool = False,
     continuity_integration: str | None = None,
     continuity_client_identity: str | None = None,
+    relevant_set: bool = False,
+    complementary_activation: bool = False,
 ) -> dict[str, Any]:
     """Prime working memory.  Opens a session when session_id is None.
 
@@ -366,24 +581,87 @@ def activate(
     if min_neighbor_relevance is not None:
         _brief_kwargs["min_neighbor_relevance"] = min_neighbor_relevance
 
-    # A strict core stays intentionally tiny on every activation.  The start
-    # policy may add separately-selected context below; it never widens this
-    # base top-K or its relevance floor.
-    brief = eng.context_brief(
-        query=query,
-        scope=scope,
-        goal=resolved_goal,
-        task_type=task_type,
-        situation=cue_situation,
-        requirements=requirements,
-        topics=topics,
-        entities=entities,
-        application=semantic_context,
-        mode=mode,
-        limit=limit,
-        include_peripheral=include_peripheral,
-        **_brief_kwargs,
-    )
+    # Keep direct library callers bounded too. MCP activation already caps the
+    # automatic expansion at three, but ``ops.activate`` is also public.
+    task_facets = _explicit_task_facets(query, cap=min(limit, _MAX_AUTOMATIC_TASK_FACETS))
+    facet_mode = len(task_facets) >= 3
+
+    catalog = None
+    if relevant_set:
+        activation_task = (
+            ActivationTask.build(query, resolved_goal, semantic_context, resolved_context)
+            if complementary_activation
+            else None
+        )
+        catalog = eng.relevant_catalog(
+            activation_task.cues if activation_task is not None else _relevant_set_needs(query),
+            scope=scope,
+            mode=mode,
+            min_relevance=(
+                min_relevance if min_relevance is not None else ACTIVATE_MIN_RELEVANCE_DEFAULT
+            ),
+            selection_mode=("complementary_activation" if complementary_activation else None),
+            activation_task=activation_task,
+        )
+        catalog_items = [
+            WorkingMemoryItem(
+                schema=item.schema,
+                activation=item.score,
+                reason=item.reason,
+                text=(item.schema.content_text or "")[:500],
+            )
+            for item in catalog.items
+        ]
+        brief = WorkingMemoryState(
+            items=catalog_items,
+            rendered="\n".join(f"- [sch_{item.schema.id}] {item.text}" for item in catalog_items),
+            cue_terms=[],
+            suppressed={},
+            activation_trace=[
+                ActivationTrace(item.schema.id, item.score, item.reason, True, rank=index)
+                for index, item in enumerate(catalog.items, 1)
+            ],
+        )
+    elif facet_mode:
+        facet_briefs = [
+            eng.context_brief(
+                query=facet,
+                scope=scope,
+                # A facet's short wording is its information need. Whole-task
+                # goal/context terms would otherwise dominate a narrow query
+                # and let a neighbouring deployment fact win its slot.
+                goal=None,
+                task_type=None,
+                situation={},
+                requirements=[],
+                topics=[],
+                entities=[],
+                application=semantic_context,
+                mode=mode,
+                limit=1,
+                include_peripheral=False,
+                **_brief_kwargs,
+            )
+            for facet in task_facets
+        ]
+        brief = _merge_facet_briefs(facet_briefs)
+    else:
+        # A strict core stays intentionally tiny on ordinary activations.
+        brief = eng.context_brief(
+            query=query,
+            scope=scope,
+            goal=resolved_goal,
+            task_type=task_type,
+            situation=cue_situation,
+            requirements=requirements,
+            topics=topics,
+            entities=entities,
+            application=semantic_context,
+            mode=mode,
+            limit=limit,
+            include_peripheral=include_peripheral,
+            **_brief_kwargs,
+        )
 
     scope_id = scope.strip() if scope else None
     # RRF rank scores are intentionally not activation magnitudes. The matcher
@@ -395,8 +673,11 @@ def activate(
         if resolved_context
         else _CONTEXT_REINSTATEMENT_MAX_CORE_ACTIVATION
     )
-    if continuity_state == "started" and (
-        bool(resolved_context) or core_activation < reinstatement_ceiling
+    if (
+        not relevant_set
+        and not facet_mode
+        and continuity_state == "started"
+        and (bool(resolved_context) or core_activation < reinstatement_ceiling)
     ):
         # Fetch a larger *eligible* pool using the same strict-scope, active
         # and relevance gates.  Selection is MMR-diversified against the core,
@@ -437,7 +718,7 @@ def activate(
             candidates=candidate_items,
             core=brief.items,
             scope_id=scope_id,
-            max_items=3,
+            max_items=max(0, limit - len(brief.items)),
         )
         if selected:
             brief = type(brief)(
@@ -457,6 +738,13 @@ def activate(
     cold_start = eng.schemas.count_by_scope(scope_id) == 0 if scope_id else eng.schemas.count() == 0
     scope_warning = _scope_fragmentation_warning(eng, scope_id) if cold_start and scope_id else None
 
+    procedure_interpretation = _shadow_task_interpretation(query, resolved_context)
+    if (
+        procedure_interpretation["action_intent"] == "non_action"
+        and resolved_goal
+        and _ACTION_LEAD.match(resolved_goal)
+    ):
+        procedure_interpretation = _shadow_task_interpretation(resolved_goal, resolved_context)
     procedures = load_procedures(eng.db.connect(), scope=scope_id)
     procedure_query = procedure_cue(
         query=query,
@@ -468,14 +756,20 @@ def activate(
         topics=topics,
         entities=entities,
     )
-    procedure_hits = retrieve_procedures(
-        procedures,
-        query=procedure_query,
-        retrieval_context=resolved_context,
-        lexical_candidates=search_procedure_fts(
-            eng.db.connect(), query=procedure_query, scope=scope_id
-        ),
-        encoder=getattr(eng, "encoder", None),
+    procedure_suppressions: list[dict[str, str]] = []
+    procedure_hits = (
+        retrieve_procedures(
+            procedures,
+            query=procedure_query,
+            retrieval_context=resolved_context,
+            lexical_candidates=search_procedure_fts(
+                eng.db.connect(), query=procedure_query, scope=scope_id
+            ),
+            encoder=getattr(eng, "encoder", None),
+            suppression_trace=procedure_suppressions,
+        )
+        if procedure_interpretation["action_intent"] != "non_action"
+        else []
     )
     _schema_items = []
     for index, item in enumerate(brief.items):
@@ -500,6 +794,7 @@ def activate(
             "memory_id": f"sch_{t.schema_id}",
             "activation": t.activation,
             "reason": t.reason,
+            "rank": t.rank,
         }
         for t in brief.activation_trace
         if not t.admitted and not _is_scope_rejection(t.reason)
@@ -558,7 +853,38 @@ def activate(
         suppressed=brief.suppressed,
         response=_internal,
         filtered_items=_filtered,
-        retrieval_policy_version="continuity-v1" if continuity_state else "strict-v9",
+        decision_candidates=_procedure_decision_candidates(
+            procedures, procedure_hits, procedure_suppressions
+        )
+        + (
+            [
+                {
+                    "candidate_kind": "memory",
+                    "candidate_id": f"sch_{decision.memory_id}",
+                    "eligible": decision.reason != "ineligible",
+                    "decision": "selected" if decision.selected else "rejected",
+                    "reason_code": decision.reason,
+                    "redundant_with": (
+                        f"sch_{decision.redundant_with}" if decision.redundant_with else None
+                    ),
+                    "covered_need_indexes": (
+                        [decision.supporting_need] if decision.supporting_need is not None else []
+                    ),
+                    "marginal_contribution": decision.contribution,
+                    "source_spans": [list(span) for span in decision.source_spans],
+                    "channel_evidence": list(decision.channel_evidence),
+                    "selected_position": decision.selected_position,
+                }
+                for decision in (catalog.decisions if catalog is not None else [])
+            ]
+        ),
+        shadow_interpretation=procedure_interpretation,
+        retrieval_policy_version=_retrieval_policy_version(
+            relevant_set=relevant_set,
+            complementary_activation=complementary_activation,
+            facet_mode=facet_mode,
+            continuity_state=continuity_state,
+        ),
         continuity_state=continuity_state,
         cue_embedding=shadow_cue_embedding,
     )
@@ -572,19 +898,33 @@ def activate(
     if continuity_state:
         result["continuity_id"] = continuity_id
         result["continuity_state"] = continuity_state
-        result["retrieval_policy_version"] = "continuity-v1"
+        result["retrieval_policy_version"] = (
+            ("activation-complementary-v1" if complementary_activation else "relevant-set-v2")
+            if relevant_set
+            else ("facet-v1" if facet_mode else "continuity-v1")
+        )
+    if catalog is not None:
+        result["relevant_total"] = len(catalog.items)
+        result["catalog_truncated"] = catalog.truncated
+        result["applicability_status"] = catalog.applicability_status
     if include_diagnostics or mode == "debug":
         result["cue_terms"] = brief.cue_terms
         result["suppressed"] = brief.suppressed
     if scope_warning:
         result["scope_warning"] = scope_warning
     if include_schemas or mode == "debug":
+        strong_by_id = (
+            {decision.memory_id: decision.strong for decision in catalog.decisions}
+            if complementary_activation and catalog is not None
+            else {}
+        )
         result["schemas"] = [
             {
                 "id": f"sch_{item.schema.id}",
                 "text": str(item.schema.content_text or ""),
                 "activation": round(min(1.0, max(0.0, item.activation)), 4),
                 "reason": item.reason,
+                "strong": strong_by_id.get(item.schema.id, False),
                 "pathway": _pathway_for(item),
                 "source_kind": str((item.schema.facets or {}).get("source_kind", "")),
                 "source_provenance": (item.schema.facets or {}).get("source_provenance", {}),
@@ -592,6 +932,12 @@ def activate(
             }
             for item in brief.items
         ]
+    if complementary_activation and catalog is not None:
+        result["contribution_spans"] = {
+            f"sch_{decision.memory_id}": [list(span) for span in decision.source_spans]
+            for decision in catalog.decisions
+            if decision.selected
+        }
     if mode == "debug":
         result["activation_trace"] = [asdict(t) for t in brief.activation_trace]
         result["shadow_access_traces"] = _shadow
@@ -661,6 +1007,7 @@ def recall(
     task_context: dict[str, Any] | None = None,
     retrieval_context: dict[str, Any] | None = None,
     semantic_context: str | None = None,
+    relevant_set: bool = False,
 ) -> dict[str, Any]:
     """Semantic retrieval.
 
@@ -681,6 +1028,10 @@ def recall(
                            activation + salience_weight*normalized salience
                            (what determines sort order, WP-4). They differ
                            by design — see SlowaveEngine.recall's docstring.
+                           Exception: under relevant-set delivery both fields
+                           carry the catalog's normalized relevance scale,
+                           because the salience-blended rank scale belongs to
+                           the legacy pipeline that the catalog replaces.
         related_memories – schema_relations-linked schemas surfaced via spreading
                            activation from `memories`, NOT counted toward top_k
                            (same shape as `memories`, plus a `via` field naming
@@ -714,16 +1065,45 @@ def recall(
     effective_query = " ".join(
         part.strip() for part in (query, semantic_context or "") if part.strip()
     )
-    result = eng.recall(
-        effective_query,
-        top_k=top_k,
-        evidence=evidence,
-        scope=scope,
-        mode=mode,
-        min_relevance=min_relevance,
-        graph_channels=graph_channels,
-        min_neighbor_relevance=min_neighbor_relevance,
+    # When relevant_set and no evidence is requested, the declarative catalog
+    # below is the authoritative result; skip the legacy pipeline's second
+    # full retrieval pass (its only remaining consumers are episode/raw-event
+    # evidence, which this call does not request).
+    if relevant_set and not evidence:
+        result: Any = _SkippedRecall()
+    else:
+        result = eng.recall(
+            effective_query,
+            top_k=top_k,
+            evidence=evidence,
+            scope=scope,
+            mode=mode,
+            min_relevance=min_relevance,
+            graph_channels=graph_channels,
+            min_neighbor_relevance=min_neighbor_relevance,
+        )
+    catalog = (
+        eng.relevant_catalog(
+            [effective_query],
+            scope=scope,
+            mode=mode,
+            min_relevance=(
+                min_relevance if min_relevance is not None else ACTIVATE_MIN_RELEVANCE_DEFAULT
+            ),
+            selection_mode="deliberate_recall",
+        )
+        if relevant_set
+        else None
     )
+    direct_schemas = (
+        [item.schema for item in catalog.items] if catalog is not None else result.schemas
+    )
+    direct_scores = (
+        {item.schema.id: item.score for item in catalog.items}
+        if catalog is not None
+        else result.schema_activations
+    )
+    related_schemas = [] if catalog is not None else result.related_schemas
     if session_id is not None and task_context is not None:
         eng.db.connect().execute(
             "UPDATE sessions SET task_context_json = ? WHERE id = ?",
@@ -731,25 +1111,32 @@ def recall(
         )
         eng.db.connect().commit()
     recall_id = f"rec_{uuid.uuid4().hex[:12]}"
+    procedure_interpretation = _shadow_task_interpretation(query, retrieval_context)
     procedures = load_procedures(eng.db.connect(), scope=scope)
     procedure_query = procedure_cue(query=query, semantic_context=semantic_context)
-    procedure_hits = retrieve_procedures(
-        procedures,
-        query=procedure_query,
-        retrieval_context=retrieval_context,
-        lexical_candidates=search_procedure_fts(
-            eng.db.connect(), query=procedure_query, scope=scope
-        ),
-        encoder=getattr(eng, "encoder", None),
+    procedure_suppressions: list[dict[str, str]] = []
+    procedure_hits = (
+        retrieve_procedures(
+            procedures,
+            query=procedure_query,
+            retrieval_context=retrieval_context,
+            lexical_candidates=search_procedure_fts(
+                eng.db.connect(), query=procedure_query, scope=scope
+            ),
+            encoder=getattr(eng, "encoder", None),
+            suppression_trace=procedure_suppressions,
+        )
+        if procedure_interpretation["action_intent"] != "non_action"
+        else []
     )
     _internal = _retrieval_exposure_snapshot(
         schemas=[
             {
                 "id": f"sch_{s.id}",
-                "score": result.schema_activations.get(s.id),
+                "score": direct_scores.get(s.id),
                 "pathway": "direct",
             }
-            for s in result.schemas
+            for s in direct_schemas
         ],
         related_schemas=[
             {
@@ -757,7 +1144,7 @@ def recall(
                 "score": result.schema_activations.get(s.id),
                 "pathway": "graph",
             }
-            for s in result.related_schemas
+            for s in related_schemas
         ],
         procedures=procedure_hits,
     )
@@ -778,13 +1165,10 @@ def recall(
             pass
     _internal["shadow_access_traces"] = _shadow_access_traces(
         eng,
-        candidates=[
-            (s.id, float(result.schema_activations.get(s.id, 0.0)), "direct")
-            for s in result.schemas
-        ]
+        candidates=[(s.id, float(direct_scores.get(s.id, 0.0)), "direct") for s in direct_schemas]
         + [
             (s.id, float(result.schema_activations.get(s.id, 0.0)), "graph")
-            for s in result.related_schemas
+            for s in related_schemas
         ],
         query=query,
         goal=None,
@@ -807,14 +1191,32 @@ def recall(
         mode=mode,
         limit=top_k,
         response=_internal,
+        decision_candidates=_procedure_decision_candidates(
+            procedures, procedure_hits, procedure_suppressions
+        )
+        + [
+            {
+                "candidate_kind": "memory",
+                "candidate_id": f"sch_{decision.memory_id}",
+                "eligible": True,
+                "decision": "selected" if decision.selected else "rejected",
+                "reason_code": decision.reason,
+                "selected_position": decision.selected_position,
+            }
+            for decision in (catalog.decisions if catalog is not None else [])
+        ],
+        shadow_interpretation=procedure_interpretation,
         cue_embedding=shadow_cue_embedding,
     )
     memories = [
         {
             "id": f"sch_{s.id}",
             "content_text": str(s.content_text or "")[:500],
-            "activation": round(result.schema_activations.get(s.id, 0.0), 4),
-            "rank_score": round(result.schema_rank_scores.get(s.id, 0.0), 4),
+            # Under relevant-set delivery both fields carry the catalog's
+            # normalized relevance scale; the legacy salience-blended rank
+            # scale is only produced by the full pipeline path.
+            "activation": round(direct_scores.get(s.id, 0.0), 4),
+            "rank_score": round(direct_scores.get(s.id, 0.0), 4),
             "scope_id": s.scope_id,
             "source_kind": str((s.facets or {}).get("source_kind", "")),
             "source_provenance": (s.facets or {}).get("source_provenance", {}),
@@ -823,7 +1225,7 @@ def recall(
             "needs_review": s.is_labile,
             "generalization_stage": s.generalization_stage,
         }
-        for s in result.schemas
+        for s in direct_schemas
     ]
     related_memories = [
         {
@@ -838,9 +1240,9 @@ def recall(
             "generalization_stage": s.generalization_stage,
             "via": result.related_schema_relations.get(s.id, []),
         }
-        for s in result.related_schemas
+        for s in related_schemas
     ]
-    out = {
+    out: dict[str, Any] = {
         "retrieval_id": recall_id,
         "memories": memories,
         "related_memories": related_memories,
@@ -848,6 +1250,16 @@ def recall(
         "raw_events": result.raw_events,
     }
     out["procedures"] = procedure_hits
+    if catalog is not None:
+        out["relevant_total"] = len(catalog.items)
+        out["catalog_truncated"] = catalog.truncated
+        out["applicability_status"] = catalog.applicability_status
+        out["retrieval_policy_version"] = _retrieval_policy_version(
+            relevant_set=True,
+            complementary_activation=False,
+            facet_mode=False,
+            recall=True,
+        )
     return out
 
 

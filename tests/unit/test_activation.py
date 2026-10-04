@@ -83,6 +83,20 @@ def test_each_activation_opens_a_fresh_session() -> None:
         _cleanup(eng, path)
 
 
+def test_explicit_task_list_gets_a_bounded_third_activation_slot() -> None:
+    assert ops.task_facet_limit("Which database stores the ledger?", base_limit=2) == 2
+    assert (
+        ops.task_facet_limit(
+            """Refactor the deployment flow:
+1. preserve rollback safety
+2. migrate release configuration
+3. update validation tests""",
+            base_limit=2,
+        )
+        == 3
+    )
+
+
 def test_recall_inherits_and_updates_session_task_context(monkeypatch) -> None:
     eng, path = _engine()
     try:
@@ -294,8 +308,8 @@ def test_continuity_start_response_has_one_serialized_budget_and_pathways() -> N
     )
     assert result["continuity_state"] == "started"
     assert result["memories"][0]["pathway"] == "direct"
-    assert _serialized_chars(result) <= 1600
-    assert result["more_available"] is True
+    assert _serialized_chars(result) <= 3000
+    assert result["more_available"] is False
 
 
 def test_activation_procedures_are_canonical_and_feedback_authorized() -> None:
@@ -680,3 +694,56 @@ def test_o6_remember_reports_created_then_matched() -> None:
         assert "event_id" not in matched
     finally:
         _cleanup(eng, path)
+
+
+def test_every_selector_reason_is_classified_for_delivery():
+    """A new reason without a delivery classification must fail here, not silently change delivery."""
+    from slowave.core.activation_selection import (
+        DELIVERABLE_REASONS,
+        NOT_DELIVERABLE_REASONS,
+        TRANSPORT_EXCLUDED_REASONS,
+        ActivationTask,
+        ContributionCandidate,
+        select_complementary,
+    )
+
+    task = ActivationTask.build("Validate migration timeout", task_context={"env": "prod"})
+    semantic = ActivationTask.build(
+        "Validate migration timeout", semantic_context="Migration timeout is 12 seconds."
+    )
+
+    def candidate(memory_id, text="Migration timeout is 12 seconds.", **kwargs):
+        defaults = dict(
+            score=1.0,
+            eligible=True,
+            eligibility_reason="x",
+            need_indexes=(0,),
+        )
+        defaults.update(kwargs)
+        return ContributionCandidate(memory_id=memory_id, text=text, **defaults)
+
+    emitted: set[str] = set()
+    scenarios = [
+        (task, [candidate(1, eligible=False)]),  # ineligible
+        (task, [candidate(2, need_indexes=())]),  # insufficient_evidence
+        (task, [candidate(3, facets={"env": "dev"})]),  # structured_facet_conflict
+        (task, [candidate(4, text="Unrelated garden note.")]),  # wrong_task_facet
+        (semantic, [candidate(5)]),  # already_in_input
+        (
+            task,
+            [candidate(6), candidate(7, text="Migration   timeout is 12 seconds.", score=0.9)],
+        ),  # redundant_with
+        (
+            task,
+            [candidate(8), candidate(9, text="Migration timeout stays at 12 seconds.")],
+        ),  # complementary_fact / need_already_covered
+    ]
+    for used_task, candidates in scenarios:
+        result = select_complementary(used_task, candidates)
+        emitted.update(d.reason for d in result.decisions)
+
+    classified = DELIVERABLE_REASONS | NOT_DELIVERABLE_REASONS | TRANSPORT_EXCLUDED_REASONS
+    unclassified = emitted - classified
+    assert not unclassified, f"selector emitted unclassified reasons: {sorted(unclassified)}"
+    assert NOT_DELIVERABLE_REASONS.isdisjoint(DELIVERABLE_REASONS)
+    assert TRANSPORT_EXCLUDED_REASONS.isdisjoint(NOT_DELIVERABLE_REASONS | DELIVERABLE_REASONS)

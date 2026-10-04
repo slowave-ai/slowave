@@ -7,13 +7,29 @@ pipeline can be read, tested, and reasoned about independently.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
-from slowave.core.config import DEFAULT_RECALL_TOP_K
+import numpy as np
+
+from slowave.core.activation_selection import (
+    ActivationTask,
+    ContributionCandidate,
+    ContributionDecision,
+    SelectionMode,
+    select_complementary,
+)
+from slowave.core.applicability_ranking import (
+    ApplicabilityConfig,
+    PairScorer,
+    applicability_order,
+    query_needs,
+)
+from slowave.core.config import DEFAULT_RECALL_TOP_K, MAX_PREVIEW_CHARS
 from slowave.core.context import (
     GatePolicy,
     MemoryCue,
@@ -44,6 +60,36 @@ from slowave.symbolic.episode_text import EpisodeTextStore
 from slowave.symbolic.raw_log import RawLog
 from slowave.symbolic.schema_store import Schema, SchemaStore
 
+
+@dataclass(frozen=True)
+class RelevantCatalogItem:
+    """One relevance-qualified declarative memory before response paging."""
+
+    schema: Schema
+    score: float
+    reason: str
+    need_indexes: tuple[int, ...]
+    # True when the contribution decision found a qualifying span. The paging
+    # layer derives the strong-run first page from this flag.
+    strong: bool = False
+
+
+@dataclass(frozen=True)
+class RelevantCatalog:
+    """Stable, bounded discovery result shared by activation and recall.
+
+    ``truncated`` describes candidate discovery, never response paging.  A
+    caller may page every item in ``items`` while still knowing that a channel
+    search hit its operational depth.
+    """
+
+    items: list[RelevantCatalogItem]
+    truncated: bool
+    candidate_count: int
+    decisions: tuple[ContributionDecision, ...] = ()
+    applicability_status: str = "disabled"
+
+
 # Minimum injected activation (recall()'s own schema_scores scale -- cosine +
 # a fixed bonus per candidate source, roughly 0.15-1.25, not the 0-1 scale
 # WorkingMemoryGate uses) for a schema_relations-propagated neighbor to be
@@ -53,6 +99,11 @@ from slowave.symbolic.schema_store import Schema, SchemaStore
 # spread_relation_activation's docstring for why decay makes deep/weak paths
 # self-limiting without needing this floor to also do that work.
 _RECALL_GRAPH_MIN_ACTIVATION = 0.15
+
+# Maximum independently searched task cues per catalog. Bounds the per-call
+# FTS/embedding search count and keeps the unioned candidate load comfortably
+# inside SQLite's host-parameter limit.
+_MAX_CATALOG_CUES = 16
 
 # Below this combined cue-text length (query + goal + task_type + situation +
 # requirements + topics + entities, joined), context_brief() treats the call
@@ -258,6 +309,7 @@ class RetrievalService:
         working_memory_gate: WorkingMemoryGate,
         db: SQLiteDB,
         retrieval_cfg: RetrievalConfig,
+        applicability_config: ApplicabilityConfig | None = None,
     ):
         self.episodic = episodic
         self.semantic = semantic
@@ -272,6 +324,60 @@ class RetrievalService:
         self.working_memory_gate = working_memory_gate
         self.db = db
         self._retrieval_cfg = retrieval_cfg
+        self._applicability_config = applicability_config or ApplicabilityConfig()
+        self._applicability_scorer: PairScorer | None = None
+
+    def _rank_applicability(
+        self,
+        items: list[RelevantCatalogItem],
+        query: str,
+        *,
+        protected_ids: set[int] | None = None,
+    ) -> tuple[list[RelevantCatalogItem], str]:
+        if not self._applicability_config.enabled or not items:
+            return items, "disabled" if not self._applicability_config.enabled else "empty"
+        # Synthetic/no-encoder callers retain their explicit lexical contracts.
+        # Tests of this stage inject a scorer rather than loading model weights.
+        if self._applicability_scorer is None:
+            if not isinstance(self.encoder, TextEncoder):
+                return items, "no_model_encoder"
+            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
+
+            self._applicability_scorer = ApplicabilityEncoder()
+        try:
+            needs = query_needs(query)
+            scores = self._applicability_scorer.score(
+                needs, [item.schema.content_text or "" for item in items]
+            )
+            if scores.shape != (len(items), len(needs)):
+                raise ValueError("incorrect applicability score shape")
+            order = applicability_order(
+                scores,
+                minimum_logit=self._applicability_config.minimum_logit,
+                maximum_logit_gap=self._applicability_config.maximum_logit_gap,
+            )
+            if protected_ids:
+                order.extend(
+                    sorted(
+                        (
+                            i
+                            for i, item in enumerate(items)
+                            if item.schema.id in protected_ids and i not in order
+                        ),
+                        key=lambda i: (-float(scores[i].max()), i),
+                    )
+                )
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
+            logging.getLogger(__name__).warning("Applicability ranking unavailable: %s", exc)
+            return items, "unavailable"
+        return [
+            replace(
+                items[index],
+                score=float(1 / (1 + np.exp(-np.clip(float(scores[index].max()), -60, 60)))),
+                reason="query-applicability-v1",
+            )
+            for index in order
+        ], "applied"
 
     # ---- public API --------------------------------------------------------
 
@@ -279,6 +385,334 @@ class RetrievalService:
         """Rebuild in-memory FAISS indices from SQLite."""
         self.episodic.reset_faiss_from_db()
         self.semantic.reset_faiss_from_db()
+
+    def relevant_catalog(
+        self,
+        cues: list[str],
+        *,
+        scope: str | None,
+        mode: str = "strict_scope",
+        candidate_limit: int = 256,
+        min_relevance: float = _ACTIVATE_MIN_RELEVANCE_DEFAULT,
+        focus_single_need: bool = True,
+        selection_mode: SelectionMode | None = None,
+        activation_task: ActivationTask | None = None,
+    ) -> RelevantCatalog:
+        """Build one declarative catalog before item and response budgets.
+
+        Each cue is searched independently so a sparse explicit task need can
+        recover a memory that a long whole-task cue would bury. IDs are then
+        unioned, loaded once, passed through the existing evidence matcher and
+        eligibility gate, and ordered deterministically.
+        """
+        resolved_mode = selection_mode or (
+            "legacy_activation" if focus_single_need else "deliberate_recall"
+        )
+        if resolved_mode not in {
+            "legacy_activation",
+            "deliberate_recall",
+            "complementary_activation",
+        }:
+            raise ValueError("unsupported declarative selection_mode")
+        if resolved_mode == "complementary_activation" and activation_task is None:
+            raise ValueError("complementary activation requires an explicit ActivationTask")
+        clean_cues = list(dict.fromkeys(cue.strip() for cue in cues if cue and cue.strip()))
+        if (
+            activation_task is not None
+            and resolved_mode == "complementary_activation"
+            and clean_cues != activation_task.cues
+        ):
+            raise ValueError("candidate cues must match the activation task representation")
+        truncated = False
+        if len(clean_cues) > _MAX_CATALOG_CUES:
+            # Bounded fan-out: each cue runs lexical and dense searches, and the
+            # union feeds one chunked load; report honestly when the cap bit.
+            # The task representation itself stays whole, so contribution
+            # assessment is unaffected; needs beyond the cap are covered by the
+            # whole-task cue instead of independent searches.
+            truncated = True
+            clean_cues = clean_cues[:_MAX_CATALOG_CUES]
+        if not clean_cues:
+            return RelevantCatalog(items=[], truncated=False, candidate_count=0)
+        if candidate_limit < 1:
+            raise ValueError("candidate_limit must be positive")
+
+        scope_id = normalize_scope(scope=scope)
+        cue_terms = [set(self.schemas.lexical_tokens(cue)) for cue in clean_cues]
+        term_frequency: dict[str, int] = {}
+        # The whole-task cue necessarily repeats terms from every explicit
+        # item, so it must not make each item term look non-distinctive.
+        frequency_terms = cue_terms[1:] if len(cue_terms) > 1 else cue_terms
+        for terms in frequency_terms:
+            for term in terms:
+                term_frequency[term] = term_frequency.get(term, 0) + 1
+        distinctive_terms = [
+            {term for term in terms if term_frequency.get(term, 0) == 1} for terms in cue_terms
+        ]
+        per_need: list[dict[int, Any]] = []
+        candidate_ids: set[int] = set()
+        fetch_limit = candidate_limit + 1
+        for cue_text in clean_cues:
+            signals: dict[int, CandidateSignals] = {}
+            lexical = self.schemas.search_fts_candidates(
+                cue_text, limit=fetch_limit, scope_id=scope_id
+            )
+            if len(lexical) > candidate_limit:
+                truncated = True
+                lexical = lexical[:candidate_limit]
+            for sid, bm25, rank, tokens in lexical:
+                signals[sid] = CandidateSignals(
+                    memory_id=sid,
+                    lexical_score=bm25,
+                    lexical_rank=rank,
+                    lexical_specific=bool(tokens),
+                )
+            if self.encoder is not None:
+                dense = self.schemas.search_embedding(
+                    self.encoder.encode(cue_text), limit=fetch_limit, scope_id=scope_id
+                )
+                if len(dense) > candidate_limit:
+                    truncated = True
+                    dense = dense[:candidate_limit]
+                for rank, (sid, score) in enumerate(dense, 1):
+                    previous = signals.get(sid, CandidateSignals(memory_id=sid))
+                    signals[sid] = CandidateSignals(
+                        memory_id=sid,
+                        dense_cosine=score,
+                        dense_rank=rank,
+                        lexical_score=previous.lexical_score,
+                        lexical_rank=previous.lexical_rank,
+                        lexical_specific=previous.lexical_specific,
+                    )
+            candidate_ids.update(signals)
+            per_need.append(
+                {
+                    match.memory_id: match
+                    for match in match_candidates(
+                        signals.values(),
+                        config=MatchingConfig(dense_relevance_floor=min_relevance),
+                    )
+                }
+            )
+
+        schemas = {schema.id: schema for schema in self.schemas.get_many(candidate_ids)}
+        cue = MemoryCue(query=clean_cues[0], scope=scope_id, mode=mode)
+        policy = GatePolicy.catalog_bound(len(schemas))
+        items: list[RelevantCatalogItem] = []
+        has_explicit_needs = len(clean_cues) > 1
+        seen_content: set[str] = set()
+        contribution_candidates: list[ContributionCandidate] = []
+        for schema_id, schema in schemas.items():
+            eligible, eligibility_reason = self.working_memory_gate.eligible(
+                schema, cue=cue, policy=policy
+            )
+            matches = [need.get(schema_id) for need in per_need]
+            schema_terms = set(self.schemas.lexical_tokens(schema.content_text or ""))
+            covered = tuple(
+                index
+                for index, match in enumerate(matches)
+                if match is not None
+                and match.relevance_passed
+                and (
+                    index == 0
+                    or not distinctive_terms[index]
+                    or bool(distinctive_terms[index] & schema_terms)
+                )
+            )
+            if resolved_mode == "complementary_activation":
+                evidence = tuple(
+                    {
+                        "need_index": index,
+                        "dense_cosine": match.dense_cosine,
+                        "dense_rank": match.dense_rank,
+                        "lexical_rank": match.lexical_rank,
+                        "lexical_score": match.lexical_score,
+                        "relevance_passed": match.relevance_passed,
+                        "relevance_reason": match.relevance_reason,
+                    }
+                    for index, match in enumerate(matches)
+                    if match is not None
+                )
+                best_score = max(
+                    (matches[index].normalized_rank_score for index in covered), default=0.0
+                )
+                contribution_candidates.append(
+                    ContributionCandidate(
+                        memory_id=schema_id,
+                        text=schema.content_text or "",
+                        score=best_score,
+                        eligible=eligible,
+                        eligibility_reason=eligibility_reason,
+                        need_indexes=covered,
+                        channel_evidence=evidence,
+                        facets=schema.facets or {},
+                    )
+                )
+                continue
+            if not eligible or not covered:
+                continue
+            # An explicit task list is a stronger declaration of independent
+            # needs than the broad whole-task cue. Do not let an adjacent fact
+            # through merely because it weakly matches the task introduction.
+            if has_explicit_needs and not any(index > 0 for index in covered):
+                continue
+            content_key = " ".join((schema.content_text or "").casefold().split())
+            if not content_key or content_key in seen_content:
+                continue
+            seen_content.add(content_key)
+            best = max(
+                (matches[index] for index in covered),
+                key=lambda match: (match.normalized_rank_score, -match.memory_id),
+            )
+            items.append(
+                RelevantCatalogItem(
+                    schema=schema,
+                    score=best.normalized_rank_score,
+                    reason=f"{best.scoring_policy_version}:{best.relevance_reason}",
+                    need_indexes=covered,
+                )
+            )
+        if resolved_mode == "complementary_activation":
+            if activation_task is None:
+                raise ValueError("complementary activation requires an explicit ActivationTask")
+            selection = select_complementary(
+                activation_task, contribution_candidates, scope=scope_id
+            )
+            by_id = {candidate.memory_id: candidate for candidate in contribution_candidates}
+            decisions = {decision.memory_id: decision for decision in selection.decisions}
+            # Discovery is broad; only assessed task contributions are exposed.
+            delivered: list[int] = []
+            transport_excluded: dict[int, str] = {}
+            for sid, candidate in by_id.items():
+                decision = decisions[sid]
+                if not candidate.eligible:
+                    continue
+                if not decision.selected:
+                    continue
+                if len(candidate.text) > MAX_PREVIEW_CHARS and not decision.source_spans:
+                    # Transport exclusion: unrenderable without a validated
+                    # contribution span; recorded in the decision trace.
+                    transport_excluded[sid] = "oversize_without_contribution_span"
+                    continue
+                delivered.append(sid)
+            ordered_ids = sorted(
+                delivered,
+                key=lambda sid: (-decisions[sid].shared_terms, -by_id[sid].score, sid),
+            )
+            delivered_set = set(ordered_ids)
+            catalog_decisions = tuple(
+                replace(
+                    decisions[candidate.memory_id],
+                    selected=candidate.memory_id in delivered_set,
+                    reason=transport_excluded.get(
+                        candidate.memory_id, decisions[candidate.memory_id].reason
+                    ),
+                )
+                for candidate in contribution_candidates
+            )
+            ranked_items, applicability_status = self._rank_applicability(
+                [
+                    RelevantCatalogItem(
+                        schema=schemas[sid],
+                        score=by_id[sid].score,
+                        reason=decisions[sid].reason,
+                        need_indexes=by_id[sid].need_indexes,
+                        strong=decisions[sid].strong,
+                    )
+                    for sid in ordered_ids
+                ],
+                activation_task.needs[0].text,
+                protected_ids={
+                    decision.memory_id
+                    for decision in catalog_decisions
+                    if decision.selected
+                    and (
+                        re.match(r"\s*For\s+[^,;:.]+[,;:]", decision.contribution or "", re.I)
+                        or (
+                            decision.supporting_need is not None
+                            and "explicit_list_item"
+                            in activation_task.needs[decision.supporting_need].provenance
+                            and decision.shared_terms >= 2
+                        )
+                    )
+                },
+            )
+            # The applicability stage changes final exposure, not discovery.
+            admitted = {item.schema.id for item in ranked_items}
+            positions = {item.schema.id: position for position, item in enumerate(ranked_items)}
+            catalog_decisions = tuple(
+                replace(
+                    decision,
+                    selected=decision.memory_id in admitted,
+                    reason=(
+                        "insufficient_applicability"
+                        if decision.selected and decision.memory_id not in admitted
+                        else decision.reason
+                    ),
+                    selected_position=positions.get(decision.memory_id),
+                )
+                for decision in catalog_decisions
+            )
+            return RelevantCatalog(
+                items=ranked_items,
+                truncated=truncated,
+                candidate_count=len(candidate_ids),
+                decisions=catalog_decisions,
+                applicability_status=applicability_status,
+            )
+        items.sort(key=lambda item: (-item.score, item.schema.id))
+        if has_explicit_needs:
+            # Greedy coverage is the first deterministic marginal-value rule:
+            # a candidate must earn an uncovered user-declared need.  This
+            # prevents a broad deployment-review fact from consuming a page
+            # beside the rollback/configuration/validation answers. A later
+            # calibrated distinct-contribution rule may add a second claim to
+            # a covered need; it must prove more than adjacent lexical overlap.
+            covered_needs: set[int] = set()
+            selected: list[RelevantCatalogItem] = []
+            for item in items:
+                novel = set(item.need_indexes) - {0} - covered_needs
+                if not novel:
+                    continue
+                selected.append(item)
+                covered_needs.update(novel)
+            items = selected
+        # A single undivided request has one declared need. Until a candidate
+        # demonstrates a distinct contribution rule, retain the established
+        # focus behavior rather than treating rank two as evidence of a second
+        # answer. Explicit task needs have no such ceiling.
+        if resolved_mode == "legacy_activation" and not has_explicit_needs:
+            items = items[:1]
+        applicability_status = "not_requested"
+        decisions: tuple[ContributionDecision, ...] = ()
+        if resolved_mode == "deliberate_recall":
+            before = items
+            items, applicability_status = self._rank_applicability(items, clean_cues[0])
+            positions = {item.schema.id: position for position, item in enumerate(items)}
+            decisions = tuple(
+                ContributionDecision(
+                    memory_id=item.schema.id,
+                    selected=item.schema.id in positions,
+                    reason=(
+                        "discovery_ordering"
+                        if applicability_status != "applied"
+                        else (
+                            "query_applicability"
+                            if item.schema.id in positions
+                            else "insufficient_applicability"
+                        )
+                    ),
+                    selected_position=positions.get(item.schema.id),
+                )
+                for item in before
+            )
+        return RelevantCatalog(
+            items=items,
+            truncated=truncated,
+            candidate_count=len(candidate_ids),
+            applicability_status=applicability_status,
+            decisions=decisions,
+        )
 
     def recall(
         self,
@@ -721,25 +1155,11 @@ class RetrievalService:
         accumulated graph mass. See _GRAPH_MIN_NEIGHBOR_RELEVANCE_DEFAULT.
         """
         scope_id = normalize_scope(scope=scope)
-        candidates_by_id: dict[int, Schema] = {}
-
-        def add_many(schemas_list: list[Schema]) -> None:
-            for schema in schemas_list:
-                candidates_by_id[schema.id] = schema
-
-        # Mode-gated status fetch: which schema statuses to include depends on mode.
-        if mode in ("broad", "debug"):
-            pass
-        if mode == "debug":
-            pass
 
         # Computed early (pure string join, no side effects) so the candidate
-        # fetch below can size itself to how much real signal this call
-        # carries. A trivial/near-empty cue (one-word ack, empty follow-up)
-        # still runs the full call -- callers must keep calling this every
-        # turn -- but doesn't need to fetch and rescore 60+ candidates to
-        # answer it: the call stays mandatory, only the underlying work gets
-        # cheaper.
+        # lexical/dense fetch below can size itself to how much signal the cue
+        # carries. Salience-only enumeration is unnecessary: select_matched()
+        # requires lexical or dense evidence for every displayed memory.
         cue_text = " ".join(
             [
                 query or "",
@@ -755,51 +1175,6 @@ class RetrievalService:
         ).strip()
         trivial_cue = len(cue_text) < _TRIVIAL_CUE_MIN_CHARS
 
-        scoped_fetch_limit = max(10, limit) if trivial_cue else max(60, limit * 6)
-        global_fetch_limit = max(20, limit * 2) if trivial_cue else max(100, limit * 8)
-
-        if scope_id:
-            # Fetch active schemas for scope
-            add_many(
-                self.schemas.list(limit=scoped_fetch_limit, scope_id=scope_id, status="active")
-            )
-            # Fetch needs_review/superseded for scope if in appropriate mode
-            if mode in ("broad", "debug"):
-                add_many(
-                    self.schemas.list(
-                        limit=scoped_fetch_limit, scope_id=scope_id, status="needs_review"
-                    )
-                )
-            if mode == "debug":
-                add_many(
-                    self.schemas.list(limit=scoped_fetch_limit, scope_id=scope_id, status="stale")
-                )
-                add_many(
-                    self.schemas.list(limit=scoped_fetch_limit, scope_id=scope_id, status="stale")
-                )
-            # Stage 11: also inject generalization-promoted schemas (Stage 2/3) as candidates.
-            # Stage 1 (portable) is handled inside _eligible via scope_kind match.
-            # Stage 2/3 are surfaced here so the working-memory gate can score them;
-            # stage-penalty is applied inside WorkingMemoryGate._eligible.
-            conn = self.db.connect()
-            promoted_rows = conn.execute(
-                "SELECT id FROM schemas WHERE generalization_stage >= 2 "
-                "AND status = 'active' AND scope_id != ?",
-                (scope_id,),
-            ).fetchall()
-            for r in promoted_rows:
-                try:
-                    candidates_by_id[int(r["id"])] = self.schemas.get(int(r["id"]))
-                except KeyError:
-                    pass
-
-        # Fetch from global pool
-        add_many(self.schemas.list(limit=global_fetch_limit, status="active"))
-        if mode in ("broad", "debug"):
-            add_many(self.schemas.list(limit=global_fetch_limit, status="needs_review"))
-        if mode == "debug":
-            add_many(self.schemas.list(limit=global_fetch_limit, status="stale"))
-
         cue_embedding = None
         match_signals: dict[int, CandidateSignals] = {}
         if cue_text:
@@ -809,10 +1184,6 @@ class RetrievalService:
             for sid, bm25, rank, tokens in self.schemas.search_fts_candidates(
                 cue_text, limit=cue_fetch_limit, scope_id=scope_id
             ):
-                try:
-                    candidates_by_id[sid] = self.schemas.get(sid)
-                except KeyError:
-                    continue
                 match_signals[sid] = CandidateSignals(
                     memory_id=sid,
                     lexical_score=bm25,
@@ -827,10 +1198,6 @@ class RetrievalService:
                     ),
                     1,
                 ):
-                    try:
-                        candidates_by_id[sid] = self.schemas.get(sid)
-                    except KeyError:
-                        continue
                     previous = match_signals.get(sid, CandidateSignals(memory_id=sid))
                     match_signals[sid] = CandidateSignals(
                         memory_id=sid,
@@ -840,6 +1207,8 @@ class RetrievalService:
                         lexical_rank=previous.lexical_rank,
                         lexical_specific=previous.lexical_specific,
                     )
+
+        candidates_by_id = {schema.id: schema for schema in self.schemas.get_many(match_signals)}
 
         cue = MemoryCue(
             query=query,

@@ -7,6 +7,7 @@ instantiated, tested, and reasoned about independently.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import time
@@ -121,6 +122,8 @@ class FeedbackService:
         suppressed: dict[str, int] | None = None,
         response: dict[str, Any] | None = None,
         filtered_items: list[dict[str, Any]] | None = None,
+        decision_candidates: list[dict[str, Any]] | None = None,
+        shadow_interpretation: dict[str, Any] | None = None,
         lifecycle_version: str | None = None,
         retrieval_policy_version: str | None = None,
         continuity_state: str | None = None,
@@ -277,15 +280,16 @@ class FeedbackService:
                 INSERT OR IGNORE INTO context_recall_items (
                   context_id, memory_id, retrieval_type, memory_type, rank,
                   activation, reason, content_text, status,
-                  salience, confidence, admitted, pathway, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  salience, confidence, admitted, pathway, topical_relevance,
+                  final_rank_score, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(retrieval_id),
                     str(f_memory_id),
                     retrieval_type,
                     f_item.get("memory_type", "schema"),
-                    -1,  # rank=-1 signals filtered
+                    int(f_item["rank"]) if f_item.get("rank") is not None else -1,
                     f_item.get("activation"),
                     f_item.get("reason"),
                     str(f_item.get("content", ""))[: self.cfg.max_memory_content_chars],
@@ -294,11 +298,273 @@ class FeedbackService:
                     f_item.get("confidence"),
                     0,  # admitted=0: item was filtered by working-memory gate
                     f_item.get("pathway", "direct"),
+                    f_item.get("topical_relevance", f_item.get("activation")),
+                    f_item.get("final_rank_score", f_item.get("activation")),
                     now,
                 ),
             )
 
         conn.commit()
+        # Decision traces are advisory audit data. They are intentionally
+        # fail-open: a storage problem must not affect the retrieval response
+        # or the context_recall_items exposure ledger.
+        try:
+            self._record_decision_trace(
+                retrieval_id=str(retrieval_id),
+                response=response or {},
+                filtered_items=filtered_items or [],
+                decision_candidates=decision_candidates or [],
+                retrieval_policy_version=retrieval_policy_version or "strict-v9",
+                mode=mode,
+                limit=limit,
+            )
+        except Exception:
+            log.exception("failed to persist retrieval decision trace")
+        if shadow_interpretation:
+            try:
+                self._record_shadow_interpretation(
+                    retrieval_id=str(retrieval_id),
+                    interpretation=shadow_interpretation,
+                    mode=mode,
+                    limit=limit,
+                )
+            except Exception:
+                log.exception("failed to persist retrieval shadow interpretation")
+
+    def _record_shadow_interpretation(
+        self, *, retrieval_id: str, interpretation: dict[str, Any], mode: str, limit: int
+    ) -> None:
+        policy = "phase2-intent-shadow-v1"
+        config_hash = hashlib.sha256(
+            dumps_json({"policy_version": policy, "mode": mode, "limit": int(limit)}).encode()
+        ).hexdigest()
+        self.db.connect().execute(
+            "INSERT OR REPLACE INTO retrieval_decisions "
+            "(retrieval_id, policy_version, policy_role, trace_origin, task_needs_json, "
+            "action_intent, action_intent_confidence, action_intent_reason, encoder_id, config_hash, "
+            "frozen_portfolio_json, catalog_truncated, trace_complete, created_at) "
+            "VALUES (?, ?, 'shadow', 'prospective', ?, ?, ?, ?, 'not_applicable', ?, '[]', 0, 1, ?)",
+            (
+                retrieval_id,
+                policy,
+                dumps_json(interpretation["task_needs"]),
+                interpretation["action_intent"],
+                interpretation["action_intent_confidence"],
+                interpretation["action_intent_reason"],
+                config_hash,
+                int(time.time()),
+            ),
+        )
+        self.db.connect().commit()
+
+    def _record_decision_trace(
+        self,
+        *,
+        retrieval_id: str,
+        response: dict[str, Any],
+        filtered_items: list[dict[str, Any]],
+        decision_candidates: list[dict[str, Any]],
+        retrieval_policy_version: str,
+        mode: str,
+        limit: int,
+    ) -> None:
+        """Persist a compact, current-policy trace after the snapshot exists."""
+        now = int(time.time())
+        policy = retrieval_policy_version
+        config_hash = hashlib.sha256(
+            dumps_json({"policy_version": policy, "mode": mode, "limit": int(limit)}).encode()
+        ).hexdigest()
+        encoder_id = (
+            "no_encoder"
+            if self.encoder is None
+            else (f"{self.encoder.__class__.__module__}.{self.encoder.__class__.__qualname__}")
+        )
+        selected: list[tuple[str, str, dict[str, Any]]] = []
+        selected.extend(
+            ("memory", str(item.get("id") or item.get("memory_id")), item)
+            for item in response.get("schemas", [])
+            if item.get("id") or item.get("memory_id")
+        )
+        selected.extend(
+            ("procedure", str(item.get("id") or item.get("procedure_id")), item)
+            for item in response.get("procedures", [])
+            if item.get("id") or item.get("procedure_id")
+        )
+        portfolio = [
+            {"position": index, "kind": kind, "id": candidate_id}
+            for index, (kind, candidate_id, _item) in enumerate(selected)
+        ]
+        conn = self.db.connect()
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO retrieval_decisions "
+                "(retrieval_id, policy_version, policy_role, trace_origin, task_needs_json, "
+                "action_intent, action_intent_confidence, action_intent_reason, encoder_id, config_hash, "
+                "frozen_portfolio_json, catalog_truncated, trace_complete, created_at) "
+                "VALUES (?, ?, 'current', 'prospective', '[]', 'uncertain', NULL, "
+                "'not_derived_phase_1', ?, ?, ?, ?, 1, ?)",
+                (
+                    retrieval_id,
+                    policy,
+                    encoder_id,
+                    config_hash,
+                    dumps_json(portfolio),
+                    int(bool(response.get("catalog_truncated"))),
+                    now,
+                ),
+            )
+            for position, (kind, candidate_id, item) in enumerate(selected):
+                conn.execute(
+                    "INSERT OR REPLACE INTO retrieval_candidate_decisions "
+                    "(retrieval_id, policy_version, candidate_kind, candidate_id, eligible, "
+                    "context_compatibility, dense_category, lexical_category, applicability_category, "
+                    "novelty_category, evidence_category, covered_need_indexes_json, marginal_contribution, "
+                    "decision, reason_code, redundant_with, portfolio_position, created_at) "
+                    "VALUES (?, ?, ?, ?, 1, 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', "
+                    "'unknown', '[]', 'selected', 'selected', ?, NULL, ?, ?)",
+                    (
+                        retrieval_id,
+                        policy,
+                        kind,
+                        candidate_id,
+                        str(item.get("reason") or "selected"),
+                        position,
+                        now,
+                    ),
+                )
+            for item in filtered_items:
+                candidate_id = str(item.get("memory_id") or "")
+                if not candidate_id:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO retrieval_candidate_decisions "
+                    "(retrieval_id, policy_version, candidate_kind, candidate_id, eligible, "
+                    "context_compatibility, dense_category, lexical_category, applicability_category, "
+                    "novelty_category, evidence_category, covered_need_indexes_json, marginal_contribution, "
+                    "decision, reason_code, redundant_with, portfolio_position, created_at) "
+                    "VALUES (?, ?, 'memory', ?, 0, 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', "
+                    "'unknown', '[]', 'not_selected', 'rejected', ?, NULL, NULL, ?)",
+                    (
+                        retrieval_id,
+                        policy,
+                        candidate_id,
+                        str(item.get("reason") or "filtered"),
+                        now,
+                    ),
+                )
+            for item in decision_candidates:
+                candidate_id = str(item.get("candidate_id") or "")
+                if not candidate_id:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO retrieval_candidate_decisions "
+                    "(retrieval_id, policy_version, candidate_kind, candidate_id, eligible, "
+                    "context_compatibility, dense_category, lexical_category, applicability_category, "
+                    "novelty_category, evidence_category, covered_need_indexes_json, marginal_contribution, "
+                    "decision, reason_code, redundant_with, portfolio_position, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', "
+                    "'unknown', '[]', 'not_selected', ?, ?, ?, NULL, ?)",
+                    (
+                        retrieval_id,
+                        policy,
+                        str(item.get("candidate_kind") or "memory"),
+                        candidate_id,
+                        int(bool(item.get("eligible", False))),
+                        str(item.get("decision") or "rejected"),
+                        str(item.get("reason_code") or "not_selected"),
+                        item.get("redundant_with"),
+                        now,
+                    ),
+                )
+
+    def backfill_legacy_decision_traces(self, *, batch_size: int = 100) -> int:
+        """Record observed legacy exposure without inventing historical decisions.
+
+        This metadata-only migration is deliberately bounded and idempotent.
+        It never creates context_recall_items, never authorizes feedback, and
+        never claims that unpersisted candidates or intent were observed.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT context_id, retrieval_policy_version, memory_ids_json, created_at "
+            "FROM context_recall_events r WHERE NOT EXISTS ("
+            "SELECT 1 FROM retrieval_decisions d WHERE d.retrieval_id = r.context_id"
+            ") ORDER BY created_at, context_id LIMIT ?",
+            (batch_size,),
+        ).fetchall()
+        now = int(time.time())
+        with conn:
+            for row in rows:
+                retrieval_id = str(row["context_id"])
+                source_policy = str(row["retrieval_policy_version"] or "unknown")
+                policy = f"legacy-observed:{source_policy}"
+                items = conn.execute(
+                    "SELECT memory_id, memory_type, admitted, reason, rank FROM context_recall_items "
+                    "WHERE context_id = ? ORDER BY admitted DESC, rank, memory_id",
+                    (retrieval_id,),
+                ).fetchall()
+                portfolio = [
+                    {
+                        "position": index,
+                        "kind": (
+                            "procedure"
+                            if item["memory_type"] in {"procedure", "procedural_memory"}
+                            else "memory"
+                        ),
+                        "id": item["memory_id"],
+                    }
+                    for index, item in enumerate(items)
+                    if item["admitted"]
+                ]
+                conn.execute(
+                    "INSERT INTO retrieval_decisions "
+                    "(retrieval_id, policy_version, policy_role, trace_origin, task_needs_json, "
+                    "action_intent, action_intent_reason, encoder_id, config_hash, frozen_portfolio_json, "
+                    "catalog_truncated, trace_complete, source_policy_version, source_created_at, "
+                    "reconstruction_reason, observed_at, created_at) "
+                    "VALUES (?, ?, 'historical', 'legacy_observed', '[]', 'uncertain', "
+                    "'not_historically_persisted', 'unknown', 'legacy_observed', ?, 0, 0, ?, ?, ?, ?, ?)",
+                    (
+                        retrieval_id,
+                        policy,
+                        dumps_json(portfolio),
+                        source_policy,
+                        int(row["created_at"]),
+                        "historical_candidate_decisions_not_persisted",
+                        int(row["created_at"]),
+                        now,
+                    ),
+                )
+                for position, item in enumerate(items):
+                    kind = (
+                        "procedure"
+                        if item["memory_type"] in {"procedure", "procedural_memory"}
+                        else "memory"
+                    )
+                    decision = "selected" if item["admitted"] else "rejected"
+                    conn.execute(
+                        "INSERT INTO retrieval_candidate_decisions "
+                        "(retrieval_id, policy_version, candidate_kind, candidate_id, eligible, "
+                        "context_compatibility, dense_category, lexical_category, applicability_category, "
+                        "novelty_category, evidence_category, covered_need_indexes_json, marginal_contribution, "
+                        "decision, reason_code, redundant_with, portfolio_position, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', "
+                        "'unknown', '[]', 'not_historically_persisted', ?, ?, NULL, ?, ?)",
+                        (
+                            retrieval_id,
+                            policy,
+                            kind,
+                            item["memory_id"],
+                            int(bool(item["admitted"])),
+                            decision,
+                            str(item["reason"] or "legacy_observed"),
+                            position if item["admitted"] else None,
+                            now,
+                        ),
+                    )
+        return len(rows)
 
     def record_context_recall(self, *, context_id: str, **kwargs: Any) -> None:
         """Backward-compatible wrapper for context retrieval snapshots."""

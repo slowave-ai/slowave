@@ -22,11 +22,16 @@ _HELPED_BONUS = 0.03
 _HELPED_BONUS_CAP = 0.09
 _HARMED_PENALTY = 0.06
 _HARMED_PENALTY_CAP = 0.18
+_VERIFIED_SUCCESS_BONUS = 0.015
+_PARTIALLY_VERIFIED_SUCCESS_BONUS = 0.0075
+_FAILED_SOURCE_PENALTY = 0.03
 _PROCEDURE_RRF_K = 60
 _APPLICABILITY_WEIGHT = 2.0
 _STRATEGY_WEIGHT = 1.0
 _LEXICAL_WEIGHT = 1.0
 _DENSE_RELEVANCE_FLOOR = 0.60
+_LEXICAL_APPLICABILITY_FALLBACK = 0.30
+_CONTEXTUAL_LEXICAL_APPLICABILITY_FALLBACK = 0.20
 
 
 def _clean_name(value: Any, field: str) -> str:
@@ -219,12 +224,18 @@ def validate_procedure(value: dict[str, Any] | None) -> dict[str, Any] | None:
         if not text:
             raise ValueError("procedure.caveats entries must not be empty")
         caveats.append(text)
+    deduplication_key = value.get("deduplication_key")
+    if deduplication_key is not None:
+        deduplication_key = _clean_name(deduplication_key, "procedure deduplication_key")
     return {
         "version": 2,
         "summary": summary,
         "context": normalize_facets(value.get("context"), "procedure.context"),
         "steps": [{"summary": str(step["summary"]).strip()} for step in raw_steps],
         "caveats": caveats,
+        # An explicit producer assertion—not a semantic inference—that these
+        # alternatives implement the same method.
+        "deduplication_key": deduplication_key,
     }
 
 
@@ -285,7 +296,7 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
     rows = conn.execute(
         "SELECT s.id, s.scope_id, COALESCE(s.final_goal, s.initial_goal, s.goal, '') AS goal, "
         "COALESCE(s.outcome, 'unknown') AS outcome, COALESCE(s.outcome_summary, '') AS outcome_summary, "
-        "s.started_ts, e.ts AS completed_ts, e.metadata_json "
+        "s.verification_json, s.started_ts, e.ts AS completed_ts, e.metadata_json "
         "FROM sessions s JOIN raw_events e ON e.session_id=s.id "
         f"{where} ORDER BY s.started_ts, e.id",
         params,
@@ -314,8 +325,10 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
                 *procedure["caveats"],
                 *([_FAILED_PROCEDURE_WARNING] if row["outcome"] == "failure" else []),
             ],
+            "deduplication_key": procedure["deduplication_key"],
             "outcome": str(row["outcome"]),
             "outcome_summary": str(row["outcome_summary"]),
+            "verification_status": _verification_status(row["verification_json"]),
             "created_at": row["completed_ts"] or row["started_ts"],
             "evidence": {
                 "retrieved": 0,
@@ -415,8 +428,14 @@ def retrieve_procedures(
     encoder: Any = None,
     limit: int = 3,
     min_similarity: float = _DENSE_RELEVANCE_FLOOR,
+    suppression_trace: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve advisory procedures with source applicability, strategy, and FTS evidence."""
+    """Retrieve a bounded set of applicable advisory procedures.
+
+    Applicability is the admission decision.  The strategy text explains how a
+    procedure works and can break ties between applicable precedents, but a
+    similar step sequence alone must not surface a method for the wrong goal.
+    """
 
     # Structured task context is checked field-by-field below.  Serializing it
     # into the semantic cue made arbitrary metadata dominate the old cosine
@@ -446,7 +465,19 @@ def retrieve_procedures(
         lexical = lexical_candidates.get(str(item["id"]))
         if not _contexts_compatible(item.get("context"), retrieval_context):
             continue
-        dense_pass = max(applicability_score, strategy_score) >= min_similarity
+        context_agreement = _context_agreement(item.get("context"), retrieval_context)
+        # Test and offline configurations can deliberately run without an
+        # embedding model.  In that case the score is term-overlap evidence,
+        # not cosine similarity, so keep its historical conservative fallback
+        # without allowing strategy text to satisfy admission.
+        applicability_floor = min_similarity
+        if encoder is None:
+            applicability_floor = (
+                _CONTEXTUAL_LEXICAL_APPLICABILITY_FALLBACK
+                if context_agreement
+                else _LEXICAL_APPLICABILITY_FALLBACK
+            )
+        dense_pass = applicability_score >= applicability_floor
         lexical_pass = lexical is not None and lexical.specific
         if not (dense_pass or lexical_pass):
             continue
@@ -454,6 +485,7 @@ def retrieve_procedures(
         utility = min(_HELPED_BONUS_CAP, evidence["helped"] * _HELPED_BONUS) - min(
             _HARMED_PENALTY_CAP, evidence["harmed"] * _HARMED_PENALTY
         )
+        utility += _source_outcome_adjustment(item)
         fusion = (
             _rrf(applicability_ranks[str(item["id"])], _APPLICABILITY_WEIGHT)
             + _rrf(strategy_ranks[str(item["id"])], _STRATEGY_WEIGHT)
@@ -465,20 +497,128 @@ def retrieve_procedures(
             "applicability": round(applicability_score, 4),
             "strategy": round(strategy_score, 4),
             "lexical": lexical is not None and lexical.specific,
+            "admission": _admission_reason(dense_pass=dense_pass, lexical_pass=lexical_pass),
+            "context": "matched" if context_agreement else "compatible",
         }
         ranked.append((fusion + utility, result))
-    ranked.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
-    return [item for _, item in ranked[: max(0, limit)]]
+    # Session IDs are random UUIDs. They cannot be the last tie-breaker for a
+    # public retrieval: equal-scoring procedures would otherwise reorder across
+    # otherwise identical replays. Use immutable procedure content instead.
+    ranked.sort(key=lambda pair: (-pair[0], _stable_procedure_key(pair[1])))
+    return _deduplicate_ranked_procedures(ranked, limit=limit, suppression_trace=suppression_trace)
+
+
+def _verification_status(value: Any) -> str:
+    try:
+        parsed = json.loads(value or "{}") if not isinstance(value, dict) else value
+    except (TypeError, ValueError):
+        return "unverified"
+    status = str(parsed.get("status") or "unverified")
+    return status if status in {"verified", "partially_verified", "unverified"} else "unverified"
+
+
+def _source_outcome_adjustment(item: dict[str, Any]) -> float:
+    """Use source evidence as a small prior, never as an applicability gate."""
+
+    outcome = str(item.get("outcome") or "unknown")
+    verification = str(item.get("verification_status") or "unverified")
+    if outcome == "failure":
+        return -_FAILED_SOURCE_PENALTY
+    if outcome == "success" and verification == "verified":
+        return _VERIFIED_SUCCESS_BONUS
+    if outcome == "success" and verification == "partially_verified":
+        return _PARTIALLY_VERIFIED_SUCCESS_BONUS
+    return 0.0
+
+
+def _admission_reason(*, dense_pass: bool, lexical_pass: bool) -> str:
+    if dense_pass and lexical_pass:
+        return "applicability_dense_and_lexical"
+    return "applicability_dense" if dense_pass else "applicability_lexical"
+
+
+def _deduplicate_ranked_procedures(
+    ranked: list[tuple[float, dict[str, Any]]],
+    *,
+    limit: int,
+    suppression_trace: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Keep a duplicate family from consuming a capped result.
+
+    Explicit producer-declared groups identify alternative presentations of a
+    method. Exact strategy/context duplicates are repeated attempts at the
+    same method. We only collapse candidates when the pool exceeds the public
+    limit, so small existing result sets and feedback comparisons retain their
+    members.
+    """
+
+    if limit <= 0:
+        return []
+    selected: list[dict[str, Any]] = []
+    seen_methods: dict[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], str] = {}
+    seen_declared_groups: dict[str, str] = {}
+    for _score, item in ranked:
+        method_key = (
+            _normalise_method_text(str(item.get("strategy_text") or item.get("summary") or "")),
+            tuple(
+                sorted(
+                    (key, tuple(sorted(values)))
+                    for key, values in flatten_facets(item.get("context")).items()
+                )
+            ),
+        )
+        declared_group = str(item.get("deduplication_key") or "")
+        # A producer-declared group is safe to suppress even when the result
+        # set is smaller than the public cap. Exact textual deduplication keeps
+        # its older cap-pressure behaviour so existing small result sets and
+        # feedback comparisons retain independently recorded attempts.
+        representative = seen_declared_groups.get(declared_group) if declared_group else None
+        if representative is None and len(ranked) > limit:
+            representative = seen_methods.get(method_key)
+        if representative is not None:
+            if suppression_trace is not None:
+                suppression_trace.append(
+                    {"candidate_id": str(item["id"]), "redundant_with": representative}
+                )
+            continue
+        seen_methods[method_key] = str(item["id"])
+        if declared_group:
+            seen_declared_groups[declared_group] = str(item["id"])
+        selected.append(item)
+        if len(selected) >= max(0, limit):
+            break
+    return selected
+
+
+def _normalise_method_text(value: str) -> str:
+    return " ".join(re.findall(r"\w+", value.casefold()))
 
 
 def _ranks(scored: list[tuple[dict[str, Any], float, float]], *, index: int) -> dict[str, int]:
     if index == 1:
-        ordered = sorted(scored, key=lambda value: (-value[1], str(value[0]["id"])))
+        ordered = sorted(scored, key=lambda value: (-value[1], _stable_procedure_key(value[0])))
     else:
-        ordered = sorted(scored, key=lambda value: (-value[2], str(value[0]["id"])))
+        ordered = sorted(scored, key=lambda value: (-value[2], _stable_procedure_key(value[0])))
     return {
         str(item["id"]): rank for rank, (item, _applicability, _strategy) in enumerate(ordered, 1)
     }
+
+
+def _stable_procedure_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Stable content identity for deterministic ranking ties.
+
+    The source ID includes a random session UUID, so it is deliberately
+    excluded. The final field distinguishes semantically identical fixtures.
+    """
+    steps = " ".join(
+        str(step.get("summary") or "") for step in item.get("steps", []) if isinstance(step, dict)
+    )
+    return (
+        _normalise_method_text(str(item.get("goal") or "")),
+        _normalise_method_text(str(item.get("summary") or "")),
+        _normalise_method_text(steps),
+        json.dumps(item.get("context") or {}, sort_keys=True, ensure_ascii=False),
+    )
 
 
 def _rrf(rank: int | None, weight: float) -> float:
@@ -502,6 +642,17 @@ def _contexts_compatible(
         key for key in left.keys() & right.keys() if not key.rsplit(".", 1)[-1].endswith("_id")
     }
     return all(not left[key].isdisjoint(right[key]) for key in shared)
+
+
+def _context_agreement(
+    procedure_context: dict[str, Any] | None, retrieval_context: dict[str, Any] | None
+) -> int:
+    left = flatten_facets(procedure_context)
+    right = flatten_facets(retrieval_context)
+    shared = {
+        key for key in left.keys() & right.keys() if not key.rsplit(".", 1)[-1].endswith("_id")
+    }
+    return sum(1 for key in shared if not left[key].isdisjoint(right[key]))
 
 
 def step_alignment(left: Iterable[ProcedureStep], right: Iterable[ProcedureStep]) -> float:
