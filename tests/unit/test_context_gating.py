@@ -14,6 +14,7 @@ from slowave.core.context import (
     MemoryCue,
     WorkingMemoryGate,
 )
+from slowave.core.retrieval_matching import CandidateSignals, match_candidates
 from slowave.symbolic.schema_store import Schema
 
 
@@ -717,6 +718,38 @@ def test_activation_trace_reason_describes_suppression() -> None:
     assert len(rejected) == 1
     assert rejected[0].reason == "inactive"
     assert rejected[0].activation == 0.0
+
+
+def test_matched_trace_distinguishes_response_budget_from_admission() -> None:
+    """Relevant candidates outside the final brief remain traceable misses."""
+    gate = WorkingMemoryGate()
+    schemas = [
+        _stub_schema(index, text=f"Independent deployment fact {index}", embedding=None)
+        for index in range(1, 4)
+    ]
+    matches = {
+        item.memory_id: item
+        for item in match_candidates(
+            [
+                CandidateSignals(memory_id=1, dense_cosine=0.9, dense_rank=1),
+                CandidateSignals(memory_id=2, dense_cosine=0.8, dense_rank=2),
+                CandidateSignals(memory_id=3, dense_cosine=0.7, dense_rank=3),
+            ]
+        )
+    }
+
+    state = gate.select_matched(
+        schemas,
+        matches=matches,
+        cue=MemoryCue(query="deployment facts", scope="project:alpha"),
+        policy=GatePolicy(max_items=2, max_chars=4000, exploration_slots=0),
+    )
+
+    assert [item.schema.id for item in state.items] == [1, 2]
+    third = next(trace for trace in state.activation_trace if trace.schema_id == 3)
+    assert third.admitted is False
+    assert third.reason == "response_budget"
+    assert third.rank == 3
 
 
 # ── 11. Identity prior cap ─────────────────────────────────────────────────

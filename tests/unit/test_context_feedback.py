@@ -178,6 +178,47 @@ class TestContextSnapshotPersistence:
             eng.close()
             _cleanup(path)
 
+    def test_filtered_items_preserve_budget_reason_and_rank(self) -> None:
+        eng, path = _tmp_engine()
+        try:
+            context_id = _ctx_id()
+            eng.record_context_recall(
+                context_id=context_id,
+                scope_id="eval:test",
+                filtered_items=[
+                    {
+                        "memory_id": "sch_9",
+                        "activation": 0.42,
+                        "reason": "response_budget",
+                        "rank": 3,
+                    },
+                    {
+                        "memory_id": "sch_10",
+                        "activation": 0.21,
+                        "reason": "below_relevance",
+                    },
+                ],
+            )
+
+            rows = (
+                eng.db.connect()
+                .execute(
+                    "SELECT memory_id, rank, reason, topical_relevance, final_rank_score "
+                    "FROM context_recall_items WHERE context_id = ? ORDER BY memory_id",
+                    (context_id,),
+                )
+                .fetchall()
+            )
+            assert [(row["memory_id"], row["rank"], row["reason"]) for row in rows] == [
+                ("sch_10", -1, "below_relevance"),
+                ("sch_9", 3, "response_budget"),
+            ]
+            assert rows[1]["topical_relevance"] == 0.42
+            assert rows[1]["final_rank_score"] == 0.42
+        finally:
+            eng.close()
+            _cleanup(path)
+
 
 class TestFeedbackEventPersistence:
     """Test that feedback events are stored."""

@@ -60,7 +60,13 @@ def test_frozen_cursor_is_repeatable_nonduplicating_and_reaches_end(tmp_path) ->
         first = _continuation_page(eng, cursor=cursor, session_id=session_id, scope=scope)
         repeated = _continuation_page(eng, cursor=cursor, session_id=session_id, scope=scope)
         assert first == repeated
-        assert [item["memory_id"] for item in first["memories"]] == ["sch_1", "sch_2"]
+        assert [item["memory_id"] for item in first["memories"]] == [
+            "sch_1",
+            "sch_2",
+            "sch_3",
+            "sch_4",
+            "sch_5",
+        ]
 
         seen = [item["memory_id"] for item in first["memories"]]
         page = first

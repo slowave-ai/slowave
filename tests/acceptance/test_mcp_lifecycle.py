@@ -163,8 +163,8 @@ def test_server_issued_continuity_is_persistent_scoped_and_never_implicit(tmp_pa
     _run(scenario())
 
 
-def test_broad_continuity_start_returns_diverse_labelled_context(tmp_path: Path) -> None:
-    """A broad opening gets reinstatement context without widening direct answers."""
+def test_broad_continuity_start_uses_relevance_set_without_reinstatement(tmp_path: Path) -> None:
+    """A broad opening does not bypass relevance through a separate context pool."""
 
     async def scenario() -> None:
         scope = "project:reinstatement"
@@ -210,8 +210,9 @@ def test_broad_continuity_start_returns_diverse_labelled_context(tmp_path: Path)
                 task_context={"project": "ledger cache deployment"},
             )
             assert broad["continuity_state"] == "started"
-            assert any(
-                item["pathway"] == "context_reinstatement" for item in broad["memories"]
+            assert broad["retrieval_policy_version"] == "activation-complementary-v1"
+            assert all(
+                item["pathway"] != "context_reinstatement" for item in broad["memories"]
             ), broad
             assert len({item["memory_id"] for item in broad["memories"]}) == len(broad["memories"])
             await harness.feedback_all(broad)

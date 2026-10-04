@@ -1401,10 +1401,17 @@ class SchemaStore:
         ids = list(dict.fromkeys(int(i) for i in schema_ids))
         if not ids:
             return []
-        ph = ",".join(["?"] * len(ids))
+        # Chunked to stay under SQLite's host-parameter limit when callers
+        # union large multi-cue candidate sets.
+        by_id: dict[int, Any] = {}
         conn = self.db.connect()
-        rows = conn.execute(f"SELECT * FROM schemas WHERE id IN ({ph})", tuple(ids)).fetchall()
-        by_id = {int(r["id"]): r for r in rows}
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            ph = ",".join(["?"] * len(chunk))
+            rows = conn.execute(
+                f"SELECT * FROM schemas WHERE id IN ({ph})", tuple(chunk)
+            ).fetchall()
+            by_id.update({int(r["id"]): r for r in rows})
         return [self._row_to_schema(by_id[i]) for i in ids if i in by_id]
 
     def get_by_prototypes(

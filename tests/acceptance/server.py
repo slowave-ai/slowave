@@ -54,6 +54,8 @@ CONCEPTS: tuple[tuple[str, ...], ...] = (
     ("billing", "invoice", "payment"),
     ("cache", "redis"),
     ("queue", "worker", "jobs"),
+    ("carrier", "dhl", "priority shipments", "priority shipment"),
+    ("incident begin", "incident began", "certificate expired"),
 )
 
 
@@ -72,7 +74,9 @@ class DeterministicEncoder:
                 vector[index] += 1.0
         for token in _tokens(lowered):
             digest = hashlib.blake2b(token.encode("utf-8"), digest_size=2).digest()
-            vector[8 + int.from_bytes(digest, "big") % (_TOKEN_HASH_END - 8)] += 0.08
+            vector[
+                len(CONCEPTS) + int.from_bytes(digest, "big") % (_TOKEN_HASH_END - len(CONCEPTS))
+            ] += 0.08
         # The compact transport encoder otherwise represents temporal language
         # only through hash buckets. Reserve one deterministic dimension per
         # temporal-probe band so acceptance scenarios exercise a meaningful,
@@ -135,12 +139,24 @@ def _apply_acceptance_mutation(name: str) -> None:
     original_activate = mcp_tools.ops.activate
     original_recall = mcp_tools.ops.recall
     original_commit = mcp_tools.ops.commit
-    if name == "stale_suppression":
-        original_canonical = mcp_tools._canonical_activation_result
+    if name == "relevance_admission":
+        original_catalog = SlowaveEngine.relevant_catalog
 
-        @wraps(original_canonical)
-        def mutated_canonical(result: dict[str, Any], *, scope: str) -> dict[str, Any]:
-            data = original_canonical(result, scope=scope)
+        @wraps(original_catalog)
+        def mutated_catalog(self: SlowaveEngine, cues: list[str], **kwargs: Any):
+            # Disable both topical admission guards: channel evidence and
+            # distinctive need-term coverage. Keeping the latter would still
+            # reject every hard negative, masking a broken evidence floor.
+            kwargs["min_relevance"] = -1.0
+            return original_catalog(self, cues[:1], **kwargs)
+
+        SlowaveEngine.relevant_catalog = mutated_catalog
+    if name == "stale_suppression":
+        original_prepare = mcp_tools._prepare_complementary_activation
+
+        @wraps(original_prepare)
+        def mutated_prepare(eng: Any, *, result: dict[str, Any], scope: str) -> Any:
+            data, catalog, successor = original_prepare(eng, result=result, scope=scope)
             # Re-introduce the actual retired row into the current response.
             # This models stale suppression being removed while keeping the
             # returned ID valid for the normal feedback lifecycle.
@@ -157,9 +173,9 @@ def _apply_acceptance_mutation(name: str) -> None:
                         "pathway": "direct",
                     }
                 )
-            return data
+            return data, catalog, successor
 
-        mcp_tools._canonical_activation_result = mutated_canonical
+        mcp_tools._prepare_complementary_activation = mutated_prepare
 
     @wraps(original_activate)
     def mutated_activate(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -167,8 +183,15 @@ def _apply_acceptance_mutation(name: str) -> None:
             kwargs["scope"] = None
         elif name == "activation_budget":
             kwargs["limit"] = max(int(kwargs.get("limit", 0)), 100)
+            # Bypass the relevance-set selector so the old unbounded rank
+            # behavior is exposed to the singular-facet hard-negative test.
+            kwargs["relevant_set"] = False
+            # Ordering and the relevance floor guard the singular contract;
+            # disabling both must fail the target test on unrelated rows.
+            kwargs["include_peripheral"] = True
         elif name == "relevance_admission":
-            kwargs["min_relevance"] = 0.0
+            # Cosine evidence can be negative: zero does not disable admission.
+            kwargs["min_relevance"] = -1.0
         return original_activate(*args, **kwargs)
 
     @wraps(original_recall)
@@ -178,7 +201,7 @@ def _apply_acceptance_mutation(name: str) -> None:
         elif name == "stale_suppression":
             kwargs["mode"] = "debug"
         elif name == "relevance_admission":
-            kwargs["min_relevance"] = 0.0
+            kwargs["min_relevance"] = -1.0
         return original_recall(*args, **kwargs)
 
     @wraps(original_commit)

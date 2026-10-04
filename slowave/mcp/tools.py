@@ -39,8 +39,24 @@ from pydantic import (
 
 import slowave.ops as ops
 from slowave.mcp import session_resolver
+from slowave.mcp.activation_catalog import (
+    MEMORY_PAGE_SIZE,
+    CatalogCompatibilityError,
+    FrozenActivationCatalog,
+)
 
 log = logging.getLogger(__name__)
+
+# Keep references to fire-and-forget background logging tasks so the event
+# loop cannot garbage-collect them mid-flight.
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg_task(coro: Any) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
 
 # Keys stored in schema facets that are internal to the retrieval engine.
 _INTERNAL_FACET_KEYS: frozenset[str] = frozenset({"vsa_vec"})
@@ -49,13 +65,16 @@ _INTERNAL_FACET_KEYS: frozenset[str] = frozenset({"vsa_vec"})
 # to the MCP product surface; library/benchmark callers retain their existing
 # defaults, including Recall@20. Calibrated on the frozen 60-call live replay.
 _MCP_ACTIVATE_LIMIT_DEFAULT = 2
+_MCP_ACTIVATE_LIMIT_MAX = 3
 _MCP_RECALL_TOP_K_DEFAULT = 2
 _MCP_FROZEN_CANDIDATE_LIMIT = _MCP_RECALL_TOP_K_DEFAULT + 8
-_MCP_CONTINUATION_PAGE_SIZE = 2
+# `relevant-set-v2` builds the complete discovered catalog before paging it.
+# This is a page target, not a relevance or catalog limit.
+_MCP_CONTINUATION_PAGE_SIZE = 5
 _MCP_FIELD_RESPONSE_CHARS = 160
 _MCP_MEMORY_CONTENT_LIMIT = 500
-_MCP_CONTINUITY_START_RESPONSE_CHARS = 1600
-_MCP_CONTINUATION_RESPONSE_CHARS = 900
+_MCP_CONTINUITY_START_RESPONSE_CHARS = 3000
+_MCP_CONTINUATION_RESPONSE_CHARS = 3000
 _MCP_EVIDENCE_LIMIT = 8
 _MCP_EVIDENCE_CONTENT_LIMIT = 1000
 _REMEMBER_TYPES = {
@@ -148,6 +167,12 @@ class CommitProcedure(_StrictCommitModel):
     context: dict[str, JsonValue] = Field(default_factory=dict)
     steps: Annotated[list[CommitProcedureStep], Field(min_length=1)]
     caveats: list[str] = Field(default_factory=list)
+    # Optional producer assertion that multiple procedures are alternate
+    # renderings of one method. It is intentionally not inferred from text.
+    deduplication_key: Annotated[
+        str | None,
+        Field(pattern=r"^[a-z][a-z0-9_.:-]{0,63}$"),
+    ] = None
 
     @field_validator("summary")
     @classmethod
@@ -535,6 +560,12 @@ def _read_continuation(
 
 
 def _continuation_page(eng: Any, *, cursor: str, session_id: str, scope: str) -> dict[str, Any]:
+    activation_cursor = _read_bound_activation_cursor(
+        eng, cursor=cursor, session_id=session_id, scope=scope
+    )
+    if activation_cursor is not None:
+        row, payload = activation_cursor
+        return _complementary_continuation_page(eng, cursor=cursor, row=row, payload=payload)
     retrieval_id, candidates, offset, page_size = _read_continuation(
         eng, cursor=cursor, session_id=session_id, scope=scope
     )
@@ -631,6 +662,7 @@ def _attach_frozen_tail(
         scope=scope,
         candidates=tail,
         offset=0,
+        page_size=max(1, len(tail)),
     )
     data["more_available"] = cursor is not None
     if cursor is not None:
@@ -640,7 +672,9 @@ def _attach_frozen_tail(
     data["accessible_field"] = _accessible_field(tail)
 
 
-def _authorize_continuation_exposure(eng: Any, *, retrieval_id: str, data: dict[str, Any]) -> None:
+def _authorize_continuation_exposure(
+    eng: Any, *, retrieval_id: str, data: dict[str, Any], commit: bool = True
+) -> None:
     """Make only actually rendered continuation items eligible for feedback."""
     conn = eng.db.connect()
     retrieval_type = "recall"
@@ -696,7 +730,8 @@ def _authorize_continuation_exposure(eng: Any, *, retrieval_id: str, data: dict[
             "UPDATE context_recall_events SET memory_ids_json = ?, count_n = ? WHERE context_id = ?",
             (json.dumps(sorted(memory_ids)), len(memory_ids), retrieval_id),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str, Any]:
@@ -718,12 +753,18 @@ def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str,
     return preview
 
 
-def _activation_candidates(result: dict[str, Any], scope: str) -> list[dict[str, Any]]:
+def _activation_candidates(
+    result: dict[str, Any], scope: str, *, preserve_full_source: bool = False
+) -> list[dict[str, Any]]:
     memories = []
     for item in result.get("schemas", []):
         memory: dict[str, Any] = {
             "memory_id": item["id"],
-            "content": str(item.get("text") or "")[:_MCP_MEMORY_CONTENT_LIMIT],
+            "content": (
+                str(item.get("text") or "")
+                if preserve_full_source
+                else str(item.get("text") or "")[:_MCP_MEMORY_CONTENT_LIMIT]
+            ),
             "pathway": item.get("pathway", "direct"),
         }
         provenance = _compact_source_provenance(item)
@@ -746,6 +787,207 @@ def _activation_candidates(result: dict[str, Any], scope: str) -> list[dict[str,
     return candidates
 
 
+def _complementary_cursor_payload(catalog: FrozenActivationCatalog, offset: tuple[int, int]) -> str:
+    payload = json.loads(catalog.snapshot_json)
+    payload["page_offset"] = {"memories": int(offset[0]), "procedures": int(offset[1])}
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _store_complementary_cursor(
+    conn: Any,
+    *,
+    catalog: FrozenActivationCatalog,
+    offset: tuple[int, int],
+    cursor_id: str | None = None,
+) -> str:
+    snapshot = json.loads(catalog.snapshot_json)
+    retrieval_id, session_id, scope = (
+        snapshot["retrieval_id"],
+        snapshot["session_id"],
+        snapshot["scope"],
+    )
+    cursor = cursor_id or "cur_" + secrets.token_urlsafe(24)
+    conn.execute(
+        "INSERT OR IGNORE INTO retrieval_continuations "
+        "(cursor_id,retrieval_id,session_id,scope_id,candidates_json,offset_n,page_size,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            cursor,
+            retrieval_id,
+            session_id,
+            scope,
+            _complementary_cursor_payload(catalog, offset),
+            offset[0],
+            MEMORY_PAGE_SIZE,
+            int(time.time()),
+        ),
+    )
+    return cursor
+
+
+def _read_bound_activation_cursor(
+    eng: Any, *, cursor: str, session_id: str, scope: str
+) -> tuple[Any, dict[str, Any]] | None:
+    conn = eng.db.connect()
+    row = conn.execute(
+        "SELECT retrieval_id,session_id,scope_id,candidates_json FROM retrieval_continuations "
+        "WHERE cursor_id=?",
+        (cursor,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["session_id"] != session_id or row["scope_id"] != scope:
+        raise ValueError("continue_from cursor does not match session_id and scope")
+    active = conn.execute(
+        "SELECT ended_ts FROM sessions WHERE id=? AND scope_id=?", (session_id, scope)
+    ).fetchone()
+    if active is None:
+        raise ValueError("continue_from cursor session no longer exists")
+    if active["ended_ts"] is not None:
+        raise ValueError("continue_from cursor session is already ended")
+    payload = json.loads(row["candidates_json"])
+    if (
+        isinstance(payload, dict)
+        and payload.get("originating_policy_version") == "activation-complementary-v1"
+    ):
+        return row, payload
+    return None
+
+
+def _complementary_continuation_page(
+    eng: Any, *, cursor: str, row: Any, payload: dict[str, Any]
+) -> dict[str, Any]:
+    offset_data = payload.get("page_offset") or {}
+    offset = (int(offset_data.get("memories", 0)), int(offset_data.get("procedures", 0)))
+    frozen = dict(payload)
+    frozen.pop("page_offset", None)
+    catalog = FrozenActivationCatalog.read(
+        json.dumps(frozen, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    )
+    data, successor = catalog.page(*offset)
+    next_cursor = None
+    if successor is not None:
+        next_cursor = (
+            "cur_"
+            + hashlib.sha256(
+                f"{cursor}:{row['retrieval_id']}:{successor[0]}:{successor[1]}".encode("utf-8")
+            ).hexdigest()[:32]
+        )
+        data["continue_from"] = next_cursor
+    _bounded_activation_response(data, has_cursor=next_cursor is not None)
+    conn = eng.db.connect()
+    try:
+        with conn:
+            if next_cursor:
+                if successor is None:  # pragma: no cover - guarded by next_cursor
+                    raise RuntimeError("cursor successor missing")
+                _store_complementary_cursor(
+                    conn, catalog=catalog, offset=successor, cursor_id=next_cursor
+                )
+            _authorize_continuation_exposure(
+                eng, retrieval_id=str(row["retrieval_id"]), data=data, commit=False
+            )
+    except Exception:
+        conn.rollback()
+        raise
+    return data
+
+
+def _bounded_activation_response(data: dict[str, Any], *, has_cursor: bool) -> None:
+    # Explicit activation catalog envelope, independent of the recall budget.
+    from slowave.mcp.activation_catalog import MAX_PAGE_CHARS
+
+    value = {"ok": True, "data": data}
+    if has_cursor and "continue_from" not in data:
+        data["continue_from"] = "cur_" + "x" * 64
+    if _serialized_chars(value) > MAX_PAGE_CHARS:
+        raise ValueError("unsupported oversized activation page")
+
+
+def _compensate_failed_activation(
+    eng: Any,
+    *,
+    result: dict[str, Any],
+    scope: str,
+    supplied_continuity: str | None,
+    prior_continuity: Any,
+    prior_scope_registry: Any,
+) -> None:
+    """Remove prepared activation rows after response/publication failure."""
+    conn = eng.db.connect()
+    with conn:
+        conn.execute(
+            "DELETE FROM context_recall_events WHERE context_id=?", (result["retrieval_id"],)
+        )
+        conn.execute("DELETE FROM sessions WHERE id=?", (result["session_id"],))
+        continuity_id = result.get("continuity_id")
+        if continuity_id:
+            if prior_continuity is None:
+                conn.execute("DELETE FROM continuities WHERE continuity_id=?", (continuity_id,))
+            else:
+                conn.execute(
+                    "UPDATE continuities SET last_seen_at=? WHERE continuity_id=?",
+                    (prior_continuity["last_seen_at"], continuity_id),
+                )
+        if prior_scope_registry is None:
+            conn.execute("DELETE FROM scope_registry WHERE scope_id=?", (scope,))
+        else:
+            conn.execute(
+                "UPDATE scope_registry SET scope_kind=?,first_seen_ts=?,last_active_ts=?,"
+                "session_count=?,recall_count=? WHERE scope_id=?",
+                (
+                    prior_scope_registry["scope_kind"],
+                    prior_scope_registry["first_seen_ts"],
+                    prior_scope_registry["last_active_ts"],
+                    prior_scope_registry["session_count"],
+                    prior_scope_registry["recall_count"],
+                    scope,
+                ),
+            )
+
+
+def _prepare_complementary_activation(
+    eng: Any, *, result: dict[str, Any], scope: str
+) -> tuple[dict[str, Any], FrozenActivationCatalog, tuple[int, int] | None]:
+    candidates = _activation_candidates(result, scope, preserve_full_source=True)
+    memories = [item["value"] for item in candidates if item["kind"] == "memory"]
+    procedures = [item["value"] for item in candidates if item["kind"] == "procedure"]
+    warnings = []
+    if result.get("scope_warning"):
+        warnings.append({"code": "scope_fragmentation", "message": result["scope_warning"]})
+    metadata: dict[str, Any] = {
+        "memory_state": "cold_start" if result.get("cold_start") else "available",
+        "warnings": warnings,
+        "continuity_id": result["continuity_id"],
+        "continuity_state": result["continuity_state"],
+    }
+    if result.get("applicability_status") == "unavailable":
+        warnings.append(
+            {
+                "code": "applicability_unavailable",
+                "message": "Local relevance reranking unavailable; discovery ordering used.",
+            }
+        )
+    spans = {
+        memory_id: tuple(tuple(span) for span in values)
+        for memory_id, values in (result.get("contribution_spans") or {}).items()
+    }
+    catalog = FrozenActivationCatalog.prepare(
+        retrieval_id=result["retrieval_id"],
+        session_id=result["session_id"],
+        scope=scope,
+        memories=memories,
+        procedures=procedures,
+        contribution_spans=spans,
+        catalog_truncated=bool(result.get("catalog_truncated")),
+        first_page_metadata=metadata,
+    )
+    data, successor = catalog.page()
+    if result.get("retrieval_policy_version") != data["retrieval_policy_version"]:
+        raise CatalogCompatibilityError("prepared activation policy does not match serving policy")
+    return data, catalog, successor
+
+
 def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[str, Any]:
     """Project the internal activation result onto the stable O2 payload."""
     candidates = _activation_candidates(result, scope)
@@ -766,6 +1008,9 @@ def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[
         data["more_available"] = False
     if result.get("retrieval_policy_version"):
         data["retrieval_policy_version"] = result["retrieval_policy_version"]
+    if "relevant_total" in result:
+        data["relevant_total"] = result["relevant_total"]
+        data["catalog_truncated"] = bool(result.get("catalog_truncated"))
 
     budget = (
         _MCP_CONTINUITY_START_RESPONSE_CHARS
@@ -774,13 +1019,19 @@ def _canonical_activation_result(result: dict[str, Any], *, scope: str) -> dict[
     ) - 50  # reserve an opaque continue_from cursor on the final envelope
     # Core memory, procedure outcome/safety, then reinstatement context.
     omitted = False
+    admitted_memories = 0
     for envelope in candidates:
         kind, candidate = envelope["kind"], envelope["value"]
+        if kind == "memory" and admitted_memories >= _MCP_CONTINUATION_PAGE_SIZE:
+            omitted = True
+            continue
         field = "memories" if kind == "memory" else "procedures"
         data[field].append(candidate)
         if _serialized_chars(data) > budget:
             data[field].pop()
             omitted = True
+        elif kind == "memory":
+            admitted_memories += 1
     if omitted and "more_available" in data:
         data["more_available"] = True
         # Metadata must fit too; if it does not, remove lowest-priority context
@@ -881,7 +1132,7 @@ def _canonical_recall_result(
             record["truncated"] = len(content) > _MCP_EVIDENCE_CONTENT_LIMIT
         evidence_records.append(record)
 
-    return {
+    data = {
         "retrieval_id": result["retrieval_id"],
         "memories": memories,
         "procedures": [_canonical_procedure(item, scope) for item in result.get("procedures", [])],
@@ -889,31 +1140,40 @@ def _canonical_recall_result(
         "evidence_mode": evidence,
         "evidence_truncated": len(raw_records) > _MCP_EVIDENCE_LIMIT,
     }
+    for key in ("retrieval_policy_version", "relevant_total", "catalog_truncated"):
+        if key in result:
+            data[key] = result[key]
+    if result.get("applicability_status") == "unavailable":
+        data["warnings"] = [
+            {
+                "code": "applicability_unavailable",
+                "message": "Local relevance reranking unavailable; discovery ordering used.",
+            }
+        ]
+    return data
 
 
 def _focus_recall_data(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Apply the unchanged top-2 focus and the continuation char ceiling."""
+    """Pack actual admitted context under the serialized response ceiling."""
     candidates = _canonical_candidates(data)
     focused = dict(data)
     focused["memories"] = []
     focused["procedures"] = []
-    if len(candidates) > _MCP_CONTINUATION_PAGE_SIZE:
-        focused["more_available"] = True
-        focused["continue_from"] = "cur_" + "x" * 32
-    admitted = 0
+    # Reserve continuation metadata before packing by serialized payload.
+    focused["more_available"] = True
+    focused["continue_from"] = "cur_" + "x" * 32
     for item in candidates:
-        if admitted >= _MCP_CONTINUATION_PAGE_SIZE:
-            break
         key = "memories" if item["kind"] == "memory" else "procedures"
         focused[key].append(item["value"])
         if _serialized_chars(focused) > _MCP_CONTINUATION_RESPONSE_CHARS:
             focused[key].pop()
             continue
-        admitted += 1
     return focused, candidates
 
 
-def _restrict_activation_exposure(eng: Any, *, retrieval_id: str, data: dict[str, Any]) -> None:
+def _restrict_activation_exposure(
+    eng: Any, *, retrieval_id: str, data: dict[str, Any], commit: bool = True
+) -> None:
     """Keep feedback authorization exactly aligned with the serialized reply."""
     exposed = {item["memory_id"] for item in data.get("memories", [])}
     exposed.update(item["procedure_id"] for item in data.get("procedures", []))
@@ -939,7 +1199,8 @@ def _restrict_activation_exposure(eng: Any, *, retrieval_id: str, data: dict[str
             retrieval_id,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _public_facets(facets: dict) -> dict:
@@ -1052,40 +1313,44 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     ) -> dict[str, Any]:
         """Prime working memory with relevant context. Opens an implicit session.
 
-        Call this once at the beginning of every task. Spreading activation surfaces
-        relevant memories and procedures, and opens a server-side session so you
-        never need to call session_start manually.
+            Call this once at the beginning of every task. Spreading activation surfaces
+            relevant memories and procedures, and opens a server-side session so you
+            never need to call session_start manually.
 
-        The cognitive cycle:
-            1. slowave_activate(task, initial_goal, scope)      <- start here
-            2. slowave_remember(content, type, scope)           <- for durable facts
-            3. slowave_recall(query)                            <- mid-task lookup
-            4. slowave_feedback(retrieval_id, feedback, ...)    <- after using memories
-            5. slowave_commit(session_id, outcome, ...)         <- close the task
+            The cognitive cycle:
+                1. slowave_activate(task, initial_goal, scope)      <- start here
+                2. slowave_remember(content, type, scope)           <- for durable facts
+                3. slowave_recall(query)                            <- mid-task lookup
+                4. slowave_feedback(retrieval_id, feedback, ...)    <- after using memories
+                5. slowave_commit(session_id, outcome, ...)         <- close the task
 
-        Args:
-            task: verbatim task description (required, nonblank).
-            initial_goal: concise action-led provisional objective (required, nonblank).
-            scope: required retrieval boundary in ``kind:id`` form.
-            continuity_id: omit on the first client-conversation activation;
-                retain and resend the returned opaque token unchanged on later
-                activations in that conversation. Never invent or reuse it.
-            task_context: optional structured facts that condition retrieval.
+            Args:
+                task: verbatim task description (required, nonblank).
+                initial_goal: concise action-led provisional objective (required, nonblank).
+                scope: required retrieval boundary in ``kind:id`` form.
+                continuity_id: omit on the first client-conversation activation;
+                    retain and resend the returned opaque token unchanged on later
+                    activations in that conversation. Never invent or reuse it.
+                task_context: optional structured facts that condition retrieval.
 
-        Returns:
-            retrieval_id: pass to slowave_feedback.
-            session_id: required by recall and commit.
-            memory_state: cold_start or available for the resolved scope.
-            memories: canonical [{memory_id, content, pathway, provenance?}].
-            procedures: execution-backed procedures, pending O4 canonicalization.
-            warnings: stable structured safety warnings.
-            continuity_id: server-issued opaque client-conversation token.
-            continuity_state: started on omission, continued on valid reuse.
-            retrieval_policy_version: server-selected retrieval-policy identifier.
-            more_available: whether a frozen continuation page is available.
-            continue_from: opaque continuation cursor, present only when more_available.
-            accessible_field: bounded orientation for unreturned candidates;
-                contains extra_candidates, kinds, and approx_extra_tokens, never content.
+            Returns:
+                retrieval_id: pass to slowave_feedback.
+                session_id: required by recall and commit.
+                memory_state: cold_start or available for the resolved scope.
+                memories: canonical [{memory_id, content, pathway, provenance?}].
+                procedures: execution-backed procedures, pending O4 canonicalization.
+                warnings: stable structured safety warnings.
+                continuity_id: server-issued opaque client-conversation token.
+                continuity_state: started on omission, continued on valid reuse.
+        retrieval_policy_version: server-selected retrieval-policy identifier.
+        relevant_total: number of discovered relevance-qualified declarative
+            memories in a relevant-set response.
+        catalog_truncated: true when the bounded candidate search could have
+            omitted qualifying memories; false does not include procedure results.
+                more_available: whether a frozen continuation page is available.
+                continue_from: opaque continuation cursor, present only when more_available.
+        accessible_field: bounded orientation for unreturned candidates;
+                    contains extra_candidates, kinds, and approx_extra_tokens, never content.
         """
         try:
             request = ActivateArguments.model_validate(
@@ -1109,10 +1374,31 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     "field_errors": field_errors,
                 },
             }
+        published_result: dict[str, Any] | None = None
+        prior_resolver_binding: str | None = None
+        prior_continuity: Any = None
+        prior_scope_registry: Any = None
+        prepared_eng: Any = None
         try:
             _validate_scope(request.scope)
             provenance = _integration_provenance(ctx)
             eng = build_engine(disable_encoder=False)
+            prepared_eng = eng
+            prior_resolver_binding = (
+                session_resolver.snapshot().get(request.scope, {}).get("session_id")
+            )
+            conn = eng.db.connect()
+            prior_continuity = (
+                conn.execute(
+                    "SELECT * FROM continuities WHERE continuity_id=?",
+                    (request.continuity_id,),
+                ).fetchone()
+                if request.continuity_id
+                else None
+            )
+            prior_scope_registry = conn.execute(
+                "SELECT * FROM scope_registry WHERE scope_id=?", (request.scope,)
+            ).fetchone()
             result = ops.activate(
                 eng,
                 query=request.task,
@@ -1123,16 +1409,55 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 semantic_context=request.semantic_context,
                 continuity_id=request.continuity_id,
                 mode="strict_scope",
-                limit=_MCP_ACTIVATE_LIMIT_DEFAULT,
+                limit=ops.task_facet_limit(
+                    request.task,
+                    base_limit=_MCP_ACTIVATE_LIMIT_DEFAULT,
+                    max_limit=_MCP_ACTIVATE_LIMIT_MAX,
+                ),
                 agent=f"mcp:{provenance['integration']}",
                 include_peripheral=False,
                 include_schemas=True,
                 include_diagnostics=False,
                 manage_continuity=True,
                 continuity_integration=str(provenance["integration"]),
+                relevant_set=True,
+                complementary_activation=True,
             )
-            session_resolver.bind(request.scope, result["session_id"])
-            asyncio.create_task(
+            published_result = result
+            data, frozen_catalog, successor = _prepare_complementary_activation(
+                eng, result=result, scope=request.scope
+            )
+            next_cursor = None
+            if successor is not None:
+                next_cursor = "cur_" + secrets.token_urlsafe(24)
+                data["continue_from"] = next_cursor
+            _bounded_activation_response(data, has_cursor=next_cursor is not None)
+            # Cursor creation, first-page exposure and the implicit resolver
+            # binding publish in one transaction; on failure the prior
+            # binding is restored below before yielding.
+            conn = eng.db.connect()
+            try:
+                with conn:
+                    if next_cursor:
+                        if successor is None:  # pragma: no cover - guarded above
+                            raise RuntimeError("cursor successor missing")
+                        _store_complementary_cursor(
+                            conn,
+                            catalog=frozen_catalog,
+                            offset=successor,
+                            cursor_id=next_cursor,
+                        )
+                    session_resolver.bind(request.scope, result["session_id"])
+                    _restrict_activation_exposure(
+                        eng, retrieval_id=result["retrieval_id"], data=data, commit=False
+                    )
+            except Exception:
+                session_resolver.clear(request.scope)
+                if prior_resolver_binding:
+                    session_resolver.bind(request.scope, prior_resolver_binding)
+                conn.rollback()
+                raise
+            _spawn_bg_task(
                 _bg_log_event(
                     eng,
                     result["session_id"],
@@ -1141,21 +1466,23 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     {"provenance": provenance},
                 )
             )
-            data = _canonical_activation_result(result, scope=request.scope)
-            all_candidates = _activation_candidates(result, request.scope)
-            exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
-            exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
-            _attach_frozen_tail(
-                eng,
-                data=data,
-                candidates=all_candidates,
-                session_id=result["session_id"],
-                scope=request.scope,
-                exposed_ids=exposed_ids,
-            )
-            _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
             return {"ok": True, "data": data}
         except Exception as e:
+            if prepared_eng is not None and published_result is not None:
+                try:
+                    _compensate_failed_activation(
+                        prepared_eng,
+                        result=published_result,
+                        scope=request.scope,
+                        supplied_continuity=request.continuity_id,
+                        prior_continuity=prior_continuity,
+                        prior_scope_registry=prior_scope_registry,
+                    )
+                except Exception:
+                    log.exception("failed to compensate unpublished activation state")
+                session_resolver.clear(request.scope)
+                if prior_resolver_binding:
+                    session_resolver.bind(request.scope, prior_resolver_binding)
             log.error("slowave_activate failed: %s", e, exc_info=True)
             return {
                 "ok": False,
@@ -1196,6 +1523,11 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 per-record truncated.
             evidence_mode: the applied references or full mode.
             evidence_truncated: whether evidence records exceeded the response budget.
+            retrieval_policy_version: server-selected retrieval-policy identifier.
+            relevant_total: number of discovered relevance-qualified declarative
+                memories in a relevant-set response.
+            catalog_truncated: true when the bounded candidate search could have
+                omitted qualifying memories.
             more_available: whether a frozen continuation page is available.
             continue_from: opaque continuation cursor, present only when more_available.
             accessible_field: bounded orientation for unreturned candidates;
@@ -1248,6 +1580,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 mode="strict_scope",
                 task_context=request.task_context,
                 semantic_context=request.semantic_context,
+                relevant_set=True,
             )
             full_data = _canonical_recall_result(
                 result, scope=request.scope, evidence=request.evidence
@@ -1265,7 +1598,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             )
             _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
             response = {"ok": True, "data": data}
-            asyncio.create_task(
+            _spawn_bg_task(
                 _bg_log_event(
                     eng,
                     request.session_id,

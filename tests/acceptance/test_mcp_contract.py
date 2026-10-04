@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from slowave.dashboard.app import _retrievals_payload
 from tests.acceptance.mcp_harness import (
     assert_acceptance_mutation_is_caught,
     open_harness,
@@ -58,6 +59,36 @@ def test_commit_rejects_malformed_nested_payload_with_structured_error(tmp_path:
             # can correct the payload and close this same active session.
             await harness.feedback_all(activation)
             await harness.commit(activation["session_id"], "validate commit payload contract")
+
+    _run(scenario())
+
+
+def test_commit_accepts_a_valid_procedure_deduplication_key(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with open_harness(tmp_path / "commit-deduplication-key.db") as harness:
+            activation, _ = await harness.activate(
+                "commit_deduplication_key",
+                "Record the checkout repair procedure.",
+                "record checkout repair procedure",
+                "project:contract",
+            )
+            await harness.feedback_all(activation)
+            result, _ = await harness.raw_call(
+                "slowave_commit",
+                {
+                    "session_id": activation["session_id"],
+                    "final_goal": "record checkout repair procedure",
+                    "outcome": "success",
+                    "outcome_summary": "The repair procedure was recorded.",
+                    "verification": {"status": "verified", "summary": "Procedure tested."},
+                    "procedure": {
+                        "summary": "Repair checkout and verify recovery.",
+                        "deduplication_key": "checkout_repair",
+                        "steps": [{"summary": "Inspect checkout."}],
+                    },
+                },
+            )
+            assert result["ok"] is True
 
     _run(scenario())
 
@@ -300,7 +331,7 @@ def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Pat
                 "store billing policies",
                 scope,
             )
-            for index in range(6):
+            for index in range(40):
                 await harness.remember(
                     f"Billing policy section {index} uses ledger code {1000 + index}.",
                     "fact",
@@ -314,7 +345,7 @@ def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Pat
                 activation["session_id"],
                 scope,
             )
-            assert len(first["memories"]) <= 2
+            assert 5 < len(first["memories"]) < 40
             assert first["more_available"] is True
             assert first["continue_from"].startswith("cur_")
             assert set(first["accessible_field"]) == {
@@ -348,7 +379,7 @@ def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Pat
                     },
                 )
             assert len(seen) == len(set(seen))
-            assert len(seen) >= 6
+            assert len(seen) == 40
             assert page["accessible_field"] == {}
 
             wrong_scope, _ = await harness.raw_call(
@@ -364,9 +395,155 @@ def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Pat
     _run(scenario())
 
 
+def test_activation_pages_one_hundred_explicit_relevant_memories(tmp_path: Path) -> None:
+    """The complete catalog is reachable through payload-sized pages."""
+
+    async def scenario() -> None:
+        scope = "project:catalog"
+
+        def marker(index: int) -> str:
+            # Alphabetic terms stay distinct under SQLite's default tokenizer.
+            value = index
+            chars = []
+            while True:
+                chars.append(chr(ord("a") + value % 26))
+                value //= 26
+                if value == 0:
+                    return "marker" + "".join(reversed(chars))
+
+        async with open_harness(tmp_path / "catalog-100.db") as harness:
+            seed, _ = await harness.activate(
+                "catalog_seed", "Seed catalog fixture", "seed catalog fixture", scope
+            )
+            memories = [
+                {
+                    "content": f"Catalog requirement {index}: preserve {marker(index)} with a timeout of {index + 10} seconds.",
+                    "type": "fact",
+                }
+                for index in range(100)
+            ]
+            stored_ids = await harness.remember_batch(memories, seed["session_id"], scope)
+            assert len(set(stored_ids)) == 100
+            await harness.feedback_all(seed)
+            await harness.commit(seed["session_id"], "seed catalog fixture")
+
+            task = "Review all catalog requirements:\n" + "\n".join(
+                f"{index + 1}. preserve {marker(index)}" for index in range(100)
+            )
+            first, _ = await harness.activate(
+                "catalog_100", task, "recover every catalog requirement", scope
+            )
+            assert first["retrieval_policy_version"] == "activation-complementary-v1"
+            assert first["relevant_total"] == 100
+            # 101 task cues exceed the bounded fan-out cap, so the catalog
+            # honestly reports that independent per-need searching may have
+            # hidden qualifying candidates; the union still recovered all 100.
+            assert first["catalog_truncated"] is True
+            assert 10 < len(first["memories"]) < 100
+            assert first["more_available"] is True
+
+            def displayed_count():
+                rows = _retrievals_payload(str(tmp_path / "catalog-100.db"), {})["retrievals"]
+                row = next(r for r in rows if r["context_id"] == first["retrieval_id"])
+                return row["memory_count"]
+
+            seen = [item["memory_id"] for item in first["memories"]]
+            assert displayed_count() == len(seen) < 100
+            page = first
+            while page["more_available"]:
+                input_cursor = page["continue_from"]
+                page, _ = await harness.call(
+                    "slowave_recall",
+                    {
+                        "continue_from": page["continue_from"],
+                        "session_id": first["session_id"],
+                        "scope": scope,
+                    },
+                )
+                seen.extend(item["memory_id"] for item in page["memories"])
+                assert displayed_count() == len(set(seen))
+                replay, _ = await harness.call(
+                    "slowave_recall",
+                    {
+                        "continue_from": input_cursor,
+                        "session_id": first["session_id"],
+                        "scope": scope,
+                    },
+                )
+                assert replay == page
+                assert displayed_count() == len(set(seen))
+            assert len(seen) == 100
+            assert len(seen) == len(set(seen))
+            assert page["more_available"] is False
+            assert page["accessible_field"] == {}
+
+    _run(scenario())
+
+
 def test_feedback_enforcement_mutation_fails_the_complete_feedback_contract() -> None:
     """Disabling commit feedback enforcement must make this contract fail."""
     assert_acceptance_mutation_is_caught(
         "feedback_enforcement",
         "tests/acceptance/test_mcp_contract.py::test_commit_requires_complete_feedback_for_every_returned_memory",
     )
+
+
+def test_complementary_activation_delivers_twelve_short_memories_without_count_cap(
+    tmp_path: Path,
+) -> None:
+    """A short complete catalog is delivered without five/ten item targets."""
+
+    async def scenario() -> None:
+        scope = "project:complementary-public"
+        markers = [f"marker{chr(ord('a') + i)}" for i in range(12)]
+        task = (
+            "Prepare the Atlas deployment and preserve every listed validation marker:\n"
+            + "\n".join(
+                f"{index + 1}. preserve {marker} for validation"
+                for index, marker in enumerate(markers)
+            )
+        )
+        async with open_harness(tmp_path / "complementary-public.db") as harness:
+            seed, _ = await harness.activate(
+                "complementary_seed", "Seed activation facts", "seed activation facts", scope
+            )
+            await harness.remember_batch(
+                [
+                    {
+                        "content": f"Atlas validation must preserve {marker} before deployment.",
+                        "type": "fact",
+                    }
+                    for marker in markers
+                ],
+                seed["session_id"],
+                scope,
+            )
+            await harness.feedback_all(seed)
+            await harness.commit(seed["session_id"], "seed activation facts")
+
+            first, _ = await harness.activate(
+                "complementary_page_one", task, "Prepare the Atlas deployment", scope
+            )
+            assert first["retrieval_policy_version"] == "activation-complementary-v1"
+            assert first["relevant_total"] == 12
+            assert len(first["memories"]) == 12
+            assert first["more_available"] is False
+            assert "continue_from" not in first
+            first_content = " ".join(item["content"] for item in first["memories"])
+            assert sum(marker in first_content for marker in markers) == 12
+
+            feedback, _ = await harness.call(
+                "slowave_feedback",
+                {
+                    "retrieval_id": first["retrieval_id"],
+                    "memory_feedback": [
+                        {"memory_id": item["memory_id"], "assessment": "used"}
+                        for item in first["memories"]
+                    ],
+                    "coverage": "complete",
+                },
+            )
+            assert feedback["rejected"] == [], feedback
+            await harness.commit(first["session_id"], "complete complementary activation dogfood")
+
+    _run(scenario())
