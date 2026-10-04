@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -178,77 +177,107 @@ function Availability({ home }: { home: Json }) {
   );
 }
 
-function ActivityLanes({ data }: { data?: Json }) {
-  const [hovered, setHovered] = useState<{
-    x: number;
-    y: number;
-    ts: string;
-    values: { key: string; label: string; n: number }[];
-  } | null>(null);
-  const chartRef = useRef<HTMLDivElement>(null);
+const formationSeries = [
+  { key: "schemas", label: "Memories" },
+  { key: "procedures", label: "Procedures" },
+] as const;
+
+const clampNumber = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
+
+/** Smooth cubic path through the points, clamped so it never overshoots. */
+function smoothFormationPath(points: { x: number; y: number }[]): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] || points[index];
+    const current = points[index];
+    const next = points[index + 1];
+    const after = points[index + 2] || next;
+    const tension = 0.18;
+    const controlOneX = current.x + (next.x - previous.x) * tension;
+    const controlOneY = clampNumber(
+      current.y + (next.y - previous.y) * tension,
+      Math.min(current.y, next.y),
+      Math.max(current.y, next.y),
+    );
+    const controlTwoX = next.x - (after.x - current.x) * tension;
+    const controlTwoY = clampNumber(
+      next.y - (after.y - current.y) * tension,
+      Math.min(current.y, next.y),
+      Math.max(current.y, next.y),
+    );
+    path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)} ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+  return path;
+}
+
+/**
+ * Home activity view, narrowed to what a user actually cares about: durable
+ * memories and reusable procedures formed in the selected period. Raw events
+ * and episodes stay in the API payload but are deliberately not shown here.
+ */
+function MemoryFormationChart({ data }: { data?: Json }) {
   const [visible, setVisible] = useState<Record<string, boolean>>({
-    raw_events: true,
-    episodes: true,
     schemas: true,
     procedures: true,
   });
+  const [hovered, setHovered] = useState<{
+    x: number;
+    y: number;
+    index: number;
+  } | null>(null);
+  const chartRef = useRef<HTMLDivElement>(null);
   const channels = data?.channels || {};
-  const definitions = [
-    ["raw_events", "Raw Events"],
-    ["episodes", "Episodes"],
-    ["schemas", "Memories"],
-    ["procedures", "Procedures"],
-  ] as const;
-  const nonzero = definitions.reduce(
-    (sum, [key]) =>
-      sum + (channels[key] || []).filter((item: any) => item.n > 0).length,
-    0,
-  );
-  if (nonzero < 3) return null;
-  const shownDefinitions = definitions.filter(([key]) => visible[key]);
-  const timestamps = Array.from(
+  const timestamps: string[] = Array.from(
     new Set(
-      definitions.flatMap(([key]) =>
+      formationSeries.flatMap(({ key }) =>
         (channels[key] || []).map((bucket: any) => String(bucket.ts)),
       ),
     ),
-  ).sort();
-  const valuesByTimestamp = timestamps.map((ts) =>
-    definitions.map(([key]) =>
+  ).sort((a, b) => Number(a) - Number(b));
+  const seriesValues = formationSeries.map(({ key }) =>
+    timestamps.map((ts) =>
       Number(
         (channels[key] || []).find((bucket: any) => String(bucket.ts) === ts)?.n ||
           0,
       ),
     ),
   );
+  const seriesTotals = seriesValues.map((values) =>
+    values.reduce((sum, value) => sum + value, 0),
+  );
+  const shownSeries = formationSeries
+    .map((definition, index) => ({ ...definition, index }))
+    .filter((definition) => visible[definition.key]);
+  const hasActivity = seriesValues.some((values) =>
+    values.some((value) => value > 0),
+  );
   const width = 900,
-    chartHeight = 180,
+    chartHeight = 208,
     // Reserve enough room for grouped counts (for example, "10,000") so
     // right-aligned Y-axis labels remain inside the SVG viewport.
     left = 56,
     right = 28,
+    top = 18,
+    baseline = 176,
     plotWidth = width - left - right,
-    baseline = 156,
-    maxBarHeight = 146,
-    maxTotal = Math.max(
-      1,
-      ...valuesByTimestamp.map((values) =>
-        shownDefinitions.reduce(
-          (sum, [key]) => sum + values[definitions.findIndex(([candidate]) => candidate === key)],
-          0,
-        ),
-      ),
-    );
-  const rawTickStep = maxTotal / 4;
+    maxBarHeight = baseline - top,
+    maxValue = Math.max(1, ...shownSeries.flatMap(({ index }) => seriesValues[index]));
+  const rawTickStep = maxValue / 4;
   const tickMagnitude = rawTickStep > 0 ? 10 ** Math.floor(Math.log10(rawTickStep)) : 1;
   const tickFraction = rawTickStep / tickMagnitude;
   const tickStep =
     (tickFraction <= 1 ? 1 : tickFraction <= 2 ? 2 : tickFraction <= 5 ? 5 : 10) *
     tickMagnitude;
-  const axisMax = Math.max(1, Math.ceil(maxTotal / tickStep) * tickStep);
+  const axisMax = Math.max(tickStep, Math.ceil(maxValue / tickStep) * tickStep);
   const axisTicks = Array.from({ length: 5 }, (_, index) => axisMax - index * tickStep).filter(
     (value) => value >= 0,
   );
+  const slot = plotWidth / Math.max(1, timestamps.length);
+  const xForIndex = (index: number) => left + index * slot + slot / 2;
+  const yForValue = (value: number) => baseline - (value / axisMax) * maxBarHeight;
   const xTickIndices = Array.from(
     new Set(
       Array.from({ length: Math.min(6, timestamps.length) }, (_, index) =>
@@ -264,137 +293,186 @@ function ActivityLanes({ data }: { data?: Json }) {
       ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       : date.toLocaleDateString([], { month: "short", day: "numeric" });
   };
-  const showBucket = (event: React.MouseEvent<SVGRectElement>, index: number, ts: string) => {
+  const trackHover = (event: React.MouseEvent<SVGRectElement>) => {
     const bounds = chartRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const tooltipWidth = Math.min(240, Math.max(0, bounds.width - 24));
-    const pointerX = event.clientX - bounds.left + 12;
+    if (!bounds || timestamps.length === 0) return;
+    const svgX = ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * width;
+    const index = clampNumber(
+      Math.floor((svgX - left) / Math.max(1, slot)),
+      0,
+      timestamps.length - 1,
+    );
+    const tooltipWidth = Math.min(220, Math.max(0, bounds.width - 24));
     setHovered({
-      x: Math.max(12, Math.min(pointerX, bounds.width - tooltipWidth - 12)),
-      y: event.clientY - bounds.top + 12,
-      ts,
-      values: definitions.map(([key, label], valueIndex) => ({
-        key,
-        label,
-        n: valuesByTimestamp[index]?.[valueIndex] || 0,
-      })),
+      x: Math.max(
+        12,
+        Math.min(event.clientX - bounds.left + 14, bounds.width - tooltipWidth - 12),
+      ),
+      y: Math.max(8, event.clientY - bounds.top - 10),
+      index,
     });
   };
   return (
     <Section
       title={
         <>
-          Recent activity
-          <DefinitionTooltip label="Recent activity definition">
-            Raw events are individual observations Slowave captures. Episodes
-            group related observations into a past interaction. Memories are
-            durable facts or guidance distilled from those episodes for future
-            retrieval. Procedures are reusable step-by-step methods captured
+          Memory formation
+          <DefinitionTooltip label="Memory formation definition">
+            New durable memories and reusable procedures created in the selected
+            period. Memories are facts or guidance distilled from past
+            interactions; procedures are reusable step-by-step methods captured
             from completed work.
           </DefinitionTooltip>
         </>
       }
-    >
-      <div
-        className="lane-chart"
-        ref={chartRef}
-      >
-        <svg
-          viewBox={`0 0 ${width} ${chartHeight}`}
-          role="img"
-          aria-label="Stacked activity chart for Raw Events, Episodes, Memories, and Procedures"
-        >
-          {axisTicks.map((value) => {
-            const y = baseline - (value / axisMax) * maxBarHeight;
-            return (
-              <g key={value}>
-                <line className="lane-gridline" x1={left} x2={width - right} y1={y} y2={y} />
-                <text className="lane-axis-label" x={left - 8} y={y + 4} textAnchor="end">
-                  {value.toLocaleString()}
-                </text>
-              </g>
-            );
-          })}
-          <line x1={left} x2={width - right} y1={baseline} y2={baseline} />
-          {xTickIndices.map((index) => {
-            const slot = plotWidth / Math.max(1, timestamps.length);
-            const x = left + index * slot + slot / 2;
-            const isFirst = index === xTickIndices[0];
-            const isLast = index === xTickIndices[xTickIndices.length - 1];
-            return (
-              <g key={`x-${timestamps[index]}`}>
-                <line className="lane-tick" x1={x} x2={x} y1={baseline} y2={baseline + 5} />
-                <text
-                  className="lane-axis-label"
-                  x={isFirst ? left : isLast ? width - right : x}
-                  y={baseline + 19}
-                  textAnchor={isFirst ? "start" : isLast ? "end" : "middle"}
-                >
-                  {formatAxisTime(timestamps[index])}
-                </text>
-              </g>
-            );
-          })}
-          {timestamps.map((ts, index) => {
-            const slot = plotWidth / Math.max(1, timestamps.length);
-            const values = valuesByTimestamp[index];
-            let offset = 0;
-            return (
-              <g key={ts}>
-                {shownDefinitions.map(([key, label]) => {
-                  const definitionIndex = definitions.findIndex(([candidate]) => candidate === key);
-                  const n = values[definitionIndex] || 0;
-                  const height = (n / axisMax) * maxBarHeight;
-                  const y = baseline - offset - height;
-                  offset += height;
-                  return (
-                    <rect
-                      key={key}
-                      className={`lane-${key}`}
-                      x={left + index * slot + 1}
-                      y={y}
-                      width={Math.max(1, slot - 2)}
-                      height={height}
-                    >
-                      <title>
-                        {label}: {n} · {formatDate(ts)}
-                      </title>
-                    </rect>
-                  );
-                })}
-                <rect
-                  className="lane-hit-area"
-                  x={left + index * slot + 1}
-                  y={baseline - maxBarHeight}
-                  width={Math.max(1, slot - 2)}
-                  height={maxBarHeight}
-                  onMouseEnter={(event) => showBucket(event, index, ts)}
-                  onMouseMove={(event) => showBucket(event, index, ts)}
-                  onMouseLeave={() => setHovered(null)}
-                />
-              </g>
-            );
-          })}
-        </svg>
-        <div className="lane-chart-controls lane-toggles" aria-label="Visible activity lanes">
-          {definitions.map(([key, label]) => (
+      actions={
+        <div className="formation-legend" aria-label="Visible series">
+          {formationSeries.map(({ key, label }, index) => (
             <button
               type="button"
               key={key}
-              className={`lane-toggle lane-toggle-${key}`}
+              className={`formation-legend-item formation-legend-${key}`}
               aria-pressed={visible[key]}
               onClick={() =>
                 setVisible((current) => ({ ...current, [key]: !current[key] }))
               }
             >
+              <i aria-hidden="true" />
               {label}
+              <b>{seriesTotals[index].toLocaleString()}</b>
             </button>
           ))}
         </div>
-        {hovered && <div className="lane-tooltip" style={{ left: hovered.x, top: hovered.y }}>
-          <strong>{formatDate(hovered.ts)}</strong>
-          {hovered.values.map((item) => <span className={`lane-tooltip-${item.key}`} key={item.key}><i aria-hidden="true" />{item.label}: {item.n.toLocaleString()}</span>)}
-        </div>}
+      }
+    >
+      <div className="formation-chart" ref={chartRef}>
+        {!hasActivity ? (
+          <EmptyState title="No memories formed yet">
+            New memories and procedures will appear here once Slowave
+            consolidates captured activity in the selected period.
+          </EmptyState>
+        ) : (
+          <>
+            <svg
+              viewBox={`0 0 ${width} ${chartHeight}`}
+              role="img"
+              aria-label="Memories and procedures formed over the selected period"
+            >
+              <defs>
+                {formationSeries.map(({ key }) => (
+                  <linearGradient
+                    key={key}
+                    id={`formation-fill-${key}`}
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop className={`formation-stop-top formation-stop-${key}`} offset="0%" />
+                    <stop className={`formation-stop-bottom formation-stop-${key}`} offset="100%" />
+                  </linearGradient>
+                ))}
+              </defs>
+              {axisTicks.map((value) => {
+                const y = yForValue(value);
+                return (
+                  <g key={value}>
+                    <line className="formation-gridline" x1={left} x2={width - right} y1={y} y2={y} />
+                    <text className="formation-axis-label" x={left - 8} y={y + 4} textAnchor="end">
+                      {value.toLocaleString()}
+                    </text>
+                  </g>
+                );
+              })}
+              <line
+                className="formation-baseline"
+                x1={left}
+                x2={width - right}
+                y1={baseline}
+                y2={baseline}
+              />
+              {xTickIndices.map((index) => {
+                const x = xForIndex(index);
+                const isFirst = index === xTickIndices[0];
+                const isLast = index === xTickIndices[xTickIndices.length - 1];
+                return (
+                  <g key={`x-${timestamps[index]}`}>
+                    <line className="formation-tick" x1={x} x2={x} y1={baseline} y2={baseline + 5} />
+                    <text
+                      className="formation-axis-label"
+                      x={isFirst ? left : isLast ? width - right : x}
+                      y={baseline + 19}
+                      textAnchor={isFirst ? "start" : isLast ? "end" : "middle"}
+                    >
+                      {formatAxisTime(timestamps[index])}
+                    </text>
+                  </g>
+                );
+              })}
+              {hovered && timestamps[hovered.index] !== undefined && (
+                <line
+                  className="formation-crosshair"
+                  x1={xForIndex(hovered.index)}
+                  x2={xForIndex(hovered.index)}
+                  y1={top}
+                  y2={baseline}
+                />
+              )}
+              {shownSeries.map(({ key, index }) => {
+                const points = seriesValues[index].map((value, pointIndex) => ({
+                  x: xForIndex(pointIndex),
+                  y: yForValue(value),
+                }));
+                const line = smoothFormationPath(points);
+                const area = `${line} L ${points[points.length - 1].x} ${baseline} L ${points[0].x} ${baseline} Z`;
+                return (
+                  <g key={key} className={`formation-series formation-series-${key}`}>
+                    <path
+                      className="formation-area"
+                      d={area}
+                      fill={`url(#formation-fill-${key})`}
+                    />
+                    <path className="formation-line" d={line} pathLength={1} />
+                    {timestamps.length <= 48
+                      ? points.map((point, pointIndex) => (
+                          <circle
+                            className={`formation-dot ${hovered?.index === pointIndex ? "formation-dot-active" : ""}`}
+                            key={`${key}-${pointIndex}`}
+                            cx={point.x}
+                            cy={point.y}
+                            r={hovered?.index === pointIndex ? 4 : 2.4}
+                          />
+                        ))
+                      : null}
+                  </g>
+                );
+              })}
+              <rect
+                className="formation-hit-area"
+                x={left}
+                y={top}
+                width={plotWidth}
+                height={maxBarHeight}
+                onMouseMove={trackHover}
+                onMouseLeave={() => setHovered(null)}
+              />
+            </svg>
+            {hovered && (
+              <div
+                className="formation-tooltip"
+                style={{ left: hovered.x, top: hovered.y }}
+              >
+                <strong>{formatDate(timestamps[hovered.index])}</strong>
+                {shownSeries.map(({ key, label, index }) => (
+                  <span className={`formation-tooltip-${key}`} key={key}>
+                    <i aria-hidden="true" />
+                    {label}: {seriesValues[index][hovered.index].toLocaleString()}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </Section>
   );
@@ -475,7 +553,7 @@ export function HomePage({ location }: PageProps) {
         home && (
           <>
             <Availability home={home} />
-            <ActivityLanes data={home.activity} />
+            <MemoryFormationChart data={home.activity} />
             {home.effectiveness ? (
               <MemoryEffectiveness data={home.effectiveness} summary={home.at_a_glance} />
             ) : (
@@ -773,15 +851,7 @@ export function MemoryPage({ location }: PageProps) {
   const page = pageNumber(location);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const memoryColumns = [
-    { id: "memory", label: "Memory" }, { id: "state", label: "State" }, { id: "salience", label: "Salience" }, { id: "scope", label: "Scope" },
-    { id: "changed", label: "Last changed" }, { id: "retrieved", label: "Retrieved", description: "Distinct retrieval events that admitted this memory." },
-    { id: "used", label: "Used", description: "Distinct retrieval events explicitly assessed as used." }, { id: "use_rate", label: "Use rate" },
-    { id: "last_used", label: "Last used" }, { id: "created", label: "Created" }, { id: "evidence", label: "Supporting evidence" },
-    { id: "irrelevant", label: "Irrelevant" }, { id: "stale", label: "Stale feedback" }, { id: "wrong", label: "Wrong feedback" },
-    { id: "related", label: "Related memories" }, { id: "source_activity", label: "Source activity count" },
-  ];
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(["memory", "state", "salience", "scope", "changed", "use_rate", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["memory", "state", "salience", "scope", "changed", "use_rate", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
@@ -1333,13 +1403,6 @@ export function RetrievalPage({ location }: PageProps) {
     ["harmed", "Harmful"],
     ["unknown", "Unknown"],
   ] as const;
-  const retrievalColumns = [
-    { id: "when", label: "When" }, { id: "task", label: "Task / query" }, { id: "type", label: "Type" }, { id: "scope", label: "Scope" },
-    { id: "retrieved", label: "Retrieved" }, { id: "used", label: "Used" },
-    { id: "effect", label: "Effect" }, { id: "feedback", label: "Feedback" }, { id: "memories_retrieved", label: "Memories retrieved" },
-    { id: "procedures_retrieved", label: "Procedures retrieved" }, { id: "not_used", label: "Not used" }, { id: "irrelevant", label: "Irrelevant" },
-    { id: "stale", label: "Stale" }, { id: "wrong", label: "Wrong" }, { id: "unknown", label: "Unknown" }, { id: "session", label: "Session ID" },
-  ];
   const retrievalColumnHelp: Record<string, string> = {
     when: "When this retrieval was recorded.",
     task: "The task, goal, or query that prompted the retrieval.",
@@ -1366,7 +1429,7 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "feedback"]);
+  const [visibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "feedback"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1881,12 +1944,7 @@ export function ProceduresPage({ location }: PageProps) {
   const sort = param(location, "sort", "recent");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
-  const procedureColumns = [
-    { id: "procedure", label: "Procedure" }, { id: "scope", label: "Scope" }, { id: "outcome", label: "Outcome" }, { id: "verification", label: "Verification" },
-    { id: "created", label: "Created" }, { id: "retrieved", label: "Retrieved" }, { id: "used", label: "Used" }, { id: "effect", label: "Effect" }, { id: "last_used", label: "Last used" },
-    { id: "use_rate", label: "Use rate" }, { id: "helped", label: "Helpful count" }, { id: "no_effect", label: "No-effect count" }, { id: "harmed", label: "Harmful count" }, { id: "unknown", label: "Unknown count" }, { id: "feedback_coverage", label: "Feedback coverage" }, { id: "last_retrieved", label: "Last retrieved" }, { id: "source_activity", label: "Source activity / session" },
-  ];
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(["procedure", "scope", "outcome", "verification", "created", "retrieved", "used", "effect", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["procedure", "scope", "outcome", "verification", "created", "retrieved", "used", "effect", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
     `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}`,
@@ -2798,9 +2856,6 @@ export function DiagnosticsPage({}: PageProps) {
       setRunDir("desc");
     }
   };
-  const workerAvailable = Boolean(
-    status.data?.processes?.some((item: any) => item.kind === "worker"),
-  );
   const databaseHealthValue = (value: unknown) =>
     database.data ? String(value || "Unavailable") : database.loading ? "Checking…" : "Unavailable";
   const databaseHealthSecondary = database.data && database.error
@@ -3077,36 +3132,6 @@ function WorkerRunDetail({ run, onClose }: { run: any; onClose: () => void }) {
     </Inspector>
   );
 }
-function ServiceRow({
-  label,
-  state,
-  observed,
-  source,
-  detail,
-  remediation,
-}: {
-  label: string;
-  state: string;
-  observed: any;
-  source: string;
-  detail: string;
-  remediation: string;
-}) {
-  return (
-    <div className="service-row">
-      <div>
-        <strong>{label}</strong>
-        <StatusBadge value={state} />
-      </div>
-      <p>{detail}</p>
-      <span>
-        {source} · {observed ? formatDate(observed) : "Not observed"}
-      </span>
-      <small>{remediation}</small>
-    </div>
-  );
-}
-
 export function GraphPage() {
   const [selectedSchema, setSelectedSchema] = useState("");
   const [graphScope, setGraphScope] = useState("");
