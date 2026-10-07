@@ -212,6 +212,7 @@ class GatePolicy:
     allowed_classes: tuple[str, ...] = _DEFAULT_ALLOWED_CLASSES
     excluded_layers: tuple[str, ...] = _DEFAULT_EXCLUDED_LAYERS
     excluded_source_kinds: tuple[str, ...] = _DEFAULT_EXCLUDED_SOURCES
+    allow_multi_sentence: bool = False
 
     @classmethod
     def catalog_bound(cls, candidates: int) -> "GatePolicy":
@@ -742,7 +743,11 @@ class WorkingMemoryGate:
         # Catches untagged legacy schemas that predate schema_class tagging at consolidation.
         schema_class = _lower(facets.get("schema_class"))
         source_kind = _source_kind(facets)
-        if schema_class != "episodic_summary" and source_kind != "explicit_remember":
+        if (
+            not policy.allow_multi_sentence
+            and schema_class != "episodic_summary"
+            and source_kind != "explicit_remember"
+        ):
             sentence_count = len(re.findall(r"[.!?]", text))
             text_length = len(text)
             if (sentence_count >= 3 or text_length > 300) and cue.mode not in ("broad", "debug"):

@@ -522,6 +522,7 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   target_id            TEXT NOT NULL,
   replacement_target_id TEXT,
   assessment           TEXT,
+  relevance            TEXT,
   stale_reason         TEXT,
   effect               TEXT,
   contribution         TEXT,
@@ -544,6 +545,23 @@ CREATE INDEX IF NOT EXISTS idx_feedback_events_retrieval ON feedback_events(retr
 CREATE INDEX IF NOT EXISTS idx_feedback_events_target ON feedback_events(target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_events_created ON feedback_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_feedback_events_source ON feedback_events(source_contract, source_feedback_id);
+
+-- Canonical declarative learning projection bookkeeping (WP-2).
+-- Declarative learning is recomputed from feedback_events as an absolute
+-- target value instead of an in-place tally: adopted_* records the view
+-- attribution already reflected in the stored value at adoption;
+-- applied_extra_* accumulates the effective (post-clamp) deltas applied
+-- since adoption. Rebuildable: delete rows and the next apply re-adopts.
+CREATE TABLE IF NOT EXISTS learning_projection_state (
+  schema_id                     INTEGER PRIMARY KEY,
+  adopted_at                    INTEGER NOT NULL,
+  adopted_salience_attribution  REAL NOT NULL DEFAULT 0.0,
+  adopted_confidence_attribution REAL NOT NULL DEFAULT 0.0,
+  applied_extra_salience        REAL NOT NULL DEFAULT 0.0,
+  applied_extra_confidence      REAL NOT NULL DEFAULT 0.0,
+  last_applied_ts               INTEGER,
+  FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE
+);
 
 -- ============================================================================
 -- Derived procedure search index

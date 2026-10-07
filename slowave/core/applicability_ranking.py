@@ -38,17 +38,35 @@ def query_needs(query: str) -> list[str]:
 
     Small noun conjunctions such as 'linter and typechecker' remain together.
     Nothing inferred from an assistant's goal is added to the user request.
+    Newline-separated cue lines are assessed as independent need columns
+    instead of one concatenated dilution query.
     """
     task = ActivationTask.build(query)
     needs = list(task.cues)
     parts = re.split(r"\s+and\s+", query, flags=re.I)
     if len(parts) > 1 and all(len(specific_terms(part)) >= 2 for part in parts):
         needs = parts
+    # Each caller-supplied line is one assessment column; the " and "
+    # conjunction rule still applies within a line.
+    lines = [line.strip() for line in query.splitlines() if line.strip()]
+    if len(lines) > 1:
+        expanded: list[str] = []
+        for line in lines:
+            line_parts = re.split(r"\s+and\s+", line, flags=re.I)
+            if len(line_parts) > 1 and all(len(specific_terms(part)) >= 2 for part in line_parts):
+                expanded.extend(line_parts)
+            else:
+                expanded.append(line)
+        needs = list(dict.fromkeys(expanded))
     return list(dict.fromkeys(needs))[:16]
 
 
 def applicability_order(
-    scores: np.ndarray, *, minimum_logit: float, maximum_logit_gap: float = 2.0
+    scores: np.ndarray,
+    *,
+    minimum_logit: float,
+    maximum_logit_gap: float = 2.0,
+    retain_weak_support: bool = True,
 ) -> list[int]:
     """Prefer the best answer to each independent need, then useful support.
 
@@ -63,7 +81,10 @@ def applicability_order(
     # Strong direct answers should not silence independently useful support.
     # For weak queries, retain a permissive neighbourhood of the best evidence;
     # the absolute floor still permits a genuinely empty result.
-    floors = np.maximum(minimum_logit, np.minimum(0.0, scores.max(axis=0) - maximum_logit_gap))
+    relative = scores.max(axis=0) - maximum_logit_gap
+    floors = np.maximum(
+        minimum_logit, np.minimum(0.0, relative) if retain_weak_support else relative
+    )
     best = scores.max(axis=1)
     qualified = [i for i in range(len(scores)) if (scores[i] >= floors).any()]
     ordered = sorted(qualified, key=lambda i: (-float(best[i]), i))

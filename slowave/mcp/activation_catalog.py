@@ -1,4 +1,4 @@
-"""Pure preparation and versioned paging for complementary activation catalogs.
+"""Pure preparation and versioned paging shared by activation and recall.
 
 This module does not publish sessions, cursors or exposure. Callers must first
 prepare the complete catalog, then atomically publish its first page. Legacy
@@ -11,19 +11,32 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-POLICY_VERSION = "activation-complementary-v1"
+POLICY_VERSION = "activation-pool-relative-v1"
+SUPPORTED_POLICIES = {
+    POLICY_VERSION,
+    "recall-pool-relative-v1",
+    # Historical identities: stored cursors and snapshots must keep loading.
+    "activation-complementary-v1",
+    "relevant-set-v2",
+    "shared-multilingual-v1",
+    "activate-hybrid-dogfood-v1",
+    "multilingual-retrieval-baseline-v1",
+}
 # v1 snapshots predate the variable first page and always served five
 # memories there; v2 records the strong-run first page size explicitly.
 SUPPORTED_PAGING_CONTRACT_VERSIONS = (
+    "ten-memory-budget-pages-v4",
     "payload-budget-pages-v3",
     "strong-run-first-page-v2",
     "five-memory-pages-v1",
 )
-PAGING_CONTRACT_VERSION = "payload-budget-pages-v3"
+PAGING_CONTRACT_VERSION = "ten-memory-budget-pages-v4"
 SNAPSHOT_FORMAT_VERSION = 1
 # Legacy snapshot record-count bounds, retained only for cursor compatibility.
 MEMORY_PAGE_SIZE = 5
-# Legacy v2 first-page limit. New snapshots use serialized payload budgets.
+MEMORY_PAGE_TARGET = 10
+# Legacy v2 first-page limit. New snapshots combine a ten-memory target with
+# serialized payload budgets; legacy constants remain cursor-compatible.
 FIRST_PAGE_MAX_MEMORIES = 10
 PROCEDURE_PAGE_SIZE = 3
 # Bound serialized content, never the number of qualifying records. Separate
@@ -66,10 +79,14 @@ def _bounded(value: Any, limit: int, label: str) -> None:
         raise CatalogPreparationError(f"unsupported oversized {label}")
 
 
-def _budget_end(records: list[dict[str, Any]], offset: int, budget: int) -> int:
+def _budget_end(
+    records: list[dict[str, Any]], offset: int, budget: int, limit: int | None = None
+) -> int:
     """Pack a stable prefix by serialized size, with guaranteed forward progress."""
     end, size = offset, 2  # JSON list brackets
     while end < len(records):
+        if limit is not None and end - offset >= limit:
+            break
         record_size = len(_encode(records[end])) + (1 if end > offset else 0)
         if end > offset and size + record_size > budget:
             break
@@ -138,11 +155,24 @@ class FrozenActivationCatalog:
         catalog_truncated: bool,
         first_page_metadata: dict[str, Any] | None = None,
         first_page_size: int | None = None,
+        policy_version: str = POLICY_VERSION,
+        recall_evidence: dict[str, Any] | None = None,
     ) -> FrozenActivationCatalog:
+        if policy_version not in SUPPORTED_POLICIES:
+            raise CatalogPreparationError("unsupported retrieval policy")
         metadata = dict(first_page_metadata or {})
         if set(metadata) - {"memory_state", "warnings", "continuity_id", "continuity_state"}:
             raise CatalogPreparationError("activation metadata cannot override catalog fields")
         _bounded(metadata, MAX_METADATA_CHARS, "activation metadata")
+        if recall_evidence is not None:
+            if set(recall_evidence) != {"evidence", "evidence_mode", "evidence_truncated"}:
+                raise CatalogPreparationError("invalid recall evidence fields")
+            recall_evidence = dict(recall_evidence)
+            recall_evidence["evidence"] = list(recall_evidence["evidence"])
+            while len(_encode(recall_evidence)) > MEMORY_PAGE_CHARS and recall_evidence["evidence"]:
+                recall_evidence["evidence"].pop()
+                recall_evidence["evidence_truncated"] = True
+            _bounded(recall_evidence, MEMORY_PAGE_CHARS, "recall evidence")
         page_one = MEMORY_PAGE_SIZE if first_page_size is None else first_page_size
         if not (isinstance(page_one, int) and 1 <= page_one <= FIRST_PAGE_MAX_MEMORIES):
             raise CatalogPreparationError("invalid first page size")
@@ -188,7 +218,7 @@ class FrozenActivationCatalog:
             _bounded(procedure, MAX_PROCEDURE_RECORD_CHARS, "procedure record")
             frozen_procedures.append(dict(procedure))
         snapshot = {
-            "originating_policy_version": POLICY_VERSION,
+            "originating_policy_version": policy_version,
             "paging_contract_version": (
                 PAGING_CONTRACT_VERSION if first_page_size is None else "strong-run-first-page-v2"
             ),
@@ -208,6 +238,8 @@ class FrozenActivationCatalog:
             "memories": frozen_memories,
             "procedures": frozen_procedures,
         }
+        if recall_evidence is not None:
+            snapshot["recall_evidence"] = recall_evidence
         _bounded(snapshot, MAX_SNAPSHOT_CHARS, "activation snapshot")
         catalog = cls(_encode(snapshot))
         # Preflight every page including the tail; a later oversized record
@@ -230,8 +262,9 @@ class FrozenActivationCatalog:
         snapshot = json.loads(self.snapshot_json)
         if not isinstance(snapshot, dict):
             raise CatalogCompatibilityError("legacy continuation requires legacy reader")
+        if snapshot.get("originating_policy_version") not in SUPPORTED_POLICIES:
+            raise CatalogCompatibilityError("unsupported retrieval policy")
         expected = {
-            "originating_policy_version": POLICY_VERSION,
             "snapshot_format_version": SNAPSHOT_FORMAT_VERSION,
             "memory_page_size": MEMORY_PAGE_SIZE,
             "procedure_page_size": PROCEDURE_PAGE_SIZE,
@@ -246,7 +279,7 @@ class FrozenActivationCatalog:
             raise CatalogCompatibilityError(
                 "unsupported activation snapshot or paging contract version"
             )
-        if expected_paging == PAGING_CONTRACT_VERSION:
+        if expected_paging in {PAGING_CONTRACT_VERSION, "payload-budget-pages-v3"}:
             if (
                 snapshot.get("memory_page_chars") != MEMORY_PAGE_CHARS
                 or snapshot.get("procedure_page_chars") != PROCEDURE_PAGE_CHARS
@@ -271,10 +304,21 @@ class FrozenActivationCatalog:
             raise ValueError("invalid activation catalog offsets")
         first_page_size = snapshot["first_page_size"]
         memory_span = first_page_size if memory_offset == 0 else MEMORY_PAGE_SIZE
-        if snapshot["paging_contract_version"] == PAGING_CONTRACT_VERSION:
-            memory_end = _budget_end(memories, memory_offset, snapshot["memory_page_chars"])
+        if snapshot["paging_contract_version"] in {
+            PAGING_CONTRACT_VERSION,
+            "payload-budget-pages-v3",
+        }:
+            limit = (
+                MEMORY_PAGE_TARGET
+                if snapshot["paging_contract_version"] == PAGING_CONTRACT_VERSION
+                else None
+            )
+            memory_end = _budget_end(memories, memory_offset, snapshot["memory_page_chars"], limit)
             procedure_end = _budget_end(
-                procedures, procedure_offset, snapshot["procedure_page_chars"]
+                procedures,
+                procedure_offset,
+                snapshot["procedure_page_chars"],
+                PROCEDURE_PAGE_SIZE if limit is not None else None,
             )
         else:
             memory_end = min(memory_offset + memory_span, len(memories))
@@ -292,6 +336,21 @@ class FrozenActivationCatalog:
         if memory_offset == 0 and procedure_offset == 0:
             data.update(snapshot["first_page_metadata"])
             data["session_id"] = snapshot["session_id"]
+        if "recall_evidence" in snapshot:
+            evidence = snapshot["recall_evidence"]
+            data.update(
+                {
+                    "evidence": (
+                        evidence["evidence"] if memory_offset == 0 and procedure_offset == 0 else []
+                    ),
+                    "evidence_mode": evidence["evidence_mode"],
+                    "evidence_truncated": (
+                        evidence["evidence_truncated"]
+                        if memory_offset == 0 and procedure_offset == 0
+                        else False
+                    ),
+                }
+            )
         remaining_memories, remaining_procedures = memories[memory_end:], procedures[procedure_end:]
         remaining = remaining_memories + remaining_procedures
         data["accessible_field"] = (

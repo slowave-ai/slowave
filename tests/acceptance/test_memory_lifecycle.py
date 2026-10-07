@@ -328,7 +328,7 @@ def test_structured_three_part_activation_returns_direct_facet_matches(tmp_path:
                 ),
                 observation,
             )
-            assert observation.raw["retrieval_policy_version"] == "activation-complementary-v1"
+            assert observation.raw["retrieval_policy_version"] == "activation-pool-relative-v1"
             assert observation.raw["relevant_total"] >= 3
             assert observation.raw["catalog_truncated"] is False
             contents = observation.returned_contents

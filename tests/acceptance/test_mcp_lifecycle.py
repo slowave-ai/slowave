@@ -210,7 +210,7 @@ def test_broad_continuity_start_uses_relevance_set_without_reinstatement(tmp_pat
                 task_context={"project": "ledger cache deployment"},
             )
             assert broad["continuity_state"] == "started"
-            assert broad["retrieval_policy_version"] == "activation-complementary-v1"
+            assert broad["retrieval_policy_version"] == "activation-pool-relative-v1"
             assert all(
                 item["pathway"] != "context_reinstatement" for item in broad["memories"]
             ), broad

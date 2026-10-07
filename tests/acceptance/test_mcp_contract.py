@@ -433,13 +433,13 @@ def test_activation_pages_one_hundred_explicit_relevant_memories(tmp_path: Path)
             first, _ = await harness.activate(
                 "catalog_100", task, "recover every catalog requirement", scope
             )
-            assert first["retrieval_policy_version"] == "activation-complementary-v1"
+            assert first["retrieval_policy_version"] == "activation-pool-relative-v1"
             assert first["relevant_total"] == 100
             # 101 task cues exceed the bounded fan-out cap, so the catalog
             # honestly reports that independent per-need searching may have
             # hidden qualifying candidates; the union still recovered all 100.
             assert first["catalog_truncated"] is True
-            assert 10 < len(first["memories"]) < 100
+            assert len(first["memories"]) == 10
             assert first["more_available"] is True
 
             def displayed_count():
@@ -461,6 +461,7 @@ def test_activation_pages_one_hundred_explicit_relevant_memories(tmp_path: Path)
                     },
                 )
                 seen.extend(item["memory_id"] for item in page["memories"])
+                assert len(page["memories"]) == 10
                 assert displayed_count() == len(set(seen))
                 replay, _ = await harness.call(
                     "slowave_recall",
@@ -488,10 +489,10 @@ def test_feedback_enforcement_mutation_fails_the_complete_feedback_contract() ->
     )
 
 
-def test_complementary_activation_delivers_twelve_short_memories_without_count_cap(
+def test_complementary_activation_delivers_twelve_memories_over_ten_item_pages(
     tmp_path: Path,
 ) -> None:
-    """A short complete catalog is delivered without five/ten item targets."""
+    """A ten-item page never caps the complete relevance-qualified catalog."""
 
     async def scenario() -> None:
         scope = "project:complementary-public"
@@ -524,12 +525,24 @@ def test_complementary_activation_delivers_twelve_short_memories_without_count_c
             first, _ = await harness.activate(
                 "complementary_page_one", task, "Prepare the Atlas deployment", scope
             )
-            assert first["retrieval_policy_version"] == "activation-complementary-v1"
+            assert first["retrieval_policy_version"] == "activation-pool-relative-v1"
             assert first["relevant_total"] == 12
-            assert len(first["memories"]) == 12
-            assert first["more_available"] is False
-            assert "continue_from" not in first
-            first_content = " ".join(item["content"] for item in first["memories"])
+            assert len(first["memories"]) == 10
+            assert first["more_available"] is True
+            tail, _ = await harness.call(
+                "slowave_recall",
+                {
+                    "session_id": first["session_id"],
+                    "scope": scope,
+                    "continue_from": first["continue_from"],
+                },
+            )
+            assert len(tail["memories"]) == 2
+            assert tail["more_available"] is False
+            assert "continue_from" not in tail
+            memories = first["memories"] + tail["memories"]
+            assert len({item["memory_id"] for item in memories}) == 12
+            first_content = " ".join(item["content"] for item in memories)
             assert sum(marker in first_content for marker in markers) == 12
 
             feedback, _ = await harness.call(
@@ -537,8 +550,7 @@ def test_complementary_activation_delivers_twelve_short_memories_without_count_c
                 {
                     "retrieval_id": first["retrieval_id"],
                     "memory_feedback": [
-                        {"memory_id": item["memory_id"], "assessment": "used"}
-                        for item in first["memories"]
+                        {"memory_id": item["memory_id"], "assessment": "used"} for item in memories
                     ],
                     "coverage": "complete",
                 },

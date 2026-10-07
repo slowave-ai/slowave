@@ -349,6 +349,24 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _latest_accepted_feedback_sql(alias: str = "f") -> str:
+    """Latest accepted row per retrieval/target; rejected refinements are ignored.
+
+    Use the learning projection's (created_at, rowid) ordering, retaining
+    independent observations from different retrievals and full audit history.
+    """
+    return (
+        f"{alias}.status = 'accepted' AND NOT EXISTS ("
+        "SELECT 1 FROM feedback_events newer "
+        f"WHERE newer.retrieval_id = {alias}.retrieval_id "
+        f"AND newer.target_kind = {alias}.target_kind "
+        f"AND newer.target_id = {alias}.target_id "
+        "AND newer.status = 'accepted' "
+        f"AND (newer.created_at > {alias}.created_at OR "
+        f"(newer.created_at = {alias}.created_at AND newer.rowid > {alias}.rowid)))"
+    )
+
+
 def _table_count(conn: sqlite3.Connection, table: str) -> int:
     try:
         row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
@@ -1188,16 +1206,16 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         "  AND cri.memory_type IN ('schema','related')) AS times_exposed, "
         "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
         "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'used' "
-        "  AND fe.status = 'accepted' AND fe.target_id = 'sch_' || schemas.id) AS times_used, "
+        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_used, "
         "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
         "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'irrelevant' "
-        "  AND fe.status = 'accepted' AND fe.target_id = 'sch_' || schemas.id) AS times_irrelevant, "
+        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_irrelevant, "
         "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
         "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'stale' "
-        "  AND fe.status = 'accepted' AND fe.target_id = 'sch_' || schemas.id) AS times_stale, "
+        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_stale, "
         "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
         "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'wrong' "
-        "  AND fe.status = 'accepted' AND fe.target_id = 'sch_' || schemas.id) AS times_wrong, "
+        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_wrong, "
         "(SELECT COUNT(*) FROM schema_relations sr WHERE sr.src_schema_id = schemas.id OR sr.dst_schema_id = schemas.id) AS related_count, "
         "(SELECT COUNT(DISTINCT COALESCE(re.session_id, et.session_id)) FROM schema_evidence se "
         "  LEFT JOIN raw_events re ON re.id = se.raw_event_id LEFT JOIN episode_text et ON et.episode_id = se.episode_id "
@@ -1206,7 +1224,7 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         "  WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 AND cri.memory_type IN ('schema','related')) AS last_retrieved_ts, "
         "(SELECT MAX(fe.created_at) FROM feedback_events fe "
         "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'used' "
-        "  AND fe.status = 'accepted' AND fe.target_id = 'sch_' || schemas.id) AS last_used_ts "
+        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS last_used_ts "
         "FROM schemas" + where
     )
     # Server-side ordering so the displayed page ranks across the full result set.
@@ -1287,7 +1305,7 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             retrieval_args,
         ).fetchone()
         used_conditions = [
-            "f.status = 'accepted'",
+            _latest_accepted_feedback_sql(),
             "f.target_kind = 'memory'",
             "f.assessment = 'used'",
             "f.target_id = cri.memory_id",
@@ -2759,7 +2777,7 @@ def _effectiveness_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, 
                 f"JOIN context_recall_events r ON r.context_id = f.retrieval_id "
                 f"JOIN context_recall_items i ON i.context_id = r.context_id AND i.memory_id = f.target_id AND i.admitted = 1 "
                 f"JOIN schemas s ON f.target_id = 'sch_' || s.id "
-                f"WHERE f.status = 'accepted' AND f.target_kind = 'memory' AND s.status = 'active' "
+                f"WHERE {_latest_accepted_feedback_sql()} AND f.target_kind = 'memory' AND s.status = 'active' "
                 f"AND {cohort_sql}{scope_sql}{window_sql}",
                 retrieval_args,
             ).fetchone()
@@ -2769,14 +2787,16 @@ def _effectiveness_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, 
 
         try:
             for row in conn.execute(
-                f"SELECT f.target_kind AS kind, f.assessment AS assessment, "
-                f"f.effect AS effect, COUNT(DISTINCT f.target_id) AS n "
+                f"WITH winning AS (SELECT f.target_kind, f.target_id, f.assessment, f.effect "
                 f"FROM feedback_events f "
                 f"JOIN context_recall_events r ON r.context_id = f.retrieval_id "
-                f"WHERE f.status = 'accepted' "
+                f"WHERE {_latest_accepted_feedback_sql()} "
                 f"AND (f.target_kind = 'procedure' OR f.target_id LIKE 'sch_%') "
-                f"AND {cohort_sql}{scope_sql}{window_sql} "
-                f"GROUP BY f.target_kind, f.assessment, f.effect",
+                f"AND {cohort_sql}{scope_sql}{window_sql}) "
+                "SELECT target_kind AS kind, assessment, '' AS effect, "
+                "COUNT(DISTINCT target_id) AS n FROM winning GROUP BY target_kind, assessment "
+                "UNION ALL SELECT target_kind AS kind, '' AS assessment, effect, "
+                "COUNT(DISTINCT target_id) AS n FROM winning GROUP BY target_kind, effect",
                 retrieval_args,
             ).fetchall():
                 kind = str(row["kind"])
@@ -2826,7 +2846,7 @@ _RETRIEVAL_SIGNAL_KEYS = (
 def _retrieval_signal_expression(key: str) -> str:
     observed = (
         "(SELECT COUNT(*) FROM feedback_events f "
-        "WHERE f.retrieval_id = r.context_id AND f.status = 'accepted' "
+        f"WHERE f.retrieval_id = r.context_id AND {_latest_accepted_feedback_sql()} "
         f"AND (f.assessment = '{key}' OR f.effect = '{key}')"
         ")"
     )
@@ -2835,7 +2855,7 @@ def _retrieval_signal_expression(key: str) -> str:
     return (
         f"({observed} + CASE WHEN NOT EXISTS ("
         "SELECT 1 FROM feedback_events f WHERE f.retrieval_id = r.context_id "
-        "AND f.status = 'accepted' AND (f.assessment IS NOT NULL OR f.effect IS NOT NULL)"
+        f"AND {_latest_accepted_feedback_sql()} AND (f.assessment IS NOT NULL OR f.effect IS NOT NULL)"
         ") THEN 1 ELSE 0 END)"
     )
 
@@ -2845,11 +2865,11 @@ def _retrieval_effect_expression() -> str:
     return (
         "CASE "
         "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        "AND f.status='accepted' AND f.effect='harmed') THEN 3 "
+        f"AND {_latest_accepted_feedback_sql()} AND f.effect='harmed') THEN 3 "
         "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        "AND f.status='accepted' AND f.effect='no_effect') THEN 2 "
+        f"AND {_latest_accepted_feedback_sql()} AND f.effect='no_effect') THEN 2 "
         "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        "AND f.status='accepted' AND f.effect='helped') THEN 1 "
+        f"AND {_latest_accepted_feedback_sql()} AND f.effect='helped') THEN 1 "
         "ELSE 0 END"
     )
 
@@ -2980,7 +3000,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
         if ids:
             placeholders = ",".join(["?"] * len(ids))
             for row in conn.execute(
-                f"SELECT retrieval_id, target_kind, assessment, effect, status FROM feedback_events WHERE retrieval_id IN ({placeholders}) ORDER BY created_at",
+                f"SELECT retrieval_id, target_kind, target_id, assessment, effect, status FROM feedback_events WHERE retrieval_id IN ({placeholders}) ORDER BY created_at, rowid",
                 ids,
             ).fetchall():
                 feedback_by_id[str(row["retrieval_id"])].append(dict(row))
@@ -2993,9 +3013,12 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             item["feedback"] = feedback_by_id.get(str(item["context_id"]), [])
             signal_counts = {key: 0 for key in _RETRIEVAL_SIGNAL_KEYS}
             observed = False
-            for feedback_item in item["feedback"]:
-                if feedback_item.get("status") != "accepted":
-                    continue
+            latest_feedback = {
+                (fb["target_kind"], fb["target_id"]): fb
+                for fb in item["feedback"]
+                if fb.get("status") == "accepted"
+            }
+            for feedback_item in latest_feedback.values():
                 for field in ("assessment", "effect"):
                     value = str(feedback_item.get(field) or "")
                     if not value:
@@ -3036,7 +3059,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             ") AND EXISTS ("
             "SELECT 1 FROM feedback_events f JOIN context_recall_items i "
             "ON i.context_id = r.context_id AND i.memory_id = f.target_id AND i.admitted = 1 "
-            "WHERE f.retrieval_id = r.context_id AND f.status = 'accepted' "
+            f"WHERE f.retrieval_id = r.context_id AND {_latest_accepted_feedback_sql()} "
             "AND (f.assessment = 'used' OR f.effect = 'helped')"
             ")",
             args,
@@ -3189,8 +3212,13 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         }
         latest: dict[tuple[str, str], dict[str, Any]] = {}
         for fb in feedback:
-            if str(fb.get("target_kind")) in {"memory", "procedure"}:
-                latest[(str(fb["target_kind"]), str(fb.get("target_id")))] = fb
+            if str(fb.get("target_kind")) not in {"memory", "procedure"}:
+                continue
+            key = (str(fb["target_kind"]), str(fb.get("target_id")))
+            if fb.get("status") == "accepted":
+                latest[key] = fb
+            elif fb.get("status") == "legacy" and latest.get(key, {}).get("status") != "accepted":
+                latest[key] = fb
         for item in items:
             kind = kind_map.get(str(item.get("memory_type")), "memory")
             fb = latest.get((kind, str(item.get("memory_id"))))
@@ -3236,7 +3264,7 @@ def _activity_summary(db_path: str, where: str, args: list[Any]) -> dict[str, in
             "SUM(CASE WHEN s.ended_ts IS NOT NULL AND (s.feedback_status IS NULL OR s.feedback_status NOT IN ('complete', 'incomplete')) THEN 1 ELSE 0 END) AS closure_unclassified, "
             "SUM(CASE WHEN s.feedback_status = 'complete' AND EXISTS(SELECT 1 FROM context_recall_events r WHERE r.session_id = s.id) THEN 1 ELSE 0 END) AS context_denominator, "
             "SUM(CASE WHEN s.feedback_status = 'complete' AND EXISTS(SELECT 1 FROM context_recall_events r WHERE r.session_id = s.id) "
-            "AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.session_id = s.id AND f.status = 'accepted' AND (f.assessment = 'used' OR f.effect = 'helped')) THEN 1 ELSE 0 END) AS context_use "
+            f"AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.session_id = s.id AND {_latest_accepted_feedback_sql()} AND (f.assessment = 'used' OR f.effect = 'helped')) THEN 1 ELSE 0 END) AS context_use "
             f"FROM sessions s WHERE {where}",
             args,
         ).fetchone()

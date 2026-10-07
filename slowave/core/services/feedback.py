@@ -16,6 +16,7 @@ from typing import Any, Callable
 from slowave.core.feedback import FeedbackConfig, feedback_signal_for
 from slowave.core.scope import scope_kind as _scope_kind
 from slowave.core.services.feedback_events import FeedbackEventService
+from slowave.core.services.learning_projection import LearningProjectionService
 from slowave.core.services.retrieval_access import (
     RetrievalAccessEvidenceStore,
     canonical_cue_text,
@@ -93,6 +94,7 @@ class FeedbackService:
         self.encoder = encoder
         self.access_evidence = RetrievalAccessEvidenceStore(db)
         self.feedback_events = FeedbackEventService(db)
+        self.learning_projection = LearningProjectionService(db=db, schemas=schemas)
         self._parse_procedure_ids: Callable[[list[str]], list[str]] = (
             lambda ids: []
         )  # removed Phase 1 P1
@@ -379,6 +381,23 @@ class FeedbackService:
             if self.encoder is None
             else (f"{self.encoder.__class__.__module__}.{self.encoder.__class__.__qualname__}")
         )
+        if policy == "multilingual-retrieval-baseline-v1":
+            from dataclasses import asdict
+
+            from slowave.core.retrieval_baseline import BaselineConfig
+            from slowave.symbolic.retrieval_encoder import MODEL, REVISION
+
+            encoder_id = f"{MODEL}@{REVISION}"
+            config_hash = hashlib.sha256(
+                dumps_json(
+                    {
+                        "policy_version": policy,
+                        "activate": asdict(BaselineConfig()),
+                        "recall": asdict(BaselineConfig(semantic_floor=0.80, max_memories=3)),
+                        "model": encoder_id,
+                    }
+                ).encode()
+            ).hexdigest()
         selected: list[tuple[str, str, dict[str, Any]]] = []
         selected.extend(
             ("memory", str(item.get("id") or item.get("memory_id")), item)
@@ -1040,6 +1059,7 @@ class FeedbackService:
         ]
         applied: dict[str, list[str]] = {
             "strengthened": [],
+            "already_known": [],
             "superseded": [],
             "contradicted": [],
             "outdated": [],
@@ -1063,15 +1083,37 @@ class FeedbackService:
                 if schema.status not in ("active", "needs_review"):
                     continue
                 signal = feedback_signal_for("useful", "unknown", self.cfg)
-                self.schemas.reinforce(
+                # WP-2: learning is recomputed from the canonical ledger and
+                # applied as a target value (idempotent per retrieval
+                # identity), replacing the direct in-place tally.
+                self.learning_projection.apply_memory_observation(
                     schema_id,
-                    amount=signal.salience_delta,
-                    confidence_delta=signal.confidence_delta,
+                    trigger_retrieval_id=str(retrieval_id),
+                    salience_delta_per_use=signal.salience_delta,
+                    confidence_delta_per_use=signal.confidence_delta,
+                    min_salience=self.cfg.min_salience,
                     min_confidence=self.cfg.min_confidence,
                     max_confidence=self.cfg.max_confidence,
-                    clear_labile=True,
                 )
                 applied["strengthened"].append(memory_id)
+            elif assessment == "already_known":
+                # Section-3: a dedup observation — the client already knew
+                # this. It is recorded evidence with no reinforcement and no
+                # suppression, but it still replaces prior observations for
+                # this identity, so the projection recomputes (e.g. a
+                # used -> already_known refinement drops that contribution).
+                if schema.status in ("active", "needs_review"):
+                    useful_signal = feedback_signal_for("useful", "unknown", self.cfg)
+                    self.learning_projection.apply_memory_observation(
+                        schema_id,
+                        trigger_retrieval_id=str(retrieval_id),
+                        salience_delta_per_use=useful_signal.salience_delta,
+                        confidence_delta_per_use=useful_signal.confidence_delta,
+                        min_salience=self.cfg.min_salience,
+                        min_confidence=self.cfg.min_confidence,
+                        max_confidence=self.cfg.max_confidence,
+                    )
+                applied["already_known"].append(memory_id)
             elif assessment == "stale":
                 # First accepted terminal assessment wins. A later conflicting
                 # assessment is still persisted above but cannot oscillate the
@@ -1101,8 +1143,26 @@ class FeedbackService:
                 replacement_memory_id = item.get("replacement_memory_id")
                 if replacement_memory_id:
                     applied["replacements"].append(f"{memory_id}->{replacement_memory_id}")
+                # WP-2: the terminal transition overwrites the learning
+                # contribution; drop the projection bookkeeping so a later
+                # re-adoption cannot subtract a stale contribution.
+                self.learning_projection.reset_schema(schema_id)
             elif assessment == "irrelevant":
                 applied["access_evidence"].append(memory_id)
+                # WP-2: a refinement (used -> irrelevant) changes the canonical
+                # view; recompute so the prior contribution is removed in one
+                # deterministic step. Neutral when there was no prior use.
+                if schema.status in ("active", "needs_review"):
+                    useful_signal = feedback_signal_for("useful", "unknown", self.cfg)
+                    self.learning_projection.apply_memory_observation(
+                        schema_id,
+                        trigger_retrieval_id=str(retrieval_id),
+                        salience_delta_per_use=useful_signal.salience_delta,
+                        confidence_delta_per_use=useful_signal.confidence_delta,
+                        min_salience=self.cfg.min_salience,
+                        min_confidence=self.cfg.min_confidence,
+                        max_confidence=self.cfg.max_confidence,
+                    )
         irrelevant_ids = [
             int(str(item["memory_id"]).removeprefix("sch_"))
             for item in accepted_memory

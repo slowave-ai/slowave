@@ -231,6 +231,8 @@ class SQLiteDB:
             ("semantic_prototypes", "logic_version", "TEXT NOT NULL DEFAULT '0'"),
             ("feedback_events", "replacement_target_id", "TEXT"),
             ("feedback_events", "stale_reason", "TEXT"),
+            # WP-2 section-3: per-axis relevance evidence on memory rows.
+            ("feedback_events", "relevance", "TEXT"),
             ("graph_health_snapshots", "stale_pct", "REAL"),
             # Auto-migration lock fields (2026-07-16): RebuildService.try_claim.
             ("logic_versions", "claimed_ts", "INTEGER"),

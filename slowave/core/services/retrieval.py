@@ -16,12 +16,14 @@ from typing import Any
 
 import numpy as np
 
+from slowave.core import pool_relative
 from slowave.core.activation_selection import (
     ActivationTask,
     ContributionCandidate,
     ContributionDecision,
     SelectionMode,
     select_complementary,
+    specific_terms,
 )
 from slowave.core.applicability_ranking import (
     ApplicabilityConfig,
@@ -47,6 +49,7 @@ from slowave.core.retrieval_matching import (
     match_candidates,
 )
 from slowave.core.scope import normalize_scope
+from slowave.core.shared_retrieval import SharedRequest, assess
 from slowave.latent.episodic_store import EpisodicStore
 from slowave.latent.graph_manager import GraphManager
 from slowave.latent.retrieval import RetrievalConfig, RetrievalPipeline
@@ -327,12 +330,29 @@ class RetrievalService:
         self._applicability_config = applicability_config or ApplicabilityConfig()
         self._applicability_scorer: PairScorer | None = None
 
+    def _delivery_facets(self, schema: Any) -> dict[str, Any]:
+        """Facets enriched with the delivery-relevant episode-derived marker.
+
+        Consolidation-derived schemas carry no explicit source_kind but do
+        carry supporting episode ids; delivery treats them as artifacts
+        without source provenance when pool-relative admission is enabled.
+        """
+        facets = dict(schema.facets or {})
+        if not (facets.get("source_kind") or facets.get("source")):
+            episodes = getattr(schema, "supporting_episode_ids", None) or []
+            if episodes:
+                facets["episode_derived"] = True
+        return facets
+
     def _rank_applicability(
         self,
         items: list[RelevantCatalogItem],
         query: str,
         *,
         protected_ids: set[int] | None = None,
+        minimum_logit: float | None = None,
+        maximum_logit_gap: float | None = None,
+        retain_weak_support: bool = True,
     ) -> tuple[list[RelevantCatalogItem], str]:
         if not self._applicability_config.enabled or not items:
             return items, "disabled" if not self._applicability_config.enabled else "empty"
@@ -353,8 +373,17 @@ class RetrievalService:
                 raise ValueError("incorrect applicability score shape")
             order = applicability_order(
                 scores,
-                minimum_logit=self._applicability_config.minimum_logit,
-                maximum_logit_gap=self._applicability_config.maximum_logit_gap,
+                minimum_logit=(
+                    self._applicability_config.minimum_logit
+                    if minimum_logit is None
+                    else minimum_logit
+                ),
+                maximum_logit_gap=(
+                    self._applicability_config.maximum_logit_gap
+                    if maximum_logit_gap is None
+                    else maximum_logit_gap
+                ),
+                retain_weak_support=retain_weak_support,
             )
             if protected_ids:
                 order.extend(
@@ -379,7 +408,426 @@ class RetrievalService:
             for index in order
         ], "applied"
 
+    def recall_source_spans(self, text: str, query: str) -> tuple[tuple[int, int], ...]:
+        """Choose an intact answer passage after admission, without changing rank.
+
+        Reuse the source windows shared assessment uses, including overlapping
+        preceding context. Never sever an oversized sentence or invent a claim.
+        """
+        from slowave.core.shared_retrieval import source_windows
+
+        if len(text) <= MAX_PREVIEW_CHARS:
+            return ((0, len(text)),) if text else ()
+        spans = source_windows(text)
+        if not spans:
+            raise ValueError("selected memory has no safely bounded source passage")
+        passages = [text[start:end] for start, end in spans]
+        if self._applicability_scorer is not None:
+            needs = query_needs(query)
+            scores = self._applicability_scorer.score(needs, passages)
+            if scores.shape != (len(spans), len(needs)) or not np.isfinite(scores).all():
+                raise ValueError("invalid recall source passage scores")
+            best = min(range(len(spans)), key=lambda i: (-float(scores[i].max()), i))
+        else:
+            # No model encoder: keep the existing lexical retrieval contract,
+            # but require actual query overlap rather than silently taking a prefix.
+            terms = specific_terms(query)
+            overlaps = [len(terms & specific_terms(passage)) for passage in passages]
+            if not max(overlaps):
+                raise ValueError("selected memory has no query-matched source passage")
+            best = max(range(len(spans)), key=lambda i: (overlaps[i], -i))
+        if spans[best][1] - spans[best][0] > MAX_PREVIEW_CHARS:
+            raise ValueError("required recall source passage exceeds preview bound")
+        return (spans[best],)
+
     # ---- public API --------------------------------------------------------
+
+    def _shared_scorer(self) -> PairScorer:
+        if self._applicability_scorer is None:
+            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
+
+            self._applicability_scorer = ApplicabilityEncoder()
+        return self._applicability_scorer
+
+    def _multilingual_index(self, *, scope: str | None, mode: str) -> dict[str, Any] | None:
+        """Role-aware multilingual passage index over the eligible universe.
+
+        Returns ``None`` (with a logged warning) when the local retrieval
+        encoder or its assets are unavailable; discovery then falls back to
+        the stored dense and lexical channels alone.
+        """
+        try:
+            from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
+
+            encoder = get_retrieval_encoder()
+        except (OSError, RuntimeError, ImportError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "Multilingual retrieval channel unavailable: %s", exc
+            )
+            return None
+        scope_id = normalize_scope(scope=scope)
+        universe: list = []
+        for schema in self.schemas.list(limit=100000):
+            if not (
+                scope_id is None
+                or schema.scope_id in (scope_id, None, "global", "user")
+                or schema.generalization_stage >= 2
+            ):
+                continue
+            admitted, _ = self.working_memory_gate.eligible(
+                schema,
+                cue=MemoryCue(query="discovery", scope=scope_id, mode=mode),
+                policy=replace(GatePolicy.catalog_bound(1), allow_multi_sentence=True),
+            )
+            if admitted:
+                universe.append(schema)
+        if not universe:
+            return None
+        vectors = encoder.passages([schema.content_text or "" for schema in universe])
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        vectors = vectors / np.clip(norms, 1e-12, None)
+        return {
+            "encoder": encoder,
+            "ids": np.array([schema.id for schema in universe], dtype=np.int64),
+            "vectors": vectors,
+        }
+
+    def _baseline_catalog(
+        self, request: SharedRequest, scope: str | None, mode: str
+    ) -> RelevantCatalog:
+        from slowave.core.retrieval_baseline import (
+            BaselineConfig,
+            feedback_adjustments,
+            rank_candidates,
+        )
+        from slowave.core.shared_retrieval import source_windows
+        from slowave.symbolic.procedural_memory import _contexts_compatible
+        from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
+
+        if not hasattr(self, "_baseline_encoder"):
+            self._baseline_encoder = get_retrieval_encoder()
+        encoder = self._baseline_encoder
+        config = (
+            BaselineConfig()
+            if request.endpoint == "activate"
+            else BaselineConfig(semantic_floor=0.80, max_memories=3)
+        )
+        scope_id = normalize_scope(scope=scope)
+        schemas = self.schemas.list(limit=100000)
+        cue = MemoryCue(query=request.task, scope=scope_id, mode=mode)
+        policy = replace(GatePolicy.catalog_bound(len(schemas)), allow_multi_sentence=True)
+        schemas = [
+            schema
+            for schema in schemas
+            if (
+                scope_id is None
+                or schema.scope_id in (scope_id, None, "global", "user")
+                or schema.generalization_stage >= 2
+            )
+            and self.working_memory_gate.eligible(schema, cue=cue, policy=policy)[0]
+            and _contexts_compatible(
+                (schema.facets or {}).get("applicability_context"), request.context
+            )
+        ]
+        if not schemas:
+            return RelevantCatalog([], False, 0)
+        vectors = encoder.passages([schema.content_text or "" for schema in schemas])
+        adjustments = feedback_adjustments(
+            self.schemas.db.connect(), request.task, request.goal, request.context, scope_id
+        )
+        channels = []
+        for query in [request.task] + ([request.goal] if request.goal else []):
+            scores = vectors @ encoder.query(query)
+            lexical = {
+                sid: rank
+                for sid, _, rank, _ in self.schemas.search_fts_candidates(
+                    query,
+                    limit=100000,
+                    scope_id=scope_id,
+                    content_weight=config.bm25_content_weight,
+                )
+            }
+            channels.append(
+                [
+                    dict(
+                        id=schema.id,
+                        semantic=float(scores[index]),
+                        lexical_rank=lexical.get(schema.id),
+                        explicit=(schema.facets or {}).get("source_kind") == "explicit_remember",
+                        feedback_adjustment=adjustments.get(schema.id, 0.0),
+                    )
+                    for index, schema in enumerate(schemas)
+                ]
+            )
+        ranked = rank_candidates(channels[0], channels[1] if len(channels) > 1 else [], config)
+        by_id = {schema.id: schema for schema in schemas}
+        decisions = []
+        selected = []
+        for score, sid in ranked:
+            text = by_id[sid].content_text or ""
+            span = source_windows(text)[0]
+            if span[1] - span[0] > MAX_PREVIEW_CHARS:
+                continue
+            selected.append((score, sid))
+            decisions.append(
+                ContributionDecision(
+                    sid,
+                    True,
+                    "baseline_relevance",
+                    contribution=text[span[0] : span[1]],
+                    source_spans=(span,),
+                    strong=True,
+                    selected_position=len(selected) - 1,
+                )
+            )
+        return RelevantCatalog(
+            [
+                RelevantCatalogItem(by_id[sid], score, "baseline_relevance", (), strong=True)
+                for score, sid in selected
+            ],
+            len(schemas) >= 100000,
+            len(schemas),
+            tuple(decisions),
+            "applied",
+        )
+
+    def baseline_procedure_filter(
+        self, request: SharedRequest, hits: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Existing procedure candidates must also match the current task/goal."""
+        if not hits:
+            return hits
+        encoder = self._baseline_encoder
+        vectors = encoder.passages(
+            [str(hit.get("goal", "")) + " " + str(hit.get("summary", "")) for hit in hits]
+        )
+        task = vectors @ encoder.query(request.task)
+        goal = vectors @ encoder.query(request.goal) if request.goal else task
+        return [
+            hit for index, hit in enumerate(hits) if 0.75 * task[index] + 0.25 * goal[index] >= 0.86
+        ]
+
+    def _hybrid_dogfood_catalog(self, task: str, scope: str | None, mode: str) -> RelevantCatalog:
+        from slowave.core.hybrid_selection import DOGFOOD_CONFIG, admit, discover
+        from slowave.core.shared_retrieval import source_windows
+
+        config = DOGFOOD_CONFIG
+        scope_id = normalize_scope(scope=scope)
+        lexical = self.schemas.search_fts_candidates(
+            task,
+            limit=config.depth + 1,
+            scope_id=scope_id,
+            content_weight=config.bm25_content_weight,
+        )
+        dense = (
+            self.schemas.search_embedding(
+                self.encoder.encode(task), limit=config.depth + 1, scope_id=scope_id
+            )
+            if self.encoder is not None
+            else []
+        )
+        truncated = len(lexical) > config.depth or len(dense) > config.depth
+        ranks = {sid: rank for sid, _, rank, _ in lexical[: config.depth]}
+        cosines = {sid: (rank, score) for rank, (sid, score) in enumerate(dense[: config.depth], 1)}
+        schemas = {s.id: s for s in self.schemas.get_many(ranks.keys() | cosines.keys())}
+        vector = self.encoder.encode(task) if self.encoder is not None else None
+        cue = MemoryCue(query=task, scope=scope_id, mode=mode)
+        policy = replace(GatePolicy.catalog_bound(len(schemas)), allow_multi_sentence=True)
+        rows = []
+        for sid, schema in schemas.items():
+            eligible, _ = self.working_memory_gate.eligible(schema, cue=cue, policy=policy)
+            cosine = (
+                float(
+                    vector.dot(schema.embedding)
+                    / (np.linalg.norm(vector) * np.linalg.norm(schema.embedding) + 1e-12)
+                )
+                if vector is not None and schema.embedding is not None
+                else None
+            )
+            rows.append(
+                dict(
+                    memory_id=sid,
+                    dense_rank=cosines.get(sid, (None, None))[0],
+                    lexical_rank=ranks.get(sid),
+                    cosine=cosine,
+                    rare_terms=0,
+                    eligible=eligible,
+                )
+            )
+        pool = discover([rows], config)
+        qualified = admit(pool, config)
+        selected = qualified[:1]
+        if selected:
+            start, end = source_windows(schemas[selected[0]].content_text or "")[0]
+            if end - start > MAX_PREVIEW_CHARS:
+                selected = []
+                truncated = True
+        decisions = []
+        for row in rows:
+            sid = row["memory_id"]
+            chosen = sid in selected
+            text = schemas[sid].content_text or ""
+            span = source_windows(text)[0] if text else (0, 0)
+            decisions.append(
+                ContributionDecision(
+                    sid,
+                    chosen,
+                    "hybrid_relevance" if chosen else "hybrid_not_delivered",
+                    contribution=text[span[0] : span[1]] if chosen else "",
+                    source_spans=(span,) if chosen else (),
+                    strong=chosen,
+                    selected_position=0 if chosen else None,
+                )
+            )
+        return RelevantCatalog(
+            items=[
+                RelevantCatalogItem(
+                    schemas[sid], pool[sid]["rrf"], "hybrid_relevance", (), strong=True
+                )
+                for sid in selected
+            ],
+            truncated=truncated or len(qualified) > 1,
+            candidate_count=len(schemas),
+            decisions=tuple(decisions),
+            applicability_status="disabled",
+        )
+
+    def _shared_catalog(
+        self,
+        request: SharedRequest,
+        schemas: dict[int, Schema],
+        per_query: list[dict[int, Any]],
+        scope: str | None,
+        mode: str,
+        truncated: bool,
+        e5_evidence: dict[int, tuple[float, int]] | None = None,
+    ) -> RelevantCatalog:
+        """One shared absolute relevance decision, independent of wording rules."""
+        from slowave.symbolic.procedural_memory import _contexts_compatible
+
+        cue = MemoryCue(query=request.task, scope=scope, mode=mode)
+        policy = replace(GatePolicy.catalog_bound(len(schemas)), allow_multi_sentence=True)
+        eligible: list[Schema] = []
+        decisions: list[ContributionDecision] = []
+        for schema in sorted(schemas.values(), key=lambda schema: schema.id):
+            admitted, reason = self.working_memory_gate.eligible(schema, cue=cue, policy=policy)
+            stored_context = (schema.facets or {}).get("applicability_context")
+            if admitted and not _contexts_compatible(stored_context, request.context):
+                admitted, reason = False, "context_conflict"
+            if not admitted:
+                decisions.append(
+                    ContributionDecision(schema.id, False, reason, channel_evidence=())
+                )
+            else:
+                eligible.append(schema)
+        scores, spans = assess(
+            self._shared_scorer(), request, [schema.content_text or "" for schema in eligible]
+        )
+        candidates = []
+        for schema, logit, span in zip(eligible, scores, spans):
+            evidence = tuple(
+                {
+                    "query_index": index,
+                    "dense_cosine": match.dense_cosine,
+                    "lexical_rank": match.lexical_rank,
+                    "rrf_score": match.normalized_rank_score,
+                    "applicability_score": logit,
+                    "threshold": request.threshold,
+                }
+                for index, query in enumerate(per_query)
+                if (match := query.get(schema.id)) is not None
+            ) + (
+                (
+                    {
+                        "query_index": e5_evidence[schema.id][1],
+                        "e5_cosine": e5_evidence[schema.id][0],
+                    },
+                )
+                if e5_evidence and schema.id in e5_evidence
+                else ()
+            )
+            rrf = max((e.get("rrf_score", 0.0) for e in evidence), default=0.0)
+            selected = logit >= request.threshold
+            reason = "shared_relevance" if selected else "insufficient_applicability"
+            if selected and span[1] - span[0] > MAX_PREVIEW_CHARS:
+                selected, reason = False, "oversize_without_contribution_span"
+            decision = ContributionDecision(
+                schema.id,
+                selected,
+                reason,
+                contribution=(schema.content_text or "")[span[0] : span[1]],
+                source_spans=(span,) if selected else (),
+                channel_evidence=evidence,
+                strong=selected,
+            )
+            decisions.append(decision)
+            if selected:
+                candidates.append((logit, rrf, schema))
+        candidates.sort(key=lambda item: (-item[0], -item[1], item[2].id))
+        positions = {schema.id: index for index, (_, _, schema) in enumerate(candidates)}
+        return RelevantCatalog(
+            items=[
+                RelevantCatalogItem(
+                    schema,
+                    float(1 / (1 + np.exp(-np.clip(logit, -60, 60)))),
+                    "shared_relevance",
+                    (),
+                    strong=True,
+                )
+                for logit, _, schema in candidates
+            ],
+            truncated=truncated,
+            candidate_count=len(schemas),
+            decisions=tuple(
+                replace(decision, selected_position=positions.get(decision.memory_id))
+                for decision in decisions
+            ),
+            applicability_status="applied",
+        )
+
+    def shared_procedures(
+        self, request: SharedRequest, procedures: list[dict[str, Any]], limit: int = 3
+    ) -> list[dict[str, Any]]:
+        """Procedures earn relevance independently of English action-intent regexes.
+
+        Reuse evidence reuses the existing single helped/harmed utility formula
+        and only orders candidates that relevance admission already accepted, so
+        historical reward can never admit an irrelevant procedure and harmed
+        guidance yields to an equally applicable alternative.
+        """
+        from slowave.symbolic.procedural_memory import (
+            _contexts_compatible,
+            procedure_feedback_utility,
+        )
+
+        compatible = [
+            procedure
+            for procedure in procedures
+            if _contexts_compatible(procedure.get("context"), request.context)
+        ]
+        scores, _ = assess(
+            self._shared_scorer(),
+            request,
+            [
+                "\n".join([str(procedure.get("goal", "")), str(procedure.get("summary", ""))])
+                for procedure in compatible
+            ],
+        )
+        ranked = [
+            (score, procedure)
+            for score, procedure in zip(scores, compatible)
+            if score >= request.threshold
+        ]
+        ranked.sort(
+            key=lambda pair: (
+                -(pair[0] + procedure_feedback_utility(pair[1])),
+                str(pair[1]["id"]),
+            )
+        )
+        return [
+            dict(procedure, score=score, match={"admission": "shared_relevance", "logit": score})
+            for score, procedure in ranked[:limit]
+        ]
 
     def refresh_indices(self) -> None:
         """Rebuild in-memory FAISS indices from SQLite."""
@@ -397,6 +845,9 @@ class RetrievalService:
         focus_single_need: bool = True,
         selection_mode: SelectionMode | None = None,
         activation_task: ActivationTask | None = None,
+        shared_request: SharedRequest | None = None,
+        hybrid_task: str | None = None,
+        baseline_request: SharedRequest | None = None,
     ) -> RelevantCatalog:
         """Build one declarative catalog before item and response budgets.
 
@@ -405,6 +856,36 @@ class RetrievalService:
         unioned, loaded once, passed through the existing evidence matcher and
         eligibility gate, and ordered deterministically.
         """
+        from slowave.core.hybrid_selection import dogfood_enabled
+
+        if baseline_request is not None:
+            return self._baseline_catalog(baseline_request, scope, mode)
+        if activation_task is not None and dogfood_enabled():
+            return self._hybrid_dogfood_catalog(
+                hybrid_task or activation_task.needs[0].text, scope, mode
+            )
+        e5_channel = None
+        if shared_request is not None:
+            clean_queries = shared_request.queries
+            # Validate before discovery or state publication.
+            shared_request.threshold
+            candidate_limit = shared_request.candidate_depth
+            cues = clean_queries
+            activation_task = None
+            selection_mode = "deliberate_recall"
+            focus_single_need = False
+            # Multilingual discovery channel: the stored dense index uses the
+            # production encoder, which can miss cross-language evidence. The
+            # shared pipeline therefore unions a role-aware multilingual
+            # channel per query; failure degrades to the existing channels
+            # with a visible warning instead of silently narrowing recall.
+            e5_channel = self._multilingual_index(scope=scope, mode=mode)
+        else:
+            # The multilingual channel joins the discovery union so
+            # cross-language evidence is structural, not threshold luck.
+            # Failure degrades to the existing channels with the same visible
+            # warning; task representation and selection mode are untouched.
+            e5_channel = self._multilingual_index(scope=scope, mode=mode)
         resolved_mode = selection_mode or (
             "legacy_activation" if focus_single_need else "deliberate_recall"
         )
@@ -452,7 +933,8 @@ class RetrievalService:
         per_need: list[dict[int, Any]] = []
         candidate_ids: set[int] = set()
         fetch_limit = candidate_limit + 1
-        for cue_text in clean_cues:
+        e5_evidence: dict[int, tuple[float, int]] = {}
+        for cue_index, cue_text in enumerate(clean_cues):
             signals: dict[int, CandidateSignals] = {}
             lexical = self.schemas.search_fts_candidates(
                 cue_text, limit=fetch_limit, scope_id=scope_id
@@ -484,18 +966,46 @@ class RetrievalService:
                         lexical_rank=previous.lexical_rank,
                         lexical_specific=previous.lexical_specific,
                     )
-            candidate_ids.update(signals)
-            per_need.append(
-                {
-                    match.memory_id: match
-                    for match in match_candidates(
-                        signals.values(),
-                        config=MatchingConfig(dense_relevance_floor=min_relevance),
-                    )
-                }
+            fused = match_candidates(
+                signals.values(),
+                config=MatchingConfig(dense_relevance_floor=min_relevance),
             )
+            if e5_channel is not None:
+                query_vector = np.asarray(e5_channel["encoder"].query(cue_text), dtype=np.float32)
+                scores = e5_channel["vectors"] @ query_vector
+                if len(scores) > candidate_limit:
+                    # Truthful exhaustion: the slice cut a deeper candidate
+                    # pool, so paging callers must be able to see it.
+                    truncated = True
+                order = np.argsort(-scores)[:candidate_limit]
+                e5_ids: set[int] = set()
+                for index in order:
+                    sid = int(e5_channel["ids"][index])
+                    score = float(scores[index])
+                    e5_ids.add(sid)
+                    if sid not in e5_evidence or score > e5_evidence[sid][0]:
+                        e5_evidence[sid] = (score, cue_index)
+                    if sid not in signals:
+                        signals[sid] = CandidateSignals(memory_id=sid)
+            if shared_request is not None and len(fused) > candidate_limit:
+                truncated = True
+                fused = fused[:candidate_limit]
+            per_need.append({match.memory_id: match for match in fused})
+            candidate_ids.update(per_need[-1])
+            if e5_channel is not None:
+                candidate_ids.update(e5_ids)
 
         schemas = {schema.id: schema for schema in self.schemas.get_many(candidate_ids)}
+        if shared_request is not None:
+            return self._shared_catalog(
+                shared_request,
+                schemas,
+                per_need,
+                scope_id,
+                mode,
+                truncated,
+                e5_evidence=e5_evidence,
+            )
         cue = MemoryCue(query=clean_cues[0], scope=scope_id, mode=mode)
         policy = GatePolicy.catalog_bound(len(schemas))
         items: list[RelevantCatalogItem] = []
@@ -545,7 +1055,7 @@ class RetrievalService:
                         eligibility_reason=eligibility_reason,
                         need_indexes=covered,
                         channel_evidence=evidence,
-                        facets=schema.facets or {},
+                        facets=self._delivery_facets(schema),
                     )
                 )
                 continue
@@ -575,11 +1085,198 @@ class RetrievalService:
         if resolved_mode == "complementary_activation":
             if activation_task is None:
                 raise ValueError("complementary activation requires an explicit ActivationTask")
+            branch_pattern = r"\b(?:fix|feat|feature|hotfix|bugfix)/[\w.-]+"
+            task_branches = set(re.findall(branch_pattern, "\n".join(activation_task.cues)))
+            context_excluded = {}
+            if task_branches:
+                for candidate in contribution_candidates:
+                    branches = set(re.findall(branch_pattern, candidate.text))
+                    if (
+                        candidate.eligible
+                        and branches
+                        and not branches & task_branches
+                        and candidate.facets.get("schema_class")
+                        not in {"warning", "lesson", "instruction", "constraint", "preference"}
+                    ):
+                        context_excluded[candidate.memory_id] = "structured_facet_conflict"
+            # Explicit numbered targets are task facets, not merely topic words.
+            # A hop-10 observation does not answer a hop-9 failure question.
+            target_pattern = r"\b(hop|partition|shard)\s*[-#:]?\s*(\d+)\b"
+            targets = {}
+            for kind, value in re.findall(target_pattern, "\n".join(activation_task.cues), re.I):
+                targets.setdefault(kind.lower(), set()).add(value)
+            for candidate in contribution_candidates:
+                candidate_targets = {}
+                for kind, value in re.findall(target_pattern, candidate.text, re.I):
+                    candidate_targets.setdefault(kind.lower(), set()).add(value)
+                if candidate.eligible and any(
+                    kind in candidate_targets and not values & candidate_targets[kind]
+                    for kind, values in targets.items()
+                ):
+                    context_excluded[candidate.memory_id] = "structured_facet_conflict"
+            # Source-independent action logs such as "Read the README" do
+            # not convey a stored fact. Explicitly remembered knowledge and
+            # branch-specific state remain assessable.
+            for candidate in contribution_candidates:
+                if (
+                    candidate.eligible
+                    and (candidate.facets.get("source_kind") or candidate.facets.get("source"))
+                    != "explicit_remember"
+                    and re.match(r"\s*(?:Read|Inspected|Reviewed)\b", candidate.text)
+                    and len(re.findall(r".+?(?:[.!?](?=\s|$)|\n|$)", candidate.text)) == 1
+                    and not re.search(
+                        r"\b(?:found|confirmed|requires|must|because|failed|passed)\b",
+                        candidate.text,
+                        re.I,
+                    )
+                ):
+                    context_excluded[candidate.memory_id] = "insufficient_evidence"
+            for candidate in contribution_candidates:
+                if candidate.eligible and candidate.facets.get("episode_derived"):
+                    context_excluded[candidate.memory_id] = "episode_artifact_without_source"
+            # Assess the eligible discovery pool before contribution filtering.
+            # Goals can discover candidates, but only user/context cues justify exposure.
+            user_indexes = [
+                i
+                for i, need in enumerate(activation_task.needs)
+                if any(
+                    source in need.provenance
+                    for source in ("task", "explicit_list_item", "semantic_context", "task_context")
+                )
+                and specific_terms(need.text) - specific_terms((scope_id or "").split(":", 1)[-1])
+            ]
+            pool = [
+                RelevantCatalogItem(
+                    schema=schemas[c.memory_id],
+                    score=c.score,
+                    reason="discovered",
+                    need_indexes=c.need_indexes,
+                )
+                for c in contribution_candidates
+                if c.eligible
+                and c.memory_id not in context_excluded
+                and any(e.get("relevance_passed") for e in c.channel_evidence)
+            ]
+            # Pool-relative assessment: the per-column floor becomes
+            # max(signal_floor, column_best - margin); abstention is
+            # preserved by the signal floor.
+            assessment_floor = pool_relative.signal_floor()
+            assessment_gap: float | None = pool_relative.margin()
+            ranked_pool, applicability_status = (
+                self._rank_applicability(
+                    pool,
+                    "\n".join(activation_task.needs[i].text for i in user_indexes),
+                    minimum_logit=assessment_floor,
+                    maximum_logit_gap=assessment_gap,
+                    retain_weak_support=False,
+                )
+                if user_indexes
+                else ([], "empty")
+            )
+            applicable_ids = {item.schema.id for item in ranked_pool}
+            assessed = applicability_status == "applied"
+            contribution_floor = pool_relative.signal_floor()
+            if assessed:
+                updated = []
+                for candidate in contribution_candidates:
+                    if candidate.memory_id not in applicable_ids:
+                        updated.append(candidate)
+                        continue
+                    text = candidate.text
+                    # Short sources are cheap enough to preserve intact. Long
+                    # sources need an exact contiguous source excerpt, assessed
+                    # against the same user cues rather than a prefix truncation.
+                    spans = [(0, len(text))]
+                    if len(text) > MAX_PREVIEW_CHARS:
+                        spans = []
+                        sentences = list(re.finditer(r".+?(?:[.!?](?=\s|$)|\n|$)", text))
+                        for index, match in enumerate(sentences):
+                            start, end = match.start(), match.end()
+                            if index and re.match(
+                                r"\s*(?:For|If|When|Unless|Before|After)\b",
+                                sentences[index - 1].group(),
+                                re.I,
+                            ):
+                                start = sentences[index - 1].start()
+                            for following in sentences[index + 1 :]:
+                                if following.end() - start > MAX_PREVIEW_CHARS:
+                                    break
+                                end = following.end()
+                            if end - start <= MAX_PREVIEW_CHARS:
+                                spans.append((start, end))
+                    if not spans:
+                        updated.append(candidate)
+                        continue
+                    if len(text) <= MAX_PREVIEW_CHARS:
+                        span_index, column = 0, 0
+                        contribution_score = next(
+                            item.score
+                            for item in ranked_pool
+                            if item.schema.id == candidate.memory_id
+                        )
+                    else:
+                        try:
+                            if self._applicability_scorer is None:
+                                raise RuntimeError("applicability scorer unavailable")
+                            scores = self._applicability_scorer.score(
+                                [activation_task.needs[i].text for i in user_indexes],
+                                [text[start:end] for start, end in spans],
+                            )
+                            if (
+                                scores.shape != (len(spans), len(user_indexes))
+                                or not np.isfinite(scores).all()
+                            ):
+                                raise ValueError("invalid contribution scores")
+                            span_index, column = min(
+                                (
+                                    (i, j)
+                                    for i in range(len(spans))
+                                    for j in range(len(user_indexes))
+                                ),
+                                key=lambda pair: (
+                                    -float(scores[pair]),
+                                    spans[pair[0]][1] - spans[pair[0]][0],
+                                    pair,
+                                ),
+                            )
+                            contribution_score = float(scores[span_index, column])
+                            if contribution_score < contribution_floor:
+                                updated.append(candidate)
+                                continue
+                        except (OSError, RuntimeError, ValueError, ImportError) as exc:
+                            logging.getLogger(__name__).warning(
+                                "Contribution scoring unavailable: %s", exc
+                            )
+                            updated.append(candidate)
+                            applicability_status = "unavailable"
+                            continue
+                    updated.append(
+                        replace(
+                            candidate,
+                            channel_evidence=candidate.channel_evidence
+                            + (
+                                {
+                                    "need_index": user_indexes[column],
+                                    "applicability_passed": True,
+                                    "applicability_score": contribution_score,
+                                    "contribution_span": spans[span_index],
+                                },
+                            ),
+                        )
+                    )
+                contribution_candidates = updated
             selection = select_complementary(
                 activation_task, contribution_candidates, scope=scope_id
             )
             by_id = {candidate.memory_id: candidate for candidate in contribution_candidates}
-            decisions = {decision.memory_id: decision for decision in selection.decisions}
+            decisions = {
+                decision.memory_id: (
+                    replace(decision, selected=False, reason=context_excluded[decision.memory_id])
+                    if decision.memory_id in context_excluded
+                    else decision
+                )
+                for decision in selection.decisions
+            }
             # Discovery is broad; only assessed task contributions are exposed.
             delivered: list[int] = []
             transport_excluded: dict[int, str] = {}
@@ -610,7 +1307,10 @@ class RetrievalService:
                 )
                 for candidate in contribution_candidates
             )
-            ranked_items, applicability_status = self._rank_applicability(
+            delivery_query = "\n".join(activation_task.needs[i].text for i in user_indexes)
+            delivery_floor: float | None = pool_relative.signal_floor()
+            delivery_gap: float | None = pool_relative.margin()
+            ranked_items, final_applicability_status = self._rank_applicability(
                 [
                     RelevantCatalogItem(
                         schema=schemas[sid],
@@ -621,7 +1321,10 @@ class RetrievalService:
                     )
                     for sid in ordered_ids
                 ],
-                activation_task.needs[0].text,
+                delivery_query,
+                minimum_logit=delivery_floor,
+                maximum_logit_gap=delivery_gap,
+                retain_weak_support=False,
                 protected_ids={
                     decision.memory_id
                     for decision in catalog_decisions
@@ -637,6 +1340,8 @@ class RetrievalService:
                     )
                 },
             )
+            if applicability_status != "unavailable" and final_applicability_status != "empty":
+                applicability_status = final_applicability_status
             # The applicability stage changes final exposure, not discovery.
             admitted = {item.schema.id for item in ranked_items}
             positions = {item.schema.id: position for position, item in enumerate(ranked_items)}
@@ -687,7 +1392,12 @@ class RetrievalService:
         decisions: tuple[ContributionDecision, ...] = ()
         if resolved_mode == "deliberate_recall":
             before = items
-            items, applicability_status = self._rank_applicability(items, clean_cues[0])
+            items, applicability_status = self._rank_applicability(
+                items,
+                clean_cues[0],
+                minimum_logit=pool_relative.signal_floor(),
+                maximum_logit_gap=pool_relative.margin(),
+            )
             positions = {item.schema.id: position for position, item in enumerate(items)}
             decisions = tuple(
                 ContributionDecision(

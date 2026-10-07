@@ -250,7 +250,7 @@ def test_strong_cross_language_evidence_survives_without_lexical_overlap():
     assert result.decisions[0].contribution == item.text
 
 
-def test_topical_dense_similarity_does_not_rescue_wrong_facet():
+def test_weak_dense_similarity_does_not_rescue_wrong_facet():
     task = ActivationTask.build("Which platform stores the candidate search index?")
     item = ContributionCandidate(
         1,
@@ -259,7 +259,7 @@ def test_topical_dense_similarity_does_not_rescue_wrong_facet():
         True,
         "eligible",
         (0,),
-        ({"need_index": 0, "dense_cosine": 0.65},),
+        ({"need_index": 0, "dense_cosine": 0.59},),
         {},
     )
     assert select_complementary(task, [item]).selected_ids == ()
@@ -306,3 +306,290 @@ def test_supplied_context_is_not_reexposed_but_opposite_claim_is_preserved():
     )
     assert result.selected_ids == (2,)
     assert result.decisions[0].reason == "already_in_input"
+
+
+def test_imperative_prose_has_same_lexical_admission_as_a_question():
+    text = "Migration lock timeout must remain 12 seconds."
+    command = ActivationTask.build(
+        "Investigate migration lock timeout failures and explain the blocking behavior"
+    )
+    question = ActivationTask.build(
+        "What migration lock timeout failures explain the blocking behavior?"
+    )
+    assert select_complementary(command, [candidate(1, text)]).selected_ids == (1,)
+    assert select_complementary(question, [candidate(1, text)]).selected_ids == (1,)
+
+
+def test_structured_context_supports_a_user_declared_need():
+    task = ActivationTask.build("Investigate this failure", task_context={"component": "migration"})
+    item = candidate(1, "Migration requires a 12 second lock timeout.")
+    assert select_complementary(task, [item]).selected_ids == (1,)
+
+
+def test_same_language_semantic_fallback_accepts_point_six():
+    task = ActivationTask.build("Prevent another accidental commit after switching branches")
+    item = ContributionCandidate(
+        1,
+        "Check the checkout before editing files.",
+        1,
+        True,
+        "eligible",
+        (0,),
+        ({"need_index": 0, "dense_cosine": 0.60},),
+        {},
+    )
+    assert select_complementary(task, [item]).selected_ids == (1,)
+
+
+def test_applicability_recovers_real_branch_warning_without_admitting_history(tmp_path):
+    import numpy as np
+
+    warning = "After a user merges a feature, check the current checkout before editing; otherwise fixes can land on env/dev and be absent from the feature PR."
+    history = "A different feature was pushed to env/prod last month."
+
+    class Scorer:
+        def score(self, queries, memories):
+            return np.array(
+                [[5.0 if text == warning else -8.0 for _ in queries] for text in memories]
+            )
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "branch.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        ids = [
+            eng.schemas.create(
+                content_text=text,
+                facets={"source_kind": "explicit_remember"},
+                embedding=None,
+                scope_id="project:test",
+                dedupe=False,
+            )
+            for text in (warning, history)
+        ]
+        eng._retrieval._applicability_scorer = Scorer()
+        task = ActivationTask.build(
+            "PR merged; go back to the feature branch, pull latest from env/prod, and push to remote."
+        )
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        assert [item.schema.id for item in catalog.items] == [ids[0]]
+        assert catalog.applicability_status == "applied"
+        assert next(d for d in catalog.decisions if d.memory_id == ids[0]).source_spans
+    finally:
+        eng.close()
+
+
+def test_model_failure_keeps_semantic_fallback_and_reports_degraded_status(tmp_path):
+    class Missing:
+        def score(self, queries, memories):
+            raise OSError("cached model missing")
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "fallback.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        sid = eng.schemas.create(
+            content_text="Migration lock timeout must remain 12 seconds.",
+            facets={},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        eng._retrieval._applicability_scorer = Missing()
+        task = ActivationTask.build(
+            "Investigate migration lock timeout failures and fix the blocking operation"
+        )
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        assert [item.schema.id for item in catalog.items] == [sid]
+        assert catalog.applicability_status == "unavailable"
+    finally:
+        eng.close()
+
+
+def test_model_localizes_long_semantic_source_without_prefix_truncation(tmp_path):
+    import numpy as np
+
+    clause = "Check the checkout before editing; otherwise fixes can land on env/dev and be absent from the feature PR."
+    text = "Unrelated office garden notes. " * 50 + clause
+
+    class Scorer:
+        def score(self, queries, memories):
+            return np.array(
+                [[5.0 if clause in text else -8.0 for _ in queries] for text in memories]
+            )
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "long.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        sid = eng.schemas.create(
+            content_text=text,
+            facets={"source_kind": "explicit_remember"},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        eng._retrieval._applicability_scorer = Scorer()
+        task = ActivationTask.build("Return to the feature branch after the user merge and push")
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        decision = next(d for d in catalog.decisions if d.memory_id == sid)
+        assert decision.selected
+        start, end = decision.source_spans[0]
+        assert start > 500
+        assert clause in text[start:end]
+        assert end - start <= 1024
+    finally:
+        eng.close()
+
+
+def test_branch_context_excludes_other_feature_history_but_keeps_portable_warning(tmp_path):
+    import numpy as np
+
+    class Scorer:
+        def score(self, queries, memories):
+            return np.full((len(memories), len(queries)), 5.0)
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "branches.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        history = eng.schemas.create(
+            content_text="The feat/old-widget branch was merged into env/prod.",
+            facets={"schema_class": "fact"},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        warning = eng.schemas.create(
+            content_text="After merging feat/old-widget, check the checkout before editing to avoid committing fixes to the shared branch.",
+            facets={"schema_class": "lesson", "source_kind": "explicit_remember"},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        stale = eng.schemas.create(
+            content_text="The feat/older branch was merged into env/prod.",
+            facets={"schema_class": "fact", "injectable": False},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        eng._retrieval._applicability_scorer = Scorer()
+        task = ActivationTask.build(
+            "Return to the feature branch after the merge and push",
+            "Merge env/prod into fix/current-widget and push",
+        )
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        assert [item.schema.id for item in catalog.items] == [warning]
+        assert (
+            next(d for d in catalog.decisions if d.memory_id == history).reason
+            == "structured_facet_conflict"
+        )
+        assert next(d for d in catalog.decisions if d.memory_id == stale).reason == "ineligible"
+    finally:
+        eng.close()
+
+
+def test_bare_read_action_does_not_consume_startup_tokens(tmp_path):
+    import numpy as np
+
+    class Scorer:
+        def score(self, queries, memories):
+            return np.full((len(memories), len(queries)), 5.0)
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "narration.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        narration = eng.schemas.create(
+            content_text="Read the current dashboard metrics in README.md.",
+            facets={},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        useful = eng.schemas.create(
+            content_text="The dashboard metrics exclude episodes because customers need durable memories and procedures.",
+            facets={"source_kind": "explicit_remember"},
+            embedding=None,
+            scope_id="project:test",
+            dedupe=False,
+        )
+        eng._retrieval._applicability_scorer = Scorer()
+        task = ActivationTask.build("Assess dashboard metrics and propose user-facing improvements")
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        assert [item.schema.id for item in catalog.items] == [useful]
+        assert (
+            next(d for d in catalog.decisions if d.memory_id == narration).reason
+            == "insufficient_evidence"
+        )
+    finally:
+        eng.close()
+
+
+def test_numbered_task_facet_rejects_observation_of_another_hop(tmp_path):
+    import numpy as np
+
+    class Scorer:
+        def score(self, queries, memories):
+            return np.full((len(memories), len(queries)), 5.0)
+
+    eng = SlowaveEngine(
+        SlowaveConfig(db_path=str(tmp_path / "hops.db"), dim=8, disable_encoder=True)
+    )
+    try:
+        ids = [
+            eng.schemas.create(
+                content_text=text,
+                facets={"source_kind": "explicit_remember", "schema_class": "lesson"},
+                embedding=None,
+                scope_id="project:test",
+                dedupe=False,
+            )
+            for text in (
+                "Hop 9 failed because no query fetched the current cash position.",
+                "Hop 10 failed because the maximum tool count was exhausted.",
+            )
+        ]
+        eng._retrieval._applicability_scorer = Scorer()
+        task = ActivationTask.build(
+            "What is the new hop 9 failure about and should it be addressed here?"
+        )
+        catalog = eng.relevant_catalog(
+            task.cues,
+            scope="project:test",
+            selection_mode="complementary_activation",
+            activation_task=task,
+        )
+        assert [item.schema.id for item in catalog.items] == [ids[0]]
+        assert (
+            next(d for d in catalog.decisions if d.memory_id == ids[1]).reason
+            == "structured_facet_conflict"
+        )
+    finally:
+        eng.close()

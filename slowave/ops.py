@@ -27,7 +27,12 @@ from slowave.core.context import ActivationTrace, WorkingMemoryItem, WorkingMemo
 from slowave.core.continuity import resolve_continuity
 from slowave.core.engine import SlowaveEngine
 from slowave.core.lifecycle import is_slowave_lifecycle
+from slowave.core.retrieval_baseline import POLICY_VERSION as BASELINE_POLICY_VERSION
+from slowave.core.retrieval_baseline import enabled as baseline_enabled
 from slowave.core.services.retrieval_access import canonical_cue_text
+from slowave.core.shared_retrieval import POLICY_VERSION as SHARED_POLICY_VERSION
+from slowave.core.shared_retrieval import SharedRequest
+from slowave.core.shared_retrieval import enabled as shared_retrieval_enabled
 from slowave.symbolic.procedural_memory import (
     load_procedures,
     normalize_facets,
@@ -101,9 +106,22 @@ def _retrieval_policy_version(
 ) -> str:
     """Single source of truth for the policy label recorded on retrievals."""
     if relevant_set:
+        if baseline_enabled():
+            return BASELINE_POLICY_VERSION
+        from slowave.core.hybrid_selection import POLICY_VERSION as HYBRID_POLICY_VERSION
+        from slowave.core.hybrid_selection import dogfood_enabled
+
+        if not recall and dogfood_enabled():
+            return HYBRID_POLICY_VERSION
+        if shared_retrieval_enabled():
+            return SHARED_POLICY_VERSION
+        # The pool-relative identities keep responses and cursors
+        # distinguishable from historical shipped-policy records.
         if recall:
-            return "relevant-set-v2"
-        return "activation-complementary-v1" if complementary_activation else "relevant-set-v2"
+            return "recall-pool-relative-v1"
+        return (
+            "activation-pool-relative-v1" if complementary_activation else "recall-pool-relative-v1"
+        )
     if recall:
         return "facet-v1" if facet_mode else "continuity-v1"
     return "facet-v1" if facet_mode else ("continuity-v1" if continuity_state else "strict-v9")
@@ -586,6 +604,16 @@ def activate(
     task_facets = _explicit_task_facets(query, cap=min(limit, _MAX_AUTOMATIC_TASK_FACETS))
     facet_mode = len(task_facets) >= 3
 
+    shared_request = (
+        SharedRequest(query, resolved_goal, semantic_context, resolved_context, "activate")
+        if relevant_set and shared_retrieval_enabled()
+        else None
+    )
+    baseline_request = (
+        SharedRequest(query, resolved_goal, semantic_context, resolved_context, "activate")
+        if relevant_set and baseline_enabled()
+        else None
+    )
     catalog = None
     if relevant_set:
         activation_task = (
@@ -602,6 +630,9 @@ def activate(
             ),
             selection_mode=("complementary_activation" if complementary_activation else None),
             activation_task=activation_task,
+            shared_request=shared_request,
+            hybrid_task=query,
+            baseline_request=baseline_request,
         )
         catalog_items = [
             WorkingMemoryItem(
@@ -768,9 +799,13 @@ def activate(
             encoder=getattr(eng, "encoder", None),
             suppression_trace=procedure_suppressions,
         )
-        if procedure_interpretation["action_intent"] != "non_action"
+        if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
         else []
     )
+    if baseline_request is not None:
+        procedure_hits = eng._retrieval.baseline_procedure_filter(baseline_request, procedure_hits)
+    if shared_request is not None:
+        procedure_hits = eng._retrieval.shared_procedures(shared_request, procedures)
     _schema_items = []
     for index, item in enumerate(brief.items):
         next_score = brief.items[index + 1].activation if index + 1 < len(brief.items) else None
@@ -835,6 +870,8 @@ def activate(
         cue_embedding=shadow_cue_embedding,
     )
     _internal["shadow_access_traces"] = _shadow
+    if catalog is not None:
+        _internal["catalog_truncated"] = catalog.truncated
     eng.record_context_recall(
         context_id=context_id,
         session_id=session_id,
@@ -899,12 +936,18 @@ def activate(
         result["continuity_id"] = continuity_id
         result["continuity_state"] = continuity_state
         result["retrieval_policy_version"] = (
-            ("activation-complementary-v1" if complementary_activation else "relevant-set-v2")
+            _retrieval_policy_version(
+                relevant_set=True,
+                complementary_activation=complementary_activation,
+                facet_mode=False,
+            )
             if relevant_set
             else ("facet-v1" if facet_mode else "continuity-v1")
         )
     if catalog is not None:
         result["relevant_total"] = len(catalog.items)
+        if shared_request is not None:
+            result["retrieval_policy_version"] = SHARED_POLICY_VERSION
         result["catalog_truncated"] = catalog.truncated
         result["applicability_status"] = catalog.applicability_status
     if include_diagnostics or mode == "debug":
@@ -1040,11 +1083,12 @@ def recall(
         raw_events       – raw event records (when evidence=True)
     """
     session_context: dict[str, Any] = {}
+    session_goal: str | None = None
     if session_id is not None:
         session = (
             eng.db.connect()
             .execute(
-                "SELECT scope_id, ended_ts, task_context_json FROM sessions WHERE id = ?",
+                "SELECT scope_id, ended_ts, task_context_json, initial_goal FROM sessions WHERE id = ?",
                 (session_id,),
             )
             .fetchone()
@@ -1056,6 +1100,7 @@ def recall(
         if session["scope_id"] != scope:
             raise ValueError("session_id and scope do not match")
         session_context = json.loads(session["task_context_json"] or "{}")
+        session_goal = session["initial_goal"]
     context_delta = normalize_facets(
         task_context if task_context is not None else retrieval_context,
         "task_context",
@@ -1082,6 +1127,16 @@ def recall(
             graph_channels=graph_channels,
             min_neighbor_relevance=min_neighbor_relevance,
         )
+    shared_request = (
+        SharedRequest(query, session_goal, semantic_context, retrieval_context, "recall")
+        if relevant_set and shared_retrieval_enabled()
+        else None
+    )
+    baseline_request = (
+        SharedRequest(query, session_goal, semantic_context, retrieval_context, "recall")
+        if relevant_set and baseline_enabled()
+        else None
+    )
     catalog = (
         eng.relevant_catalog(
             [effective_query],
@@ -1091,6 +1146,8 @@ def recall(
                 min_relevance if min_relevance is not None else ACTIVATE_MIN_RELEVANCE_DEFAULT
             ),
             selection_mode="deliberate_recall",
+            shared_request=shared_request,
+            baseline_request=baseline_request,
         )
         if relevant_set
         else None
@@ -1104,6 +1161,21 @@ def recall(
         else result.schema_activations
     )
     related_schemas = [] if catalog is not None else result.related_schemas
+    source_previews = {}
+    if catalog is not None:
+        from slowave.mcp.activation_catalog import source_preview
+
+        selected_spans = {
+            decision.memory_id: decision.source_spans
+            for decision in catalog.decisions
+            if decision.selected and decision.source_spans
+        }
+        for schema in direct_schemas:
+            text = schema.content_text or ""
+            spans = selected_spans.get(schema.id)
+            if spans is None:
+                spans = eng._retrieval.recall_source_spans(text, effective_query)
+            source_previews[schema.id] = source_preview(text, spans)
     if session_id is not None and task_context is not None:
         eng.db.connect().execute(
             "UPDATE sessions SET task_context_json = ? WHERE id = ?",
@@ -1126,9 +1198,13 @@ def recall(
             encoder=getattr(eng, "encoder", None),
             suppression_trace=procedure_suppressions,
         )
-        if procedure_interpretation["action_intent"] != "non_action"
+        if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
         else []
     )
+    if baseline_request is not None:
+        procedure_hits = eng._retrieval.baseline_procedure_filter(baseline_request, procedure_hits)
+    if shared_request is not None:
+        procedure_hits = eng._retrieval.shared_procedures(shared_request, procedures)
     _internal = _retrieval_exposure_snapshot(
         schemas=[
             {
@@ -1185,6 +1261,7 @@ def recall(
         retrieval_type="recall",
         session_id=session_id,
         query=query,
+        goal=session_goal if baseline_request is not None else None,
         scope_id=scope,
         scope_kind=scope.split(":", 1)[0] if scope and ":" in scope else None,
         situation=retrieval_context,
@@ -1211,7 +1288,17 @@ def recall(
     memories = [
         {
             "id": f"sch_{s.id}",
-            "content_text": str(s.content_text or "")[:500],
+            "content_text": (
+                source_previews[s.id][0]
+                if s.id in source_previews
+                else str(s.content_text or "")[:500]
+            ),
+            **(
+                {"excerpt": source_previews[s.id][1]}
+                if s.id in source_previews and source_previews[s.id][1]
+                else {}
+            ),
+            "preview_prepared": s.id in source_previews,
             # Under relevant-set delivery both fields carry the catalog's
             # normalized relevance scale; the legacy salience-blended rank
             # scale is only produced by the full pipeline path.
