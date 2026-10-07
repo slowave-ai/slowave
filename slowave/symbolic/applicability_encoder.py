@@ -9,6 +9,7 @@ from __future__ import annotations
 import platform
 from collections import OrderedDict
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
 
 import numpy as np
@@ -21,6 +22,7 @@ REVISION = "1427fd652930e4ba29e8149678df786c240d8825"
 def _backend():
     import onnxruntime as ort
     from huggingface_hub import hf_hub_download, snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
     from transformers import AutoTokenizer
 
     filename = (
@@ -28,11 +30,27 @@ def _backend():
         if platform.machine().lower() in {"arm64", "aarch64"}
         else "onnx/model_quint8_avx2.onnx"
     )
-    # Runtime is explicitly offline. Provision the pinned files before enabling
-    # the feature; a missing model produces visible degraded-mode diagnostics.
-    path = hf_hub_download(MODEL, filename, revision=REVISION, local_files_only=True)
-    root = snapshot_download(MODEL, revision=REVISION, local_files_only=True)
-    tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
+    # Avoid network traffic for cached installations. Like the embedding
+    # model, provision the pinned assets on first use when absent. Hub offline
+    # mode remains authoritative; no task or memory text is sent to the Hub.
+    try:
+        path = hf_hub_download(MODEL, filename, revision=REVISION, local_files_only=True)
+        root = snapshot_download(MODEL, revision=REVISION, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
+    except (LocalEntryNotFoundError, OSError):
+        root = snapshot_download(
+            MODEL,
+            revision=REVISION,
+            allow_patterns=[
+                filename,
+                "config.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+            ],
+        )
+        path = str(Path(root) / filename)
+        tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
     options = ort.SessionOptions()
     options.intra_op_num_threads = 2
     options.inter_op_num_threads = 1

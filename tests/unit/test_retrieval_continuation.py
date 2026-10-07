@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+from mcp.server.fastmcp import FastMCP
+
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
 from slowave.mcp.tools import (
@@ -9,6 +13,7 @@ from slowave.mcp.tools import (
     _continuation_page,
     _freeze_continuation,
     _serialized_chars,
+    register_tools,
 )
 
 
@@ -144,5 +149,41 @@ def test_oversized_candidate_never_advertises_an_unusable_cursor(tmp_path) -> No
         assert data["more_available"] is False
         assert "continue_from" not in data
         assert data["accessible_field"] == {}
+    finally:
+        eng.close()
+
+
+def test_failed_recall_preparation_removes_phantom_retrieval(tmp_path, monkeypatch) -> None:
+    eng = _engine(tmp_path)
+    try:
+        scope = "project:test"
+        session_id = eng.session_start(agent="test", scope=scope, goal="inspect unsafe source")
+
+        def recall(*args, **kwargs):
+            _seed_retrieval(eng, "rec_unrenderable", session_id, scope)
+            return {
+                "retrieval_id": "rec_unrenderable",
+                "retrieval_policy_version": "recall-pool-relative-v1",
+                "memories": [{"id": "sch_1", "content_text": "x" * 2000, "preview_prepared": True}],
+                "procedures": [],
+            }
+
+        monkeypatch.setattr("slowave.mcp.tools.ops.recall", recall)
+        mcp = FastMCP("test")
+        register_tools(mcp, lambda: eng)
+        tool = mcp._tool_manager.get_tool("slowave_recall")
+        response = asyncio.run(
+            tool.fn(ctx=None, session_id=session_id, scope=scope, query="source")
+        )
+        assert response["ok"] is False
+        assert "requires contribution source spans" in response["error"]["message"]
+        assert (
+            eng.db.connect().execute("SELECT COUNT(*) FROM context_recall_events").fetchone()[0]
+            == 0
+        )
+        assert (
+            eng.db.connect().execute("SELECT COUNT(*) FROM retrieval_continuations").fetchone()[0]
+            == 0
+        )
     finally:
         eng.close()

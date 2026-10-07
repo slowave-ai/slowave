@@ -83,3 +83,11 @@ def test_public_recall_uses_pair_scores_preserving_scope_and_feedback_boundary(t
         assert {row["id"] for row in fallback["memories"]} == {f"sch_{i}" for i in ids}
     finally:
         engine.close()
+
+
+def test_startup_retains_strong_evidence_neighborhood_without_a_result_quota():
+    scores = np.array([[8.0], [7.0], [1.0], [-1.0]])
+    assert applicability_order(scores, minimum_logit=0, retain_weak_support=False) == [0, 1]
+    assert applicability_order(
+        np.ones((40, 1)), minimum_logit=0, retain_weak_support=False
+    ) == list(range(40))

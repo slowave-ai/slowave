@@ -1130,11 +1130,14 @@ class SchemaStore:
         #    it a schema merely evaluated-and-suppressed by the working-memory
         #    gate in a foreign scope counted as cross-scope usage, so gate
         #    rejections drove stage promotion (self-promoting noise loop).
-        # 2. context_feedback_events: per-scope validation. A scope where the
-        #    agent marked this schema used counts fully; exposure without
-        #    feedback counts 0.25; a scope with only negative marks counts 0.
-        #    Promotion therefore requires validated usefulness in a foreign
-        #    scope, not mere exposure.
+        # 2. feedback marks, two ledgers (WP-3): canonical accepted active-mode
+        #    feedback_events rows plus legacy context_feedback_events rows
+        #    (typed legacy, one unit per row). A scope where the agent marked
+        #    this schema used counts fully; exposure without feedback counts
+        #    0.25; a scope with only negative marks counts 0. Canonical marks
+        #    dominate conflicts with legacy rows per scope. Promotion
+        #    therefore requires validated usefulness in a foreign scope, not
+        #    mere exposure.
         # 3. schema_evidence from cross-scope remember (P4 in engine.py): same
         #    concept remembered from a different scope is strong evidence and
         #    counts fully; it breaks the bootstrap deadlock where stage-0
@@ -1160,21 +1163,22 @@ class SchemaStore:
             """,
             (f"%{token}%",) * 4,
         ).fetchall()
-        used_scopes: set[str] = set()
-        negative_scopes: set[str] = set()
-        total_used_marks = 0
-        total_negative_marks = 0
-        # Per-scope tallies (WP-7): same shape as the global counters above,
-        # bucketed by fb_scope, so a per-scope noise ratio can be derived
-        # without a second query. See context_noise_by_scope below.
-        used_marks_by_scope: dict[str, int] = {}
-        negative_marks_by_scope: dict[str, int] = {}
+        # WP-3: legacy context_feedback_events rows are a typed legacy source —
+        # each row contributes at most one used mark and one negative mark.
+        legacy_used_scopes: set[str] = set()
+        legacy_negative_scopes: set[str] = set()
+        legacy_used_marks_by_scope: dict[str, int] = {}
+        legacy_negative_marks_by_scope: dict[str, int] = {}
+        legacy_total_used_marks = 0
+        legacy_total_negative_marks = 0
         for fb in fb_rows:
             fb_scope = str(fb["scope_id"])
             if token in (fb["used_memory_ids_json"] or ""):
-                used_scopes.add(fb_scope)
-                total_used_marks += 1
-                used_marks_by_scope[fb_scope] = used_marks_by_scope.get(fb_scope, 0) + 1
+                legacy_used_scopes.add(fb_scope)
+                legacy_total_used_marks += 1
+                legacy_used_marks_by_scope[fb_scope] = (
+                    legacy_used_marks_by_scope.get(fb_scope, 0) + 1
+                )
             if any(
                 token in (fb[col] or "")
                 for col in (
@@ -1183,9 +1187,59 @@ class SchemaStore:
                     "wrong_memory_ids_json",
                 )
             ):
-                negative_scopes.add(fb_scope)
-                total_negative_marks += 1
-                negative_marks_by_scope[fb_scope] = negative_marks_by_scope.get(fb_scope, 0) + 1
+                legacy_negative_scopes.add(fb_scope)
+                legacy_total_negative_marks += 1
+                legacy_negative_marks_by_scope[fb_scope] = (
+                    legacy_negative_marks_by_scope.get(fb_scope, 0) + 1
+                )
+
+        # Canonical ledger (WP-3): accepted active-mode v9 rows for this
+        # schema. Canonical marks dominate conflicts with legacy rows for the
+        # same scope (execution spec §4).
+        canon_rows = conn.execute(
+            "SELECT scope_id, assessment FROM feedback_events "
+            "WHERE target_kind = 'memory' AND target_id = ? AND status = 'accepted' "
+            "AND mutation_mode = 'active'",
+            (schema_id_key,),
+        ).fetchall()
+        canon_used_scopes: set[str] = set()
+        canon_negative_scopes: set[str] = set()
+        canon_used_marks_by_scope: dict[str, int] = {}
+        canon_negative_marks_by_scope: dict[str, int] = {}
+        canon_total_used_marks = 0
+        canon_total_negative_marks = 0
+        for fb in canon_rows:
+            fb_scope = str(fb["scope_id"])
+            assessment = fb["assessment"]
+            if assessment == "used":
+                canon_used_scopes.add(fb_scope)
+                canon_total_used_marks += 1
+                canon_used_marks_by_scope[fb_scope] = canon_used_marks_by_scope.get(fb_scope, 0) + 1
+            elif assessment in ("irrelevant", "stale"):
+                canon_negative_scopes.add(fb_scope)
+                canon_total_negative_marks += 1
+                canon_negative_marks_by_scope[fb_scope] = (
+                    canon_negative_marks_by_scope.get(fb_scope, 0) + 1
+                )
+
+        # Merged view: canonical dominance at scope granularity — a scope the
+        # canonically marked negative can never count as validated-used via a
+        # legacy row, and vice versa. Mark totals stay additive so the noise
+        # ratios expose real tension between the two ledgers.
+        used_scopes = canon_used_scopes | {
+            s for s in legacy_used_scopes if s not in canon_negative_scopes
+        }
+        negative_scopes = canon_negative_scopes | {
+            s for s in legacy_negative_scopes if s not in canon_used_scopes
+        }
+        total_used_marks = canon_total_used_marks + legacy_total_used_marks
+        total_negative_marks = canon_total_negative_marks + legacy_total_negative_marks
+        used_marks_by_scope: dict[str, int] = dict(legacy_used_marks_by_scope)
+        for scope, count in canon_used_marks_by_scope.items():
+            used_marks_by_scope[scope] = used_marks_by_scope.get(scope, 0) + count
+        negative_marks_by_scope: dict[str, int] = dict(legacy_negative_marks_by_scope)
+        for scope, count in canon_negative_marks_by_scope.items():
+            negative_marks_by_scope[scope] = negative_marks_by_scope.get(scope, 0) + count
 
         recall_rows = conn.execute(
             """
@@ -1500,6 +1554,7 @@ class SchemaStore:
         *,
         scope_id: str | None = None,
         include_inactive: bool = False,
+        content_weight: float = 1.0,
     ) -> List[tuple[int, float, int, List[str]]]:
         """Return safe FTS candidates as ``(id, bm25, rank, tokens)``.
 
@@ -1507,16 +1562,21 @@ class SchemaStore:
         occurs in SQL before ``LIMIT`` so inaccessible hits cannot consume the
         lexical window.
         """
+        if not np.isfinite(content_weight) or content_weight <= 0:
+            raise ValueError("BM25 content_weight must be finite and positive")
         expression, tokens = self._safe_fts_query(query)
         if expression is None:
             return []
         conn = self.db.connect()
         try:
+            score_sql = "f.rank" if content_weight == 1.0 else "bm25(schemas_fts, ?)"
             sql = (
-                "SELECT f.rowid, f.rank, s.content_text FROM schemas_fts f "
+                f"SELECT f.rowid, {score_sql} AS bm25_score, s.content_text FROM schemas_fts f "
                 "JOIN schemas s ON s.id = f.rowid WHERE schemas_fts MATCH ? "
             )
-            args: List[Any] = [expression]
+            args: List[Any] = (
+                [expression] if content_weight == 1.0 else [content_weight, expression]
+            )
             if not include_inactive:
                 sql += "AND s.status IN ('active', 'needs_review') "
             if scope_id is not None:
@@ -1525,7 +1585,7 @@ class SchemaStore:
                     "OR s.scope_id IN ('global', 'user') OR s.generalization_stage >= 2) "
                 )
                 args.append(scope_id)
-            sql += "ORDER BY f.rank ASC, f.rowid ASC LIMIT ?"
+            sql += "ORDER BY bm25_score ASC, f.rowid ASC LIMIT ?"
             args.append(int(limit))
             rows = conn.execute(sql, tuple(args)).fetchall()
         except Exception:
@@ -1557,7 +1617,7 @@ class SchemaStore:
                 token.casefold() for token in self.lexical_tokens(str(row["content_text"] or ""))
             }
             matched_terms = sorted((query_terms & content_terms) - weak_terms)
-            results.append((int(row["rowid"]), float(row["rank"]), index, matched_terms))
+            results.append((int(row["rowid"]), float(row["bm25_score"]), index, matched_terms))
         return results
 
     def search_fts(

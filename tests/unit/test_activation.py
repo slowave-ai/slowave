@@ -259,6 +259,39 @@ def test_activate_and_recall_share_memory_content_budget() -> None:
     assert recall["memories"][0]["content"] == activation["memories"][0]["content"]
 
 
+def test_prepared_recall_short_source_is_not_cut_again() -> None:
+    content = "Historical notes. " * 35 + "Unless the worker is drained, do not deploy."
+    result = _canonical_recall_result(
+        {
+            "retrieval_id": "rec_short",
+            "memories": [{"id": "sch_1", "content_text": content, "preview_prepared": True}],
+            "retrieval_policy_version": "recall-pool-relative-v1",
+        },
+        scope="project:test",
+        evidence="references",
+    )
+    assert len(content) > 500
+    assert result["memories"][0]["content"] == content
+
+
+def test_long_recall_passage_preserves_condition_negation_and_source_offsets() -> None:
+    from slowave.mcp.activation_catalog import source_preview
+
+    eng, path = _engine()
+    try:
+        clause = "For Cedar deployment, if the billing worker is active, do not run migration; the timeout must stay at 12 seconds."
+        source = "Historical garden notes describe routine work. " * 100 + clause
+        spans = eng._retrieval.recall_source_spans(source, "Cedar deployment migration timeout")
+        preview, indication = source_preview(source, spans)
+        assert clause in preview
+        assert len(preview) <= 1024
+        assert indication["source_chars"] == len(source)
+        assert indication["source_spans"] == [list(span) for span in spans]
+        assert preview == "\n".join(source[start:end] for start, end in spans)
+    finally:
+        _cleanup(eng, path)
+
+
 def test_o2_cold_start_is_structured_without_duplicate_instruction_text() -> None:
     result = _canonical_activation_result(
         {

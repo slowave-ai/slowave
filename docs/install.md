@@ -28,6 +28,19 @@ slowave doctor            # verify: daemon health, client detection
 `slowave setup` is idempotent and safe to run multiple times. The HTTP MCP daemon and background consolidation worker start automatically as system services.
 
 Claude Desktop and Cursor require one manual paste after setup because their instruction surfaces cannot be modified programmatically. `slowave setup` prints the exact text and path.
+### Local retrieval models
+
+The embedding model and the pinned multilingual applicability model run locally.
+Missing applicability assets are downloaded from Hugging Face on first use;
+cached installations reuse them without a network request. Only model assets
+are downloaded: task and memory text stays on your computer. The initial
+request can take longer while assets are downloaded and loaded.
+
+For an offline installation, provision the model cache beforehand. Set
+`HF_HUB_OFFLINE=1` to prohibit downloads. If applicability assets are missing
+or unavailable, retrieval uses lexical/semantic fallback and returns an
+`applicability_unavailable` warning; relevance can differ in that mode.
+
 ### Per-client setup
 
 To configure a single client, or to find client-specific details:

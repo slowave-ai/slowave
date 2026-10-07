@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
@@ -1133,13 +1134,46 @@ def _runtime_service_env() -> dict[str, str]:
     return runtime
 
 
-def _launchd_runtime_environment() -> str:
+def _preserved_service_environment(plist_path: Path | None) -> dict[str, str]:
+    """Merge unmanaged ``EnvironmentVariables`` keys from an existing plist.
+
+    The service plists are regenerated from a template whose environment holds
+    only the managed runtime keys; without this merge any manually pinned extra
+    key (for example ``SLOWAVE_EXPERIMENT_PIN=1``) would be silently dropped on
+    every setup run. Managed keys always take the freshly computed template
+    value — only extra keys already present in the existing plist file are
+    carried over. A missing, unreadable, or malformed plist yields the template
+    environment unchanged.
+    """
+    merged = _runtime_service_env()
+    if plist_path is None:
+        return merged
+    try:
+        existing = plistlib.loads(plist_path.read_bytes())
+    except Exception:  # noqa: BLE001 - any read/parse failure falls back to the template
+        return merged
+    env = existing.get("EnvironmentVariables") if isinstance(existing, dict) else None
+    if not isinstance(env, dict):
+        return merged
+    for key, value in env.items():
+        if not isinstance(key, str) or key in merged:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            continue
+        merged[key] = str(value)
+    return merged
+
+
+def _format_launchd_environment(env: dict[str, str]) -> str:
     from xml.sax.saxutils import escape
 
     return "".join(
-        f"<key>{escape(key)}</key><string>{escape(value)}</string>"
-        for key, value in _runtime_service_env().items()
+        f"<key>{escape(key)}</key><string>{escape(value)}</string>" for key, value in env.items()
     )
+
+
+def _launchd_runtime_environment(preserve_from: Path | None = None) -> str:
+    return _format_launchd_environment(_preserved_service_environment(preserve_from))
 
 
 def _systemd_runtime_environment() -> str:
@@ -1178,7 +1212,7 @@ def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
     ensure_runtime_dirs(paths)
     content = _LAUNCHD_PLIST.format(
         bin=escape(slowave_bin),
-        runtime_environment=_launchd_runtime_environment(),
+        runtime_environment=_launchd_runtime_environment(preserve_from=plist_path),
         worker_log=escape(str(paths.logs_dir / "worker.log")),
         worker_err=escape(str(paths.logs_dir / "worker.err")),
     )
@@ -1348,7 +1382,7 @@ def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
     ensure_runtime_dirs(paths)
     content = _LAUNCHD_DAEMON_PLIST.format(
         bin=escape(slowave_bin),
-        runtime_environment=_launchd_runtime_environment(),
+        runtime_environment=_launchd_runtime_environment(preserve_from=plist_path),
         daemon_log=escape(str(paths.logs_dir / "daemon.log")),
         daemon_err=escape(str(paths.logs_dir / "daemon.err")),
     )

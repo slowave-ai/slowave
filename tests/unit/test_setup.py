@@ -840,3 +840,155 @@ class TestClineMcpSettingsPath:
         (fake_home / ".cline" / "data").mkdir(parents=True, exist_ok=True)
         got = _setup_mod._cline_mcp_settings_path()
         assert got == (fake_home / ".cline" / "data" / "settings" / "cline_mcp_settings.json")
+
+
+# ===========================================================================
+# launchd EnvironmentVariables preservation across setup regeneration
+# ===========================================================================
+
+
+def _write_plist(path, environment: dict) -> None:
+    """Write a minimal launchd plist with the given EnvironmentVariables."""
+    import plistlib
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        plistlib.dumps(
+            {"Label": "com.slowave.daemon", "EnvironmentVariables": environment},
+            fmt=plistlib.FMT_XML,
+        )
+    )
+
+
+class TestPreservedServiceEnvironment:
+    """setup regenerates the launchd plists from a template whose environment
+    holds only the managed runtime keys. The merge carries unmanaged keys from
+    the existing plist file over the regeneration boundary, so manually pinned
+    environment settings survive every setup run. Managed keys must always
+    take the fresh template value; only unmanaged keys carry over."""
+
+    def test_extra_keys_survive_and_managed_keys_take_template_values(self, fake_home, monkeypatch):
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.slowave.daemon.plist"
+        _write_plist(
+            plist_path,
+            {
+                "SLOWAVE_HOME": "/stale/old-root",
+                "SLOWAVE_MCP_HTTP_PORT": "9999",
+                "SLOWAVE_EXPERIMENT_PIN": "1",
+            },
+        )
+
+        merged = _setup_mod._preserved_service_environment(plist_path)
+
+        assert merged["SLOWAVE_EXPERIMENT_PIN"] == "1"
+        # Managed keys are recomputed, never carried over from the old plist.
+        assert merged["SLOWAVE_HOME"] != "/stale/old-root"
+        assert merged["SLOWAVE_MCP_HTTP_PORT"] == "8766"
+
+    def test_missing_or_malformed_plist_yields_template_environment(self, fake_home, monkeypatch):
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        template = _setup_mod._launchd_runtime_environment()
+        missing = fake_home / "Library" / "LaunchAgents" / "absent.plist"
+        malformed = fake_home / "Library" / "LaunchAgents" / "broken.plist"
+        malformed.parent.mkdir(parents=True, exist_ok=True)
+        malformed.write_bytes(b'<plist version="1.0"><dict>truncated')
+
+        assert _setup_mod._preserved_service_environment(missing) == dict(
+            _setup_mod._runtime_service_env()
+        )
+        assert _setup_mod._preserved_service_environment(malformed) == dict(
+            _setup_mod._runtime_service_env()
+        )
+        assert _setup_mod._launchd_runtime_environment(preserve_from=malformed) == template
+
+    def test_non_scalar_and_bool_values_are_skipped(self, fake_home, monkeypatch):
+        import plistlib
+
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.slowave.daemon.plist"
+        raw = plistlib.dumps(
+            {
+                "Label": "com.slowave.daemon",
+                "EnvironmentVariables": {
+                    "SLOWAVE_GOOD_PIN": "1",
+                    "SLOWAVE_BOOL_PIN": True,
+                    "SLOWAVE_LIST_PIN": ["a"],
+                    "SLOWAVE_DICT_PIN": {"k": "v"},
+                },
+            },
+            fmt=plistlib.FMT_XML,
+        )
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_bytes(raw)
+
+        merged = _setup_mod._preserved_service_environment(plist_path)
+
+        assert merged["SLOWAVE_GOOD_PIN"] == "1"
+        for bad in ("SLOWAVE_BOOL_PIN", "SLOWAVE_LIST_PIN", "SLOWAVE_DICT_PIN"):
+            assert bad not in merged
+
+
+class TestInstallDaemonMacosPreservesEnvPins:
+    """Installer-level regression: regenerate the daemon/worker plists on a
+    fake home while an experiment pin lives in the existing file; the pin
+    must survive, and a second identical run must be a no-op."""
+
+    def test_regenerated_daemon_plist_keeps_unmanaged_env_keys(self, fake_home, monkeypatch):
+        import plistlib
+
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+        monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+        monkeypatch.setattr(_setup_mod.subprocess, "run", lambda *args, **kwargs: None)
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.slowave.daemon.plist"
+        _write_plist(
+            plist_path,
+            {
+                "SLOWAVE_HOME": "/stale/old-root",
+                "SLOWAVE_MCP_HTTP_PORT": "9999",
+                "SLOWAVE_EXPERIMENT_PIN": "1",
+            },
+        )
+
+        written, changed = _setup_mod._install_daemon_macos("slowave")
+
+        assert changed is True
+        assert written == str(plist_path)
+        regen = plistlib.loads(plist_path.read_bytes())
+        env = regen["EnvironmentVariables"]
+        assert env["SLOWAVE_EXPERIMENT_PIN"] == "1"
+        assert env["SLOWAVE_HOME"] == str((fake_home / "runtime").resolve())
+        assert env["SLOWAVE_MCP_HTTP_PORT"] == "8766"
+
+    def test_regenerated_worker_plist_keeps_unmanaged_env_keys(self, fake_home, monkeypatch):
+        import plistlib
+
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+        monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+        monkeypatch.setattr(_setup_mod.subprocess, "run", lambda *args, **kwargs: None)
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.slowave.worker.plist"
+        _write_plist(plist_path, {"SLOWAVE_EXPERIMENT_PIN": "1"})
+
+        written, changed = _setup_mod._install_worker_macos("slowave")
+
+        assert changed is True
+        assert written == str(plist_path)
+        regen = plistlib.loads(plist_path.read_bytes())
+        assert regen["EnvironmentVariables"]["SLOWAVE_EXPERIMENT_PIN"] == "1"
+
+    def test_second_run_is_idempotent_with_preserved_keys(self, fake_home, monkeypatch):
+        monkeypatch.delenv("SLOWAVE_DB", raising=False)
+        monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+        monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+        monkeypatch.setattr(_setup_mod.subprocess, "run", lambda *args, **kwargs: None)
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.slowave.daemon.plist"
+        _write_plist(plist_path, {"SLOWAVE_EXPERIMENT_PIN": "1"})
+
+        _setup_mod._install_daemon_macos("slowave")
+        _, changed_again = _setup_mod._install_daemon_macos("slowave")
+
+        assert changed_again is False
