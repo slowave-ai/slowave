@@ -41,6 +41,7 @@ import slowave.ops as ops
 from slowave.mcp import session_resolver
 from slowave.mcp.activation_catalog import (
     MEMORY_PAGE_SIZE,
+    SUPPORTED_POLICIES,
     CatalogCompatibilityError,
     FrozenActivationCatalog,
 )
@@ -289,6 +290,8 @@ class RememberArguments(_StrictMCPModel):
 class MemoryFeedbackEntry(_StrictMCPModel):
     memory_id: Annotated[str, Field(min_length=1)]
     assessment: Annotated[str, Field(min_length=1)]
+    relevance: str | None = None
+    effect: str | None = None
     stale_reason: str | None = None
     replacement_memory_id: str | None = None
     reason: str | None = None
@@ -848,7 +851,7 @@ def _read_bound_activation_cursor(
     payload = json.loads(row["candidates_json"])
     if (
         isinstance(payload, dict)
-        and payload.get("originating_policy_version") == "activation-complementary-v1"
+        and payload.get("originating_policy_version") in SUPPORTED_POLICIES
     ):
         return row, payload
     return None
@@ -965,7 +968,7 @@ def _prepare_complementary_activation(
         warnings.append(
             {
                 "code": "applicability_unavailable",
-                "message": "Local relevance reranking unavailable; discovery ordering used.",
+                "message": "Local applicability model unavailable; lexical and semantic fallback used.",
             }
         )
     spans = {
@@ -981,6 +984,7 @@ def _prepare_complementary_activation(
         contribution_spans=spans,
         catalog_truncated=bool(result.get("catalog_truncated")),
         first_page_metadata=metadata,
+        policy_version=result.get("retrieval_policy_version", "activation-complementary-v1"),
     )
     data, successor = catalog.page()
     if result.get("retrieval_policy_version") != data["retrieval_policy_version"]:
@@ -1105,9 +1109,17 @@ def _canonical_recall_result(
                 provenance["origin_scope"] = item["scope_id"]
             memory: dict[str, Any] = {
                 "memory_id": memory_id,
-                "content": str(item.get("content_text") or "")[:_MCP_MEMORY_CONTENT_LIMIT],
+                "content": (
+                    str(item.get("content_text") or "")
+                    if item.get("preview_prepared")
+                    or result.get("retrieval_policy_version")
+                    == "multilingual-retrieval-baseline-v1"
+                    else str(item.get("content_text") or "")[:_MCP_MEMORY_CONTENT_LIMIT]
+                ),
                 "pathway": pathway,
             }
+            if item.get("excerpt"):
+                provenance["excerpt"] = item["excerpt"]
             if provenance:
                 memory["provenance"] = provenance
             memories.append(memory)
@@ -1147,7 +1159,7 @@ def _canonical_recall_result(
         data["warnings"] = [
             {
                 "code": "applicability_unavailable",
-                "message": "Local relevance reranking unavailable; discovery ordering used.",
+                "message": "Local applicability model unavailable; lexical and semantic fallback used.",
             }
         ]
     return data
@@ -1556,6 +1568,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     "field_errors": field_errors,
                 },
             }
+        prepared_retrieval_id: str | None = None
         try:
             _validate_scope(request.scope)
             eng = build_engine()
@@ -1582,21 +1595,37 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 semantic_context=request.semantic_context,
                 relevant_set=True,
             )
+            prepared_retrieval_id = result["retrieval_id"]
             full_data = _canonical_recall_result(
                 result, scope=request.scope, evidence=request.evidence
             )
-            data, candidates = _focus_recall_data(full_data)
-            exposed_ids = {item["memory_id"] for item in data.get("memories", [])}
-            exposed_ids.update(item["procedure_id"] for item in data.get("procedures", []))
-            _attach_frozen_tail(
-                eng,
-                data=data,
-                candidates=candidates,
+            catalog = FrozenActivationCatalog.prepare(
+                retrieval_id=result["retrieval_id"],
                 session_id=request.session_id,
                 scope=request.scope,
-                exposed_ids=exposed_ids,
+                memories=full_data["memories"],
+                procedures=full_data["procedures"],
+                contribution_spans={},
+                catalog_truncated=bool(full_data.get("catalog_truncated")),
+                first_page_metadata=(
+                    {"warnings": full_data["warnings"]} if full_data.get("warnings") else None
+                ),
+                policy_version=full_data["retrieval_policy_version"],
+                recall_evidence={
+                    key: full_data[key]
+                    for key in ("evidence", "evidence_mode", "evidence_truncated")
+                },
             )
-            _restrict_activation_exposure(eng, retrieval_id=result["retrieval_id"], data=data)
+            data, successor = catalog.page()
+            conn = eng.db.connect()
+            with conn:
+                if successor is not None:
+                    data["continue_from"] = _store_complementary_cursor(
+                        conn, catalog=catalog, offset=successor
+                    )
+                _restrict_activation_exposure(
+                    eng, retrieval_id=result["retrieval_id"], data=data, commit=False
+                )
             response = {"ok": True, "data": data}
             _spawn_bg_task(
                 _bg_log_event(
@@ -1615,6 +1644,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             )
             return response
         except Exception as e:
+            if prepared_retrieval_id is not None:
+                conn = eng.db.connect()
+                with conn:
+                    conn.execute(
+                        "DELETE FROM context_recall_events WHERE context_id = ?",
+                        (prepared_retrieval_id,),
+                    )
             log.error("slowave_recall failed: %s", e, exc_info=True)
             return {
                 "ok": False,
@@ -1780,10 +1816,16 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         ``replacement_memory_id``. Procedure feedback keeps
         use (used|not_used) separate from effect
         (helped|no_effect|harmed|unknown), with contribution required when used.
+        Memory feedback additionally accepts section-3 fields: ``relevance``
+        (relevant|irrelevant|uncertain), ``effect`` for used marks
+        (helped|no_effect|harmed; absent means helped, unknown is invalid),
+        and the ``already_known`` assessment (dedup observation; no
+        reinforcement, no suppression). Relevance never gates the usage axis
+        and vice versa (decoupled axes).
 
         Args:
             retrieval_id: opaque ID returned by activate/recall.
-            memory_feedback: [{memory_id, assessment, stale_reason?, replacement_memory_id?, reason?}].
+            memory_feedback: [{memory_id, assessment, relevance?, effect?, stale_reason?, replacement_memory_id?, reason?}].
             procedure_feedback: [{procedure_id, use, effect, contribution?, reason?}].
             retrieval_quality: optional whole-result quality assessment.
             missing: optional descriptions of expected but absent knowledge.

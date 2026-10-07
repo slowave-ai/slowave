@@ -15,7 +15,8 @@ from slowave.storage.sqlite_db import SQLiteDB
 from slowave.utils.vec import dumps_json
 
 # Lifecycle status is intentionally separate from the client's semantic reason.
-MEMORY_ASSESSMENTS = frozenset({"used", "irrelevant", "stale"})
+MEMORY_ASSESSMENTS = frozenset({"used", "irrelevant", "already_known", "stale"})
+RELEVANCE_VALUES = frozenset({"relevant", "irrelevant", "uncertain"})
 STALE_REASONS = frozenset({"contradicted", "superseded", "outdated", "unsupported", "withdrawn"})
 PROCEDURE_USES = frozenset({"used", "not_used"})
 PROCEDURE_EFFECTS = frozenset({"helped", "no_effect", "harmed", "unknown"})
@@ -124,6 +125,7 @@ class FeedbackEventService:
             target_id: str,
             replacement_target_id: str | None = None,
             assessment: str | None = None,
+            relevance: str | None = None,
             stale_reason: str | None = None,
             effect: str | None = None,
             contribution: str | None = None,
@@ -140,10 +142,11 @@ class FeedbackEventService:
                 INSERT INTO feedback_events (
                   event_id, retrieval_id, session_id, scope_id, target_kind, target_id,
                   replacement_target_id,
-                  assessment, stale_reason, effect, contribution, reason, coverage, retrieval_quality,
+                  assessment, relevance, stale_reason, effect, contribution, reason, coverage,
+                  retrieval_quality,
                   missing_json, status, rejection_reason, source_contract,
                   source_feedback_id, refines_event_id, mutation_mode, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -154,6 +157,7 @@ class FeedbackEventService:
                     target_id,
                     replacement_target_id,
                     assessment,
+                    relevance,
                     stale_reason,
                     effect,
                     contribution,
@@ -188,15 +192,36 @@ class FeedbackEventService:
             target_id = self._clean_text(item.get("memory_id")) or ""
             replacement_target_id = self._clean_text(item.get("replacement_memory_id"))
             assessment = self._clean_text(item.get("assessment"))
+            relevance = self._clean_text(item.get("relevance"))
             stale_reason = self._clean_text(item.get("stale_reason"))
+            effect = self._clean_text(item.get("effect"))
             reason = self._clean_text(item.get("reason"))
             error = None
             if target_id not in exposed_memories:
                 error = "target_not_exposed"
             elif assessment not in MEMORY_ASSESSMENTS:
                 error = "invalid_memory_assessment"
+            elif relevance is not None and relevance not in RELEVANCE_VALUES:
+                error = "invalid_relevance"
+            elif assessment == "used":
+                # Section-3: a used mark carries an explicit effect; an absent
+                # effect is the legacy surface and means helped. unknown is
+                # invalid with used (it would silently zero the observation).
+                if effect is not None and effect not in ("helped", "no_effect", "harmed"):
+                    error = "used_requires_helped_no_effect_or_harmed_effect"
+            elif assessment == "already_known":
+                # Section-3: a dedup observation — no effect, no replacement.
+                if effect is not None and effect != "unknown":
+                    error = "already_known_requires_unknown_or_absent_effect"
+                elif replacement_target_id is not None:
+                    error = "already_known_requires_no_replacement"
+            elif assessment == "irrelevant":
+                if effect is not None and effect != "unknown":
+                    error = "irrelevant_requires_unknown_or_absent_effect"
             elif assessment == "stale":
-                if stale_reason not in STALE_REASONS:
+                if effect is not None and effect != "unknown":
+                    error = "stale_requires_unknown_or_absent_effect"
+                elif stale_reason not in STALE_REASONS:
                     error = "stale_requires_valid_stale_reason"
                 elif not reason:
                     error = "stale_requires_reason"
@@ -230,7 +255,9 @@ class FeedbackEventService:
                 target_id=target_id,
                 replacement_target_id=replacement_target_id,
                 assessment=assessment,
+                relevance=relevance,
                 stale_reason=stale_reason,
+                effect=effect,
                 reason=reason,
                 status="rejected" if error else "accepted",
                 rejection_reason=error,

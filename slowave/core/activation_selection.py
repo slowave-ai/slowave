@@ -30,7 +30,7 @@ _GENERIC = frozenset(
 
 
 # Final applicability evidence is stricter than the 0.20 discovery floor.
-SEMANTIC_CONTRIBUTION_FLOOR = 0.75
+SEMANTIC_CONTRIBUTION_FLOOR = 0.60
 CROSS_LANGUAGE_CONTRIBUTION_FLOOR = 0.55
 
 
@@ -95,6 +95,33 @@ class ActivationTask:
                 if key not in texts:
                     texts[key] = (part.strip(), [])
                 texts[key][1].append(source)
+        # Sentence/clause facet needs: each boundary-separated imperative
+        # clause becomes its own short, single-topic need so discovery and
+        # contribution assessment see one need per clause instead of one
+        # diluted whole-task need. Boundaries only; no needs are invented
+        # from length alone (fragments under three specific terms stay
+        # covered by the whole-task fallback need, which remains need
+        # index 0). Explicit list items below keep their stronger route.
+        facet_budget = 8
+        added_facets = 0
+        seen_facets: set[str] = set()
+        for sentence_match in re.finditer(r".+?(?:[.!?](?=\s|$)|\n|$)", task, re.S):
+            sentence = sentence_match.group().strip()
+            if not sentence:
+                continue
+            clauses = re.split(r"\s*;\s*|\s*,\s*|\s+and\s+|\s+then\s+", sentence, flags=re.I)
+            for clause in clauses:
+                clause = clause.strip(" ,;:-")
+                if not clause:
+                    continue
+                key = " ".join(clause.casefold().split())
+                if key in texts or key in seen_facets:
+                    continue
+                if added_facets >= facet_budget or len(specific_terms(clause)) < 3:
+                    continue
+                seen_facets.add(key)
+                texts[key] = (clause, ["task", "task_facet"])
+                added_facets += 1
         facets = re.findall(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", task)
         for text in facets[:256]:
             key = " ".join(text.casefold().split())
@@ -249,20 +276,35 @@ def select_complementary(
         for i, need in enumerate(task.needs)
         if any(
             source in need.provenance
-            for source in ("task", "explicit_list_item", "semantic_context")
+            for source in ("task", "explicit_list_item", "semantic_context", "task_context")
         )
     }
-    question_coverage = {
+    # Compare sentence evidence with sentence evidence for every user cue,
+    # including imperative prose. Whole documents must not raise this bar.
+    sentence_coverage = {
         index: max(
             (
-                len((specific_terms(candidate.text) - scope_terms) & task_terms[index])
+                len((specific_terms(match.group()) - scope_terms) & task_terms[index])
                 for candidate in candidates
                 if candidate.eligible
+                for match in re.finditer(r".+?(?:[.!?](?=\s|$)|\n|$)", candidate.text)
             ),
             default=0,
         )
         for index in user_needs
-        if re.search(r"\b(which|who|where|what)\b", task.needs[index].text, re.I)
+    }
+    dense_best = {
+        index: max(
+            (
+                float(e["dense_cosine"])
+                for candidate in candidates
+                if candidate.eligible
+                for e in candidate.channel_evidence
+                if e.get("need_index") == index and e.get("dense_cosine") is not None
+            ),
+            default=0.0,
+        )
+        for index in user_needs
     }
     supplied = "\n".join(task.cues)
     normalized_supplied = claim_key(supplied)
@@ -323,13 +365,31 @@ def select_complementary(
                         not explicit_list_cue
                         and not facet_match
                         and shared / max(1, len(task_terms[index])) <= 2 / 3
-                        and not (shared >= 3 and shared >= question_coverage.get(index, 10**9))
+                        and not (shared >= 3 and shared >= sentence_coverage[index])
                     ):
                         continue
                 proposal = (shared, -index, match.start(), match.end())
                 if best is None or proposal[:2] > best[:2]:
                     best = proposal
         semantic = False
+        applicable = [
+            e
+            for e in candidate.channel_evidence
+            if e.get("applicability_passed")
+            and e.get("need_index") in user_needs
+            and task_terms[e["need_index"]]
+        ]
+        if applicable and best is None:
+            evidence = max(applicable, key=lambda e: e.get("applicability_score", 0.0))
+            start, end = evidence["contribution_span"]
+            need = evidence["need_index"]
+            best = (
+                len(specific_terms(candidate.text[start:end]) & task_terms[need]),
+                -need,
+                start,
+                end,
+            )
+            semantic = True
         if best is None:
             # Dense discovery uses a permissive floor; final semantic admission
             # must clear a separate absolute evidence floor on a user cue.
@@ -341,11 +401,11 @@ def select_complementary(
                 and e.get("dense_cosine") is not None
                 and task_terms[e["need_index"]]
                 and (
-                    e["need_index"] not in question_coverage
-                    or not (specific_terms(candidate.text) & task_terms[e["need_index"]])
+                    not (specific_terms(candidate.text) & task_terms[e["need_index"]])
                     or len(specific_terms(candidate.text) & task_terms[e["need_index"]])
-                    >= question_coverage[e["need_index"]]
+                    >= sentence_coverage[e["need_index"]]
                 )
+                and e["dense_cosine"] >= dense_best[e["need_index"]] - 0.10
                 and e["dense_cosine"] >= CROSS_LANGUAGE_CONTRIBUTION_FLOOR
                 and (
                     e["dense_cosine"] >= SEMANTIC_CONTRIBUTION_FLOOR

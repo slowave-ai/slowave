@@ -275,12 +275,37 @@ class ConsolidationService:
                 pairs_written += 1
 
         # --- Signal 2: explicit client-confirmed co-use ---
-        feedback_rows = conn.execute(
-            "SELECT used_memory_ids_json FROM context_feedback_events " "WHERE created_at > ?",
+        # WP-3: the canonical ledger (feedback_events, accepted active-mode
+        # rows with assessment='used') is the primary source, grouped per
+        # retrieval. Legacy context_feedback_events rows still contribute
+        # (typed legacy, one unit per row) but a retrieval already covered by
+        # the canonical view is never counted twice (canonical dominates).
+        used_rows = conn.execute(
+            "SELECT retrieval_id, target_id FROM feedback_events "
+            "WHERE target_kind = 'memory' AND status = 'accepted' "
+            "AND mutation_mode = 'active' AND assessment = 'used' "
+            "AND created_at > ? ORDER BY created_at, rowid",
             (cutoff_ts,),
         ).fetchall()
-        explicit_pairs_written = 0
+        canonical_groups: dict[str, list[int]] = {}
+        canonical_retrievals: set[str] = set()
+        for row in used_rows:
+            cid = str(row["retrieval_id"])
+            canonical_retrievals.add(cid)
+            m = _sch_id_pat.match(str(row["target_id"]))
+            if m:
+                canonical_groups.setdefault(cid, []).append(int(m.group(1)))
+
+        feedback_rows = conn.execute(
+            "SELECT context_id, used_memory_ids_json FROM context_feedback_events "
+            "WHERE created_at > ?",
+            (cutoff_ts,),
+        ).fetchall()
+        legacy_groups: dict[str, list[int]] = {}
         for row in feedback_rows:
+            cid = str(row["context_id"])
+            if cid in canonical_retrievals:
+                continue
             try:
                 used = json.loads(row["used_memory_ids_json"] or "[]")
             except (TypeError, ValueError):
@@ -290,17 +315,23 @@ class ConsolidationService:
                 m = _sch_id_pat.match(str(mid))
                 if m:
                     ids.append(int(m.group(1)))
-            if len(ids) < 2:
-                continue
-            for src, dst in _ordered_pairs(ids):
-                self.schemas.upsert_coactivation(
-                    src,
-                    dst,
-                    now_ts=now_ts,
-                    half_life_s=half_life_s,
-                    boost=_EXPLICIT_COUSE_BOOST,
-                )
-                explicit_pairs_written += 1
+            if ids:
+                legacy_groups[cid] = ids
+
+        explicit_pairs_written = 0
+        for group in (canonical_groups, legacy_groups):
+            for ids in group.values():
+                if len(ids) < 2:
+                    continue
+                for src, dst in _ordered_pairs(ids):
+                    self.schemas.upsert_coactivation(
+                        src,
+                        dst,
+                        now_ts=now_ts,
+                        half_life_s=half_life_s,
+                        boost=_EXPLICIT_COUSE_BOOST,
+                    )
+                    explicit_pairs_written += 1
 
         # Pure decay for all rows
         decayed = self.schemas.decay_all_coactivations(

@@ -24,7 +24,7 @@ export const glossary: Record<string, string> = {
     "Context Slowave offered to an agent at activation or recall. Exposure is not use: an item can be exposed and never acted on.",
   retrieved:
     "Unique active memory records admitted into context during the selected period. A memory retrieved multiple times counts once. Coverage is not a measure of memory quality.",
-  used: "The agent reported using this item via feedback. 'Used' is an explicit claim, not an inference from exposure. A 'used' assessment reinforces the memory for future retrieval.",
+  used: "The agent reported using this item via feedback. 'Used' is an explicit claim, not an inference from exposure. Use is not reinforcement by itself: the reported effect (helped / harmed / no effect) determines the learning consequence.",
   irrelevant:
     "The agent reported this item as not relevant to the task. Unassessed items are not counted as irrelevant.",
   "no match":
@@ -32,7 +32,7 @@ export const glossary: Record<string, string> = {
   "feedback complete":
     "A retrieval whose feedback coverage was marked complete, so every exposed item has an explicit assessment. Incomplete coverage means some items are unassessed.",
   reinforced:
-    "A 'used' assessment strengthens the memory's salience for future retrieval. Reinforcement is an effect of use, not proof the memory is correct.",
+    "A 'used' assessment strengthens the memory's salience only when its reported effect is helped or unspecified; a harmed effect reduces salience and no_effect leaves it unchanged. Reinforcement is an effect of use, not proof the memory is correct.",
   helpful:
     "For procedures, the agent reported the procedure helped the task (effect = helped). Helpfulness is distinct from use and from the task outcome: Slowave's context is not necessarily the cause of a task outcome.",
   active_memories:

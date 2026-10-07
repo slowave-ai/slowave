@@ -14,6 +14,7 @@ from slowave.core.config import SlowaveConfig
 from slowave.dashboard.app import (
     _effectiveness_payload,
     _retrieval_detail,
+    _retrievals_payload,
     _schemas_payload,
     _scopes_payload,
 )
@@ -142,6 +143,7 @@ def test_used_never_exceeds_exposed_when_a_memory_is_used_across_retrievals(
         "VALUES (?, ?, 'memory', 'sch_1', 'used', 'complete', 'slowave_feedback:v9', 170)",
         [("fb_a", "ctx_a"), ("fb_b", "ctx_b")],
     )
+    connection.execute("UPDATE feedback_events SET effect = 'harmed' WHERE event_id = 'fb_b'")
     connection.commit()
     connection.close()
 
@@ -149,6 +151,8 @@ def test_used_never_exceeds_exposed_when_a_memory_is_used_across_retrievals(
     assert payload["memory_exposed"] == 1
     assert payload["memory_used"] == 1
     assert payload["memory_used"] <= payload["memory_exposed"]
+    listing = _retrievals_payload(str(path), {})
+    assert [item["signal_counts"]["used"] for item in listing["retrievals"]] == [0, 1, 1]
 
 
 def test_effectiveness_respects_selected_retrieval_window(tmp_path: Path) -> None:
@@ -248,3 +252,68 @@ def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Pa
 
     assert item["content_text"] == "Current schema text"
     assert item["status"] == "needs_review"
+
+
+def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> None:
+    path = tmp_path / "latest_feedback.sqlite3"
+    connection = _seed(path)
+
+    def feedback(
+        event_id: str,
+        kind: str,
+        target: str,
+        assessment: str,
+        effect: str | None,
+        status: str = "accepted",
+    ) -> None:
+        # All timestamps tie: insertion order must break the tie consistently.
+        connection.execute(
+            "INSERT INTO feedback_events (event_id, retrieval_id, target_kind, target_id, "
+            "assessment, effect, status, coverage, source_contract, created_at) "
+            "VALUES (?, 'ctx_visible', ?, ?, ?, ?, ?, 'complete', 'slowave_feedback:v9', 160)",
+            (event_id, kind, target, assessment, effect, status),
+        )
+
+    for index in range(5):
+        feedback(f"duplicate_memory_{index}", "memory", "sch_1", "used", "helped")
+        feedback(f"duplicate_procedure_{index}", "procedure", "proc_1", "used", "harmed")
+    connection.commit()
+    listing = _retrievals_payload(str(path), {"sort": ["used"], "dir": ["desc"]})
+    visible = listing["retrievals"][0]
+    assert visible["signal_counts"]["used"] == visible["signal_used"] == 2
+    assert visible["effect_rank"] == 3
+    assert len(visible["feedback"]) == 13  # The audit history remains intact.
+
+    feedback("refine_memory", "memory", "sch_1", "irrelevant", None)
+    feedback("refine_procedure", "procedure", "proc_1", "not_used", "no_effect")
+    feedback("rejected_memory", "memory", "sch_1", "used", "helped", "rejected")
+    feedback("rejected_procedure", "procedure", "proc_1", "used", "harmed", "rejected")
+    connection.commit()
+    connection.close()
+
+    listing = _retrievals_payload(str(path), {})
+    visible = next(item for item in listing["retrievals"] if item["context_id"] == "ctx_visible")
+    assert visible["signal_counts"]["used"] == visible["signal_used"] == 0
+    assert visible["signal_counts"]["irrelevant"] == visible["signal_irrelevant"] == 2
+    assert visible["signal_counts"]["not_used"] == 1
+    assert visible["signal_counts"]["harmed"] == 0
+    assert visible["effect_rank"] == 2
+    assert listing["summary"]["demonstrated_value"] == 0
+    assert listing["summary"]["feedback_complete"] == 1
+
+    effectiveness = _effectiveness_payload(str(path), {})
+    assert effectiveness["memory_used"] == effectiveness["procedure_used"] == 0
+    assert effectiveness["memory_irrelevant"] == 2
+    assert effectiveness["procedure_not_used"] == effectiveness["procedure_no_effect"] == 1
+    assert effectiveness["procedure_harmed"] == 0
+    memories = _schemas_payload(str(path), {"states": ["active"]})
+    memory = next(item for item in memories["schemas"] if item["content"] == "memory 1")
+    assert memory["times_used"] == 0
+    assert memory["times_irrelevant"] == 1
+    assert memory["last_used_ts"] is None
+    assert memories["summary"]["used_active"] == 0
+    detail = _retrieval_detail(str(path), "ctx_visible")
+    by_id = {item["memory_id"]: item for item in detail["items"]}
+    assert by_id["sch_1"]["assessment"] == "irrelevant"
+    assert by_id["proc_1"]["assessment"] == "not_used"
+    assert by_id["proc_1"]["effect"] == "no_effect"

@@ -481,11 +481,7 @@ def retrieve_procedures(
         lexical_pass = lexical is not None and lexical.specific
         if not (dense_pass or lexical_pass):
             continue
-        evidence = item["evidence"]
-        utility = min(_HELPED_BONUS_CAP, evidence["helped"] * _HELPED_BONUS) - min(
-            _HARMED_PENALTY_CAP, evidence["harmed"] * _HARMED_PENALTY
-        )
-        utility += _source_outcome_adjustment(item)
+        utility = procedure_feedback_utility(item)
         fusion = (
             _rrf(applicability_ranks[str(item["id"])], _APPLICABILITY_WEIGHT)
             + _rrf(strategy_ranks[str(item["id"])], _STRATEGY_WEIGHT)
@@ -529,6 +525,23 @@ def _source_outcome_adjustment(item: dict[str, Any]) -> float:
     if outcome == "success" and verification == "partially_verified":
         return _PARTIALLY_VERIFIED_SUCCESS_BONUS
     return 0.0
+
+
+def procedure_feedback_utility(item: dict[str, Any]) -> float:
+    """Bounded reuse evidence for ordering already-applicable procedures.
+
+    The single helped/harmed formula shared by the current retriever and the
+    shared-v1 policy. Relevance and context compatibility stay prerequisites:
+    callers must apply this only to candidates that admission already accepted,
+    so historical reward can never surface an irrelevant procedure. One harmed
+    report outweighs one helped report at a relevance tie.
+    """
+
+    evidence = item.get("evidence") or {}
+    utility = min(_HELPED_BONUS_CAP, evidence.get("helped", 0) * _HELPED_BONUS) - min(
+        _HARMED_PENALTY_CAP, evidence.get("harmed", 0) * _HARMED_PENALTY
+    )
+    return utility + _source_outcome_adjustment(item)
 
 
 def _admission_reason(*, dense_pass: bool, lexical_pass: bool) -> str:
