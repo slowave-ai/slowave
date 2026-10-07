@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.6](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.5...slowave-v0.20.6) (2026-10-07)
+
+
+### Bug Fixes
+
+* improve retrieval coverage, paging  and feedback loop ([#165](https://github.com/slowave-ai/slowave/issues/165)) ([9b5867e](https://github.com/slowave-ai/slowave/commit/9b5867e7b3e3c2b9cdf80fe3640a42abdbabd068))
+
 ## [0.20.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.4...slowave-v0.20.5) (2026-10-04)
 
 
