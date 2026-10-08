@@ -122,6 +122,22 @@ def test_generated_launchd_service_pins_and_escapes_runtime_root(monkeypatch, tm
     assert str(root / "logs" / "daemon.log").replace("&", "&amp;") in content
 
 
+def test_force_launchd_service_generation_without_unix_uid_skips_launchctl(monkeypatch, tmp_path):
+    root = tmp_path / "data"
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(root))
+    monkeypatch.setattr(setup, "_home", lambda: tmp_path / "home")
+    monkeypatch.delattr(setup.os, "getuid", raising=False)
+    calls = []
+    monkeypatch.setattr(setup.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+
+    plist_path, changed = setup._install_daemon_macos("/bin/slowave", force=True)
+
+    assert changed is True
+    assert Path(plist_path).is_file()
+    assert calls == []
+
+
 def test_generated_service_preserves_legacy_exact_db_override(monkeypatch, tmp_path):
     database = tmp_path / "custom name.sqlite"
     monkeypatch.delenv("SLOWAVE_HOME", raising=False)

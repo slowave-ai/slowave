@@ -114,6 +114,7 @@ class TestOldToolsDeleted:
         }
         recall_fields = set(tools["slowave_recall"].inputSchema["properties"])
         assert recall_fields == {
+            "page_size",
             "query",
             "session_id",
             "scope",
@@ -123,7 +124,10 @@ class TestOldToolsDeleted:
             "continue_from",
         }
         activate = tools["slowave_activate"].inputSchema
+        from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
+
         assert set(activate["properties"]) == {
+            "page_size",
             "task",
             "initial_goal",
             "scope",
@@ -131,6 +135,7 @@ class TestOldToolsDeleted:
             "semantic_context",
             "task_context",
         }
+        assert activate["properties"]["page_size"]["default"] == DEFAULT_MEMORY_PAGE_SIZE
         assert set(activate["required"]) == {"task", "initial_goal", "scope"}
         remember = tools["slowave_remember"].inputSchema
         assert set(remember["properties"]) == {
@@ -223,3 +228,53 @@ class TestOldToolsDeleted:
         assert feedback["properties"]["coverage"]["enum"] == ["partial", "complete"]
         recall = tools["slowave_recall"].inputSchema
         assert recall["properties"]["evidence"]["enum"] == ["references", "full"]
+
+
+def test_http_and_stdio_advertise_matching_feedback_contracts() -> None:
+    import asyncio
+
+    import jsonschema
+    import pytest
+
+    from slowave.core.services.feedback_events import (
+        MEMORY_ASSESSMENTS,
+        PROCEDURE_EFFECTS,
+        PROCEDURE_USES,
+        RELEVANCE_VALUES,
+        STALE_REASONS,
+    )
+    from slowave.mcp.http_server import mcp as http
+    from slowave.mcp.server import mcp as stdio
+
+    async def schemas():
+        return await http.list_tools(), await stdio.list_tools()
+
+    http_tools, stdio_tools = asyncio.run(schemas())
+    assert {t.name: t.inputSchema for t in http_tools} == {
+        t.name: t.inputSchema for t in stdio_tools
+    }
+    schema = next(t.inputSchema for t in http_tools if t.name == "slowave_feedback")
+    for definition, field, expected in [
+        ("MemoryFeedbackEntry", "assessment", MEMORY_ASSESSMENTS),
+        ("MemoryFeedbackEntry", "relevance", RELEVANCE_VALUES),
+        ("MemoryFeedbackEntry", "stale_reason", STALE_REASONS),
+        ("MemoryFeedbackEntry", "effect", PROCEDURE_EFFECTS),
+        ("ProcedureFeedbackEntry", "use", PROCEDURE_USES),
+        ("ProcedureFeedbackEntry", "effect", PROCEDURE_EFFECTS),
+    ]:
+        prop = schema["$defs"][definition]["properties"][field]
+        assert set(prop["enum"]) - {None} == expected
+        assert prop["description"]
+    jsonschema.validate(
+        {
+            "retrieval_id": "ctx_test",
+            "memory_feedback": [{"memory_id": "sch_1", "assessment": "used", "relevance": None}],
+        },
+        schema,
+    )
+    for entry in [
+        {"memory_id": "sch_1", "rating": "useful"},
+        {"memory_id": "sch_1", "assessment": "useful"},
+    ]:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"retrieval_id": "ctx_test", "memory_feedback": [entry]}, schema)

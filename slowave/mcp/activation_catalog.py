@@ -25,18 +25,22 @@ SUPPORTED_POLICIES = {
 # v1 snapshots predate the variable first page and always served five
 # memories there; v2 records the strong-run first page size explicitly.
 SUPPORTED_PAGING_CONTRACT_VERSIONS = (
+    "configurable-memory-budget-pages-v5",
     "ten-memory-budget-pages-v4",
     "payload-budget-pages-v3",
     "strong-run-first-page-v2",
     "five-memory-pages-v1",
 )
-PAGING_CONTRACT_VERSION = "ten-memory-budget-pages-v4"
+PAGING_CONTRACT_VERSION = "configurable-memory-budget-pages-v5"
 SNAPSHOT_FORMAT_VERSION = 1
 # Legacy snapshot record-count bounds, retained only for cursor compatibility.
 MEMORY_PAGE_SIZE = 5
+# Effective page size for new activation/recall requests when clients omit it.
+DEFAULT_MEMORY_PAGE_SIZE = 5
 MEMORY_PAGE_TARGET = 10
-# Legacy v2 first-page limit. New snapshots combine a ten-memory target with
-# serialized payload budgets; legacy constants remain cursor-compatible.
+# Legacy v2/v4 limits. New snapshots freeze a configurable 1–10 memory bound
+# (defaulted by DEFAULT_MEMORY_PAGE_SIZE) alongside payload budgets; old
+# cursors keep their old bounds.
 FIRST_PAGE_MAX_MEMORIES = 10
 PROCEDURE_PAGE_SIZE = 3
 # Bound serialized content, never the number of qualifying records. Separate
@@ -155,9 +159,12 @@ class FrozenActivationCatalog:
         catalog_truncated: bool,
         first_page_metadata: dict[str, Any] | None = None,
         first_page_size: int | None = None,
+        page_size: int = DEFAULT_MEMORY_PAGE_SIZE,
         policy_version: str = POLICY_VERSION,
         recall_evidence: dict[str, Any] | None = None,
     ) -> FrozenActivationCatalog:
+        if type(page_size) is not int or not 1 <= page_size <= 10:
+            raise CatalogPreparationError("page_size must be an integer from 1 to 10")
         if policy_version not in SUPPORTED_POLICIES:
             raise CatalogPreparationError("unsupported retrieval policy")
         metadata = dict(first_page_metadata or {})
@@ -226,6 +233,7 @@ class FrozenActivationCatalog:
             "procedure_page_chars": PROCEDURE_PAGE_CHARS,
             "snapshot_format_version": SNAPSHOT_FORMAT_VERSION,
             "memory_page_size": MEMORY_PAGE_SIZE,
+            "requested_page_size": page_size,
             "first_page_size": page_one,
             "procedure_page_size": PROCEDURE_PAGE_SIZE,
             "retrieval_id": retrieval_id,
@@ -279,7 +287,15 @@ class FrozenActivationCatalog:
             raise CatalogCompatibilityError(
                 "unsupported activation snapshot or paging contract version"
             )
-        if expected_paging in {PAGING_CONTRACT_VERSION, "payload-budget-pages-v3"}:
+        if expected_paging == PAGING_CONTRACT_VERSION:
+            page_size = snapshot.get("requested_page_size")
+            if type(page_size) is not int or not 1 <= page_size <= 10:
+                raise CatalogCompatibilityError("unsupported memory page size")
+        if expected_paging in {
+            PAGING_CONTRACT_VERSION,
+            "ten-memory-budget-pages-v4",
+            "payload-budget-pages-v3",
+        }:
             if (
                 snapshot.get("memory_page_chars") != MEMORY_PAGE_CHARS
                 or snapshot.get("procedure_page_chars") != PROCEDURE_PAGE_CHARS
@@ -306,12 +322,17 @@ class FrozenActivationCatalog:
         memory_span = first_page_size if memory_offset == 0 else MEMORY_PAGE_SIZE
         if snapshot["paging_contract_version"] in {
             PAGING_CONTRACT_VERSION,
+            "ten-memory-budget-pages-v4",
             "payload-budget-pages-v3",
         }:
             limit = (
-                MEMORY_PAGE_TARGET
+                snapshot["requested_page_size"]
                 if snapshot["paging_contract_version"] == PAGING_CONTRACT_VERSION
-                else None
+                else (
+                    MEMORY_PAGE_TARGET
+                    if snapshot["paging_contract_version"] == "ten-memory-budget-pages-v4"
+                    else None
+                )
             )
             memory_end = _budget_end(memories, memory_offset, snapshot["memory_page_chars"], limit)
             procedure_end = _budget_end(

@@ -379,19 +379,11 @@ class TestDetectLifecycleVersion:
     def test_generated_block_mandates_clear_procedures_and_memory_quality(self):
         block = _lifecycle_block("claude-code")
         assert "reusable multi-step method" in block
-        assert "at least two ordered" in block
-        assert "task actions" in block
-        assert '`{"version": 2, "summary": "...", "context": {...}, "steps":' in block
-        assert '[{"summary": "..."}]' in block
-        assert '"verified"|"partially_verified"|"unverified"' in block
-        assert '"action"|"observation"' in block
-        assert "The MCP tool\n  schema is authoritative" in block
-        assert "Endpoint payloads" in block
-        assert "never both" in block
-        assert "Feedback payloads" in block
-        assert "non-empty `items` batch" in block
-        assert "specific, standalone future-facing knowledge" in block
-        assert "connected MCP tools define the exact" in block
+        assert "two ordered task actions" in block
+        assert "standalone `outcome_summary`" in block
+        assert "`verification`" in block
+        assert "connected MCP tools' schemas" in block
+        assert "conditional requirements" in block
 
     def test_generated_block_hardens_client_memory_responsibilities(self):
         block = _lifecycle_block("claude-code")
@@ -403,21 +395,21 @@ class TestDetectLifecycleVersion:
         assert "project:<repository-root-name>" in block
         assert "project:<basename(cwd)>" in block
         assert "Never activate because of a hook, stop event" in block
-        assert "Do not invent IDs," in block
-        assert "scope, continuity, cursors, or success" in block
+        assert "Do not invent IDs, scope, continuity, cursors, or success" in block
+        assert "including continuations and empty results" in block
+        assert "active `session_id` and matching scope" in block
 
-    def test_generated_block_explains_accessible_field_and_continuation(self):
+    def test_generated_block_explains_continuation_and_feedback_recovery(self):
         block = _lifecycle_block("claude-code")
-        assert "### Conditional rules — apply when relevant" in block
-        assert "account for every warning" in block
-        assert "A continuation contains only `session_id`, `scope`, and" in block
-        assert "`continue_from`" in block
-        assert "its returned targets also require feedback" in block
+        assert "Account for every warning" in block
+        assert "A continuation sends only\n`session_id`, `scope`, and `continue_from`" in block
         assert "incomplete_feedback" in block
         assert "feedback_status" in block
         assert "verification_status" in block
-        assert "`outstanding` or `rejected` result before committing" in block
-        assert "Keep trajectory entries task-only" in block
+        assert "rejected/outstanding feedback before committing" in block
+        assert "entries task-only" in block
+        assert "coverage inside each item" in block
+        assert "each batch item's `ok`/data" in block
 
 
 # ===========================================================================
@@ -992,3 +984,177 @@ class TestInstallDaemonMacosPreservesEnvPins:
         _, changed_again = _setup_mod._install_daemon_macos("slowave")
 
         assert changed_again is False
+
+
+@pytest.mark.parametrize("client", ["cursor", "claude-desktop"])
+def test_manual_clients_receive_current_pasteable_block_even_when_configured(
+    fake_home, monkeypatch, client
+):
+    monkeypatch.setattr(_setup_mod, "SYSTEM", "Darwin")
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
+    spec = next(spec for spec in _setup_mod._clients() if spec.key == client)
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    # Isolate the already-configured path: this must still print the current block.
+    summary = _setup_mod.Summary()
+    summary.add_manual_step(spec.manual_note)
+    monkeypatch.setattr(_setup_mod, "_build_summary", lambda *args, **kwargs: summary)
+    result = CliRunner().invoke(setup_cmd, ["--client", client, "--no-worker"])
+    assert result.exit_code == 0, result.output
+    assert _lifecycle_block(spec.lifecycle_agent) in result.output
+    assert "Everything already configured" in result.output
+    assert not spec.mcp_path().exists()
+
+
+@pytest.mark.parametrize("client", ["claude-code", "cline", "windsurf", "opencode", "codex"])
+def test_current_rules_replace_stale_installed_blocks_without_changing_user_rules(
+    fake_home, monkeypatch, client
+):
+    from slowave.cli.setup import _lifecycle_block_up_to_date
+
+    monkeypatch.setattr(_setup_mod, "SYSTEM", "Darwin")
+    monkeypatch.setenv("CODEX_HOME", str(fake_home / ".codex"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
+    spec = next(spec for spec in _setup_mod._clients() if spec.key == client)
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    target = spec.lifecycle_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "# User rules before\n\n<!-- slowave-lifecycle-start v13 -->\nold rules\n"
+        "<!-- slowave-lifecycle-end v13 -->\n\n# User rules after\n"
+    )
+    summary = _build_summary(client, worker=False, slowave_bin="/fake/slowave")
+    update = next(c for c in summary.changes if c.change_type.value == "lifecycle_block")
+    assert update.status.value == "update"
+    block = _lifecycle_block(spec.lifecycle_agent)
+    assert _inject_block(target, block)
+    installed = target.read_text()
+    assert _lifecycle_block_up_to_date(installed, block)
+    assert installed.startswith("# User rules before\n\n")
+    assert installed.endswith("\n# User rules after\n")
+    assert "old rules" not in installed
+    assert installed.count("<!-- slowave-lifecycle-start") == 1
+    assert not _inject_block(target, block)
+    summary = _build_summary(client, worker=False, slowave_bin="/fake/slowave")
+    update = next(c for c in summary.changes if c.change_type.value == "lifecycle_block")
+    assert update.status.value == "skip"
+
+
+def test_upgrading_preserves_user_heading_immediately_after_end_marker(tmp_path):
+    target = tmp_path / "AGENTS.md"
+    target.write_text(
+        "<!-- slowave-lifecycle-start v13 -->\nold\n"
+        "<!-- slowave-lifecycle-end v13 -->\n# User rules\nKeep this.\n"
+    )
+    block = _lifecycle_block("codex")
+    assert _inject_block(target, block)
+    expected = block + "\n# User rules\nKeep this.\n"
+    assert target.read_text() == expected
+    assert not _inject_block(target, block)
+    assert target.read_text() == expected
+
+
+def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkeypatch):
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
+    spec = next(s for s in _setup_mod._clients() if s.key == "codex")
+    monkeypatch.setattr(_setup_mod, "_detected_clients", lambda client: [spec])
+    monkeypatch.setattr(_setup_mod, "_build_summary", lambda *a, **k: _setup_mod.Summary())
+    cfg = spec.mcp_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        '[unrelated]\nkeep = "yes"\n[mcp_servers.slowave]\nurl = "http://127.0.0.1:8766/mcp"\n'
+    )
+    instructions = spec.lifecycle_path()
+    instructions.write_text(_lifecycle_block("codex") + "\n\nUser rules\n")
+    before = instructions.read_text()
+    calls = []
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda args, **kw: calls.append(args))
+    result = CliRunner().invoke(
+        setup_cmd, ["--client", "codex", "--no-worker", "--force"], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Everything already configured" not in result.output
+    assert instructions.read_text() == before
+    assert _read_toml(cfg)["unrelated"]["keep"] == "yes"
+    assert list(instructions.parent.glob(instructions.name + ".bak.*"))
+    assert any(args[-1] == "doctor" for args in calls)
+    calls.clear()
+    result = CliRunner().invoke(
+        setup_cmd, ["--client", "codex", "--no-worker", "--force", "--dry-run"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Would inject" in result.output
+    assert instructions.read_text() == before
+    assert not calls
+
+
+@pytest.mark.parametrize("kind", ["daemon", "worker", "backup"])
+def test_force_reloads_matching_macos_service_preserving_environment(fake_home, monkeypatch, kind):
+    import plistlib
+
+    monkeypatch.setattr(_setup_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+    calls = []
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda args, **kw: calls.append(args))
+    install = getattr(_setup_mod, f"_install_{kind}_macos")
+    path, _ = install("/fake/slowave")
+    p = _setup_mod.Path(path)
+    d = plistlib.loads(p.read_bytes())
+    d["EnvironmentVariables"]["SLOWAVE_CUSTOM_PIN"] = "preserve"
+    p.write_bytes(plistlib.dumps(d))
+    install("/fake/slowave")
+    assert install("/fake/slowave")[1] is False
+    calls.clear()
+    assert install("/fake/slowave", force=True)[1] is True
+    assert [c[1] for c in calls] == ["bootout", "bootstrap"]
+    assert (
+        plistlib.loads(p.read_bytes())["EnvironmentVariables"]["SLOWAVE_CUSTOM_PIN"] == "preserve"
+    )
+
+
+@pytest.mark.parametrize("kind", ["daemon", "worker", "backup"])
+def test_force_restarts_matching_linux_service(fake_home, monkeypatch, kind):
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
+    calls = []
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda args, **kw: calls.append(args))
+    install = getattr(_setup_mod, f"_install_{kind}_linux")
+    path, _ = install("/fake/slowave")
+    assert install("/fake/slowave")[1] is False
+    calls.clear()
+    assert install("/fake/slowave", force=True)[1] is True
+    target = f"slowave-{kind}" + (".timer" if kind == "backup" else "")
+    assert ["systemctl", "--user", "restart", target] in calls
+    if kind == "backup":
+        service = _setup_mod.Path(path).with_suffix(".service").read_text()
+        assert f'SLOWAVE_HOME={fake_home / "runtime"}' in service
+
+
+def test_force_reregisters_matching_windows_task(monkeypatch):
+    from subprocess import CompletedProcess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return CompletedProcess(
+            args, 0, stdout=f"{_setup_mod._WINDOWS_TASK_MARKER}|slowave|worker", stderr=""
+        )
+
+    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
+    assert (
+        _setup_mod._register_windows_task("SlowaveWorker", "slowave", "worker")[1]
+        == "already up-to-date"
+    )
+    calls.clear()
+    assert (
+        _setup_mod._register_windows_task("SlowaveWorker", "slowave", "worker", force=True)[1]
+        == "registered and started"
+    )
+    assert any("Register-ScheduledTask" in args[-1] for args in calls)

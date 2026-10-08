@@ -1044,10 +1044,22 @@ def test_useful_complementary_memories_have_no_count_target(tmp_path, count):
                 "Validate memory eviction TTL settings",
                 scope,
             )
-            assert set(observation.returned_contents) == {content for content, _ in facts}
-            assert len(retrieval["memories"]) == count
+            assert len(retrieval["memories"]) == min(count, 5)
             assert retrieval["relevant_total"] == count
-            assert retrieval["more_available"] is False
-            await _finish(harness, retrieval)
+            exposed = list(retrieval["memories"])
+            page = retrieval
+            while page["more_available"]:
+                page, _ = await harness.call(
+                    "slowave_recall",
+                    {
+                        "session_id": retrieval["session_id"],
+                        "scope": scope,
+                        "continue_from": page["continue_from"],
+                    },
+                )
+                exposed.extend(page["memories"])
+            assert {item["content"] for item in exposed} == {content for content, _ in facts}
+            assert len(exposed) == count
+            await _finish(harness, {**retrieval, "memories": exposed})
 
     _run(scenario())

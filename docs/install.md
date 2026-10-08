@@ -27,6 +27,12 @@ slowave doctor            # verify: daemon health, client detection
 
 `slowave setup` is idempotent and safe to run multiple times. The HTTP MCP daemon and background consolidation worker start automatically as system services.
 
+To reapply configuration and reinstall configured services even when setup reports
+that everything is already configured, run `slowave setup --force`. Use
+`--force --dry-run` to preview it, or `--client codex` to select one client.
+Force preserves unrelated client settings and runs verification; it does not
+refresh tool definitions cached by an active client conversation.
+
 Claude Desktop and Cursor require one manual paste after setup because their instruction surfaces cannot be modified programmatically. `slowave setup` prints the exact text and path.
 ### Local retrieval models
 
@@ -59,6 +65,10 @@ To configure a single client, or to find client-specific details:
 ² also configures Codex Desktop (ChatGPT app) and the Codex IDE extension — all three share `~/.codex/config.toml`
 
 ## What `slowave setup` does
+
+Setup installs compact lifecycle rules. Endpoint fields and validation rules come
+from the connected MCP tool definitions. After upgrading,
+rerun setup and refresh/restart the client to load current tool definitions.
 
 | Action | Clients | Detail |
 |---|---|---|
@@ -368,12 +378,15 @@ url = "http://127.0.0.1:8766/mcp"
 configure. Claude Desktop and Cursor require a manual paste because their
 instruction surfaces cannot be changed programmatically; setup prints the
 current text and destination. The generated instructions are the authoritative
-contract. They require the connected agent to:
+lifecycle guidance; the connected MCP schemas and descriptions define endpoint
+contracts. The lifecycle requires the connected agent to:
 
 1. activate a scoped task session and receive relevant recorded memory;
 2. remember durable claims when appropriate;
 3. recall during a task when the question changes;
-4. assess every retrieved memory or procedure as used, irrelevant, or stale;
+4. assess retrieved memories (`used`, `not_used`, `unassessable`, `irrelevant`, `already_known`, or `stale`)
+   and procedures (`used`, `not_used`, or `unassessable`, with effect), including complete feedback
+   for empty retrievals;
 5. commit an honest outcome and any reusable procedure.
 
 See [architecture.md](architecture.md) for the current tool contracts and

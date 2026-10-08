@@ -16,6 +16,7 @@ from typing import Any, Iterable, List
 
 import numpy as np
 
+from slowave.core.services.effective_feedback import effective_feedback_sql
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.utils.vec import (
     dumps_json,
@@ -1197,9 +1198,8 @@ class SchemaStore:
         # schema. Canonical marks dominate conflicts with legacy rows for the
         # same scope (execution spec §4).
         canon_rows = conn.execute(
-            "SELECT scope_id, assessment FROM feedback_events "
-            "WHERE target_kind = 'memory' AND target_id = ? AND status = 'accepted' "
-            "AND mutation_mode = 'active'",
+            "SELECT f.scope_id, f.assessment FROM feedback_events f "
+            "WHERE f.target_kind = 'memory' AND f.target_id = ? AND " + effective_feedback_sql(),
             (schema_id_key,),
         ).fetchall()
         canon_used_scopes: set[str] = set()

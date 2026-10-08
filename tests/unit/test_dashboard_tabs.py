@@ -49,6 +49,8 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "metric-rate-ratio" in source
     assert "metric-rate-percent" in source
     styles = (UI_SOURCE / "styles.css").read_text()
+    assert ".retrieval-table td.retrieval-task-cell" in styles
+    assert "max-width: 340px" in styles
     assert "text-transform: uppercase" in styles
     assert "numerator === denominator" in source
     assert "numerator === 0" in source
@@ -58,6 +60,11 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "ErrorState" in source
     assert "Memory results unavailable" in source
     assert "Retrieval details unavailable" in source
+    assert "Memory page limit" in source
+    assert "Maximum number of memories requested for each activation page." in source
+    assert '"used", "page_limit", "feedback"' in source
+    assert '>Page size <ColumnHelp id="page_limit" label="Page size" />' in source
+    assert 'row.requested_page_size ?? "-"' in source
     assert "Procedure not found" in source
     assert "Activity not found" in source
     assert "No memory metrics available" in source

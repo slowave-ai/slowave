@@ -1416,6 +1416,7 @@ export function RetrievalPage({ location }: PageProps) {
     irrelevant: "Count of returned memories explicitly assessed as irrelevant.",
     stale: "Count of returned memories explicitly assessed as stale.",
     wrong: "Count of returned memories explicitly assessed as wrong.",
+    page_limit: "Maximum number of memories requested for this activation page. The actual returned count can be lower; '-' means the value was not recorded.",
     helped: "Count of returned procedures reported to have helped.",
     no_effect: "Count of returned procedures reported to have had no effect.",
     harmed: "Count of returned procedures reported to have harmed the task.",
@@ -1429,7 +1430,7 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "feedback"]);
+  const [visibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "page_limit", "feedback"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1582,7 +1583,7 @@ export function RetrievalPage({ location }: PageProps) {
       ) : rows.length ? (
         <>
           <TableFrame label="Retrieval results">
-            <table>
+            <table className="retrieval-table">
               <thead>
                 <tr>
                   {visible("when") && <th aria-sort={sort === "when" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
@@ -1609,6 +1610,7 @@ export function RetrievalPage({ location }: PageProps) {
                       <ColumnHelp id={key} label={label} />
                     </th>
                   ))}
+                  {visible("page_limit") && <th className="numeric">Page size <ColumnHelp id="page_limit" label="Page size" /></th>}
                   {visible("feedback") && <th aria-sort={sort === "feedback" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Feedback" active={sort === "feedback"} direction={dir} onClick={() => changeSort("feedback")} />
                     <ColumnHelp id="feedback" label="Feedback" />
@@ -1631,7 +1633,7 @@ export function RetrievalPage({ location }: PageProps) {
                       {visible("when") && <td title={formatDate(row.created_at)}>
                         {relativeDate(row.created_at)}
                       </td>}
-                      {visible("task") && <td className="primary-cell">
+                      {visible("task") && <td className="primary-cell retrieval-task-cell">
                         <ClampedText text={row.task_preview} />
                       </td>}
                       {visible("type") && <td><StatusBadge value={row.retrieval_type === "context" ? "Activation" : "Recall"} /></td>}
@@ -1646,6 +1648,7 @@ export function RetrievalPage({ location }: PageProps) {
                           {Number(row.signal_counts?.[key] || 0).toLocaleString()}
                         </td>
                       ))}
+                      {visible("page_limit") && <td className="numeric">{row.requested_page_size ?? "-"}</td>}
                       {visible("feedback") && <td><StatusBadge value={row.feedback_state} /></td>}
                       {visible("session") && <td>{row.session_id ? truncate(row.session_id, 18) : "Standalone"}</td>}
                     </tr>
@@ -1771,6 +1774,23 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   ? `${retrieval.response_chars} characters`
                   : "Not recorded"}
               </dd>
+              {retrieval.retrieval_type === "context" && (
+                <>
+                  <dt>
+                    Memory page limit{" "}
+                    <DefinitionTooltip label="Memory page limit definition">
+                      Maximum number of memories requested for each activation page. The
+                      actual returned count can be lower when fewer memories qualify or
+                      the response payload limit is reached.
+                    </DefinitionTooltip>
+                  </dt>
+                  <dd>
+                    {retrieval.requested_page_size == null
+                      ? "Not recorded"
+                      : `${retrieval.requested_page_size} memories`}
+                  </dd>
+                </>
+              )}
               <dt>Activity</dt>
               <dd>
                 {retrieval.session_id ? (

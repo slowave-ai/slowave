@@ -59,13 +59,17 @@ Claims may include occurred_at when they describe a specific past event. Slowave
 
 ### Recall
 
+Activation and fresh recall default to at most five memories per page. The optional `page_size` accepts strict integers from 1 to 10; continuations inherit that choice and accept no override. Procedures have a separate limit of three. Fetch another page only when additional context would help.
+
 Recall is a mid-task lookup when the question changes or activation did not surface enough context. It returns canonical memories and procedures plus bounded provenance references; full evidence includes bounded source evidence for inspection.
 
 ### Feedback
 
-Feedback records what actually happened after retrieval. A memory assessment is used, irrelevant, or stale. Stale feedback must name its reason; a superseded memory also names the active replacement. Procedure feedback records both whether the procedure was used and whether it helped, had no effect, caused harm, or remains unknown.
+Feedback records what actually happened after retrieval. A memory assessment is `used`, `not_used`, `unassessable`, `irrelevant`, `already_known`, or `stale`. `used` requires observed influence on reasoning, an action, a check, or an applied constraint; reading or topical similarity is insufficient. `not_used` is neutral non-use; `unassessable` records unknown usage with a required reason. Neither produces reinforcement or negative relevance evidence. Stale feedback must name its reason; a superseded memory also names the active replacement. Procedure feedback uses `use` (`used`, `not_used`, or `unassessable`) and `effect` (`helped`, `no_effect`, `harmed`, or `unknown`). A used procedure requires a nonblank contribution; an unused one has no contribution and only omitted/unknown effect.
 
-Feedback is append-only. A complete-coverage declaration assesses every target exposed by that retrieval; an incomplete declaration leaves unassessed targets unknown rather than treating silence as negative evidence.
+Complete feedback after the relevant work and before commit; partial checkpoints can record observed use or stale evidence earlier. Multiple retrievals can be completed in one feedback batch.
+
+Feedback is append-only. Even an empty retrieval requires `coverage="complete"`. A complete-coverage declaration assesses every target exposed by that retrieval; an incomplete declaration leaves unassessed targets unknown rather than treating silence as negative evidence.
 
 ### Commit
 

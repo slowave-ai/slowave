@@ -65,6 +65,7 @@ _MAX_CLAIM_ATTEMPTS = 5
 # or a rebuild will silently leave it stale — same discipline as the
 # missing_columns catalogue in sqlite_db.py.
 _DERIVED_TABLES = (
+    "coactivation_projection_state",
     "schema_evidence",
     "schema_prototype_map",
     "schema_relations",

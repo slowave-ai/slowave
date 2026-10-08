@@ -32,6 +32,7 @@ import click
 
 from slowave.cli.output import safe_emoji
 from slowave.lifecycle import LIFECYCLE_VERSION
+from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 
 # ---------------------------------------------------------------------------
 # Change tracking for summary
@@ -871,63 +872,51 @@ _LIFECYCLE_BLOCK_TEMPLATE = f"""\
 <!-- slowave-lifecycle-start {LIFECYCLE_VERSION} -->
 ## MANDATORY — Slowave memory (5-verb cognitive cycle)
 
-Use this loop once per user task. The connected MCP tools define the exact
-parameter and validation schema; obey their descriptions when calling them.
+Use this loop once per user task. Follow the connected MCP tools' schemas and
+descriptions for endpoint fields, allowed values, and conditional requirements.
 
-1. **Activate before your first response.** Derive a concise action-led
-   `initial_goal`, then call `slowave_activate` once with the verbatim task,
-   stable scope, and (after the first task in this client conversation) the
-   unchanged server-issued `continuity_id`. Store `session_id` and
-   `retrieval_id`. For coding work, scope is `project:<repository-root-name>`:
-   use the workspace root or nearest Git root, otherwise `project:<basename(cwd)>`.
-2. **Use memory deliberately.** Call `slowave_recall` when the task pivots to
-   a materially new question. Preserve a continuation cursor exactly and use
-   it only when more context would help. Call `slowave_remember` only for a
-   novel, durable, standalone fact; never store transient task state.
-3. **Assess every retrieval.** After each activate, recall, or continuation,
-   call `slowave_feedback` for every returned memory and procedure. Feedback
-   measures retrieval quality, not task outcome.
-4. **Commit before the final response.** Call `slowave_commit` with the actual
-   outcome and verification. Report `partial` or `failure` honestly. If a
-   reusable multi-step method was attempted, include its procedure.
+1. **Activate before your first response.** Call `slowave_activate` once with the
+   verbatim task, concise action-led `initial_goal`, and stable scope. For coding,
+   scope is `project:<repository-root-name>`: use the workspace or nearest Git
+   root, falling back to `project:<basename(cwd)>`. Save `session_id`,
+   `retrieval_id`, and returned `continuity_id`; omit continuity on the first
+   task and resend it unchanged on later tasks in this conversation only.
+2. **Use memory deliberately.** `slowave_recall` is for materially new questions;
+   `slowave_remember` is for novel, durable, standalone knowledge, never transient
+   task state. Both require the active `session_id` and matching scope.
+   `page_size`: activation/fresh recall only; integer 1–10, maximum memories/page
+   (not guaranteed). Omit for server default ({DEFAULT_MEMORY_PAGE_SIZE});
+   continuations keep it; omit with `continue_from`.
+3. **Assess every retrieval after the work, before commit.** Send `slowave_feedback`
+   for all returned targets, including continuations and empty results, using
+   `memory_feedback` / `procedure_feedback` arrays and `coverage="complete"`.
+   `used` requires actual influence, not reading or topical similarity;
+   `not_used` is neutral, `irrelevant` means task mismatch. For lost usage evidence,
+   use `unassessable` with a reason. Checkpoint use/staleness earlier
+   if helpful; follow the tool's conditional rules.
+4. **Commit before the final response.** `slowave_commit` requires `session_id`,
+   `final_goal`, actual `outcome`, standalone `outcome_summary`, and `verification`.
+   Include a procedure for an attempted reusable multi-step method with at least
+   two ordered task actions; omit it for trivial/answer-only work. Keep trajectory
+   entries task-only. Report `partial` or `failure` honestly. Write outcome and
+   procedure summaries as specific, standalone future-facing knowledge.
+   Verify `feedback_status` and `verification_status`.
 
-Never activate because of a hook, stop event, system reminder, or injected
-follow-up prompt: one user task receives one activation. Do not invent IDs,
-scope, continuity, cursors, or success. Treat `{{"ok":false,...}}` as a failed
-operation, not an empty result.
+**Cold start:** read one stable context document; remember only durable facts
+not already observable. Do not scan the whole codebase.
 
-### Conditional rules — apply when relevant
+Account for every warning before relying on a retrieval. Preserve cursors exactly
+and continue only when more context would help. A continuation sends only
+`session_id`, `scope`, and `continue_from`.
+Never activate because of a hook, stop event, system reminder, or injected follow-up.
+Do not invent IDs, scope, continuity, cursors, or success.
 
-- **Cold start:** read one stable context document, then remember only durable
-  facts that are not already observable. Do not scan the whole codebase.
-- **Warnings and cursors:** account for every warning before relying on a
-  retrieval. A continuation contains only `session_id`, `scope`, and
-  `continue_from`; its returned targets also require feedback.
-- **Feedback:** use only IDs exposed by that retrieval. Mark `stale` only with
-  the required reason (and replacement for `superseded`). Use
-  `coverage="complete"` only after assessing every target; correct any
-  `outstanding` or `rejected` result before committing.
-- **Commit:** if it reports `incomplete_feedback`, submit all missing feedback
-  with complete coverage and retry. Verify both `feedback_status` and
-  `verification_status`. Keep trajectory entries task-only. Write outcome and
-  procedure summaries as specific, standalone future-facing knowledge.
-- **Procedures:** include one for a reusable method with at least two ordered
-  task actions; omit it only for answer-only or trivial work. Use the accepted
-  shape: `{{"version": 2, "summary": "...", "context": {{...}}, "steps":
-  [{{"summary": "..."}}], "caveats": ["..."]}}`. Verification is
-  `{{"status": "verified"|"partially_verified"|"unverified", "summary": "...",
-  "evidence_refs": [...]}}`; trajectory entries are `{{"kind":
-  "action"|"observation", "summary": "...", "status":
-  "started"|"succeeded"|"failed"|"unknown"}}` (at most 32). The MCP tool
-  schema is authoritative for the complete contract.
-- **Endpoint payloads:** `slowave_activate` and `slowave_recall` accept
-  structured `task_context` JSON objects. `slowave_remember` accepts either
-  one `{{content, type, occurred_at?}}` claim or a non-empty `memories` list of
-  those objects (never both); types are fact, preference, decision, constraint,
-  instruction, lesson, warning, open_question, task, or artifact.
-- **Feedback payloads:** use `memory_feedback` and `procedure_feedback` arrays
-  with the IDs returned by retrieval, or use a non-empty `items` batch, but do
-  not mix batch and scalar fields. `coverage` is `partial` or `complete`.
+Treat `{{"ok":false,...}}` as failure. Also inspect `rejected` and `outstanding`
+on feedback responses and each batch item's `ok`/data; outer success is insufficient.
+For feedback batches use `items` alone, with coverage inside each item. Correct
+rejected/outstanding feedback before committing; on `incomplete_feedback`, submit
+missing assessments with complete coverage and retry. After upgrading, rerun setup
+and refresh the client's MCP tool definitions.
 <!-- slowave-lifecycle-end {LIFECYCLE_VERSION} -->"""
 
 
@@ -985,7 +974,7 @@ def _strip_legacy_slowave_section(content: str) -> str:
     return "".join(result)
 
 
-def _inject_block(path: Path, block: str) -> bool:
+def _inject_block(path: Path, block: str, *, force: bool = False) -> bool:
     """Inject block between markers. Idempotent — replaces existing block. Returns True if changed.
 
     Also strips any legacy un-markered '## Slowave memory' section written by
@@ -1005,8 +994,11 @@ def _inject_block(path: Path, block: str) -> bool:
         end = end_of_line + 1 if end_of_line != -1 else len(existing)
         before = existing[:start]
         after = _strip_legacy_slowave_section(existing[end:])
-        new_content = before + block + after
-        if new_content == existing:
+        # Preserve the end-marker line's newline. Dropping it consumes a
+        # following blank line on every rerun and can join user text to the marker.
+        replacement = block.rstrip("\n") + ("\n" if end_of_line != -1 else "")
+        new_content = before + replacement + after
+        if new_content == existing and not force:
             return False
         bak = _backup_file(path)
         if bak:
@@ -1018,7 +1010,7 @@ def _inject_block(path: Path, block: str) -> bool:
     rest = _strip_legacy_slowave_section(existing)
     sep = "\n\n" if rest.strip() else ""
     new_content = block + sep + rest
-    if new_content == existing:
+    if new_content == existing and not force:
         return False
     bak = _backup_file(path)
     if bak:
@@ -1176,6 +1168,22 @@ def _launchd_runtime_environment(preserve_from: Path | None = None) -> str:
     return _format_launchd_environment(_preserved_service_environment(preserve_from))
 
 
+def _launchctl_service_commands(plist_path: Path, *, force: bool) -> tuple[list[str], ...]:
+    """Build launchctl commands without assuming Unix identity APIs on test hosts."""
+    if not force:
+        return (["launchctl", "unload", str(plist_path)], ["launchctl", "load", str(plist_path)])
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        # The macOS installer is also exercised on Windows to validate plist
+        # generation. There is no launchd GUI domain to address on that host.
+        return ()
+    domain = f"gui/{getuid()}"
+    return (
+        ["launchctl", "bootout", domain, str(plist_path)],
+        ["launchctl", "bootstrap", domain, str(plist_path)],
+    )
+
+
 def _systemd_runtime_environment() -> str:
     lines = []
     for key, value in _runtime_service_env().items():
@@ -1201,7 +1209,7 @@ def _windows_runtime_action(slowave_bin: str, arguments: str) -> tuple[str, str]
     )
 
 
-def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
+def _install_worker_macos(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     from xml.sax.saxutils import escape
 
     from slowave.core.paths import ensure_runtime_dirs, runtime_paths
@@ -1216,19 +1224,19 @@ def _install_worker_macos(slowave_bin: str) -> tuple[str, bool]:
         worker_log=escape(str(paths.logs_dir / "worker.log")),
         worker_err=escape(str(paths.logs_dir / "worker.err")),
     )
-    if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
+    if not force and plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
-        subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, check=False)
+        for command in _launchctl_service_commands(plist_path, force=force):
+            subprocess.run(command, capture_output=True, check=False)
     except FileNotFoundError:
         pass
     return str(plist_path), True
 
 
-def _install_worker_linux(slowave_bin: str) -> tuple[str, bool]:
+def _install_worker_linux(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     from slowave.core.paths import runtime_paths
 
     xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
@@ -1237,7 +1245,7 @@ def _install_worker_linux(slowave_bin: str) -> tuple[str, bool]:
     content = _SYSTEMD_SERVICE.format(
         bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
     )
-    if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
+    if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
     svc_dir.mkdir(parents=True, exist_ok=True)
     svc_path.write_text(content, encoding="utf-8")
@@ -1248,6 +1256,12 @@ def _install_worker_linux(slowave_bin: str) -> tuple[str, bool]:
             capture_output=True,
             check=False,
         )
+        if force:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "slowave-worker"],
+                capture_output=True,
+                check=False,
+            )
     except FileNotFoundError:
         pass
     return str(svc_path), True
@@ -1279,7 +1293,9 @@ def _ps_squote(s: str) -> str:
     return s.replace("'", "''")
 
 
-def _register_windows_task(task_name: str, execute: str, argument: str) -> tuple[bool, str]:
+def _register_windows_task(
+    task_name: str, execute: str, argument: str, *, force: bool = False
+) -> tuple[bool, str]:
     """Register (or upgrade) a keep-alive Slowave task in Task Scheduler.
 
     Reliability settings (all absent from pre-v2 registrations):
@@ -1318,7 +1334,8 @@ def _register_windows_task(task_name: str, execute: str, argument: str) -> tuple
         )
         parts = check.stdout.strip().split("|")
         if (
-            len(parts) == 3
+            not force
+            and len(parts) == 3
             and parts[0].strip() == _WINDOWS_TASK_MARKER
             and parts[1].strip().lower() == execute.lower()
             and parts[2].strip().lower() == argument.lower()
@@ -1359,7 +1376,7 @@ def _register_windows_task(task_name: str, execute: str, argument: str) -> tuple
     return True, "registered and started"
 
 
-def _install_worker_windows(slowave_bin: str) -> tuple[bool, str]:
+def _install_worker_windows(slowave_bin: str, *, force: bool = False) -> tuple[bool, str]:
     """Register SlowaveWorker in Task Scheduler.
 
     Uses ``pythonw.exe -m slowave worker`` so the worker runs without opening a
@@ -1367,10 +1384,12 @@ def _install_worker_windows(slowave_bin: str) -> tuple[bool, str]:
     found (rare custom installs without the no-console launcher).
     """
     execute, argument = _windows_runtime_action(slowave_bin, "worker --interval 300")
-    return _register_windows_task("SlowaveWorker", execute, argument)
+    return _register_windows_task(
+        "SlowaveWorker", execute, argument, **({"force": True} if force else {})
+    )
 
 
-def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
+def _install_daemon_macos(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     """Install the HTTP MCP daemon as a launchd user agent (macOS)."""
     from xml.sax.saxutils import escape
 
@@ -1386,19 +1405,19 @@ def _install_daemon_macos(slowave_bin: str) -> tuple[str, bool]:
         daemon_log=escape(str(paths.logs_dir / "daemon.log")),
         daemon_err=escape(str(paths.logs_dir / "daemon.err")),
     )
-    if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
+    if not force and plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
-        subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, check=False)
+        for command in _launchctl_service_commands(plist_path, force=force):
+            subprocess.run(command, capture_output=True, check=False)
     except FileNotFoundError:
         pass
     return str(plist_path), True
 
 
-def _install_daemon_linux(slowave_bin: str) -> tuple[str, bool]:
+def _install_daemon_linux(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     """Install the HTTP MCP daemon as a systemd user service (Linux)."""
     from slowave.core.paths import runtime_paths
 
@@ -1408,7 +1427,7 @@ def _install_daemon_linux(slowave_bin: str) -> tuple[str, bool]:
     content = _SYSTEMD_DAEMON_SERVICE.format(
         bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
     )
-    if svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
+    if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
     svc_dir.mkdir(parents=True, exist_ok=True)
     svc_path.write_text(content, encoding="utf-8")
@@ -1419,19 +1438,27 @@ def _install_daemon_linux(slowave_bin: str) -> tuple[str, bool]:
             capture_output=True,
             check=False,
         )
+        if force:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "slowave-daemon"],
+                capture_output=True,
+                check=False,
+            )
     except FileNotFoundError:
         pass
     return str(svc_path), True
 
 
-def _install_daemon_windows(slowave_bin: str) -> tuple[bool, str]:
+def _install_daemon_windows(slowave_bin: str, *, force: bool = False) -> tuple[bool, str]:
     """Register the HTTP MCP daemon as a Windows Scheduled Task.
 
     Uses ``pythonw.exe -m slowave serve start`` so the daemon runs without a
     visible console window (closing that window would kill the daemon).
     """
     execute, argument = _windows_runtime_action(slowave_bin, "serve start")
-    return _register_windows_task("SlowaveDaemon", execute, argument)
+    return _register_windows_task(
+        "SlowaveDaemon", execute, argument, **({"force": True} if force else {})
+    )
 
 
 # Windows Task Scheduler dispatch is asynchronous (Start-ScheduledTask returns
@@ -1663,9 +1690,16 @@ def _section(title: str) -> None:
     show_default=True,
     help="Install the background worker as a system service.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Reapply client configuration and reinstall services even when already configured; run verification.",
+)
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing any files.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -> None:
+def setup_cmd(
+    client: str, worker: bool, dry_run: bool, as_json: bool = False, force: bool = False
+) -> None:
     """One-command post-install wiring for Claude Code, Claude Desktop, Cline, Cursor, Windsurf, OpenCode, and Codex.
 
     Configures every detected client to connect to the Slowave HTTP MCP daemon
@@ -1681,6 +1715,7 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
       slowave setup --client cline        # Cline only
       slowave setup --no-worker           # skip service install
       slowave setup --dry-run             # preview without writing
+      slowave setup --force               # reapply configuration and services
     """
     click.echo(click.style("\nSlowave setup", bold=True))
     if dry_run:
@@ -1739,11 +1774,18 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
 
     # Build and display summary
     summary = _build_summary(client, worker, slowave_bin, detected_specs, mcp_url=mcp_url)
+    if force:
+        for change in summary.changes:
+            if change.status == ChangeStatus.SKIP:
+                change.status = ChangeStatus.UPDATE
     click.echo(summary.format())
+    if summary.manual_steps:
+        click.echo("\nPaste this block into the instruction settings listed above:")
+        click.echo(_lifecycle_block("manual"))
 
     # Confirm unless dry-run — skip if nothing to do
     if not dry_run:
-        if not summary.has_changes():
+        if not force and not summary.has_changes():
             click.echo(click.style("\nEverything already configured. Nothing to do.", fg="green"))
             if summary.manual_steps:
                 click.echo(click.style("\nReminders:", bold=True))
@@ -1766,7 +1808,7 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
         if spec.key == "codex":
             cfg = _read_toml(mcp_file)
             cfg, mcp_changed = _patch_codex_mcp(cfg, mcp_url)
-            if mcp_changed:
+            if mcp_changed or force:
                 (
                     _ok(f"Would set MCP server (HTTP) → {mcp_file}")
                     if dry_run
@@ -1775,7 +1817,7 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
             else:
                 _skip(f"MCP server already configured (HTTP) in {mcp_file}")
 
-            if not dry_run and mcp_changed:
+            if not dry_run and (mcp_changed or force):
                 _write_toml(mcp_file, cfg)
         else:
             cfg = _read_json(mcp_file)
@@ -1798,7 +1840,7 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
                     use_sse=spec.key == "cline",
                 )
                 transport_label = "HTTP"
-            if changed:
+            if changed or force:
                 if dry_run:
                     _ok(f"Would set MCP server ({transport_label}) → {mcp_file}")
                 else:
@@ -1815,12 +1857,14 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
                     lc_file.read_text(encoding="utf-8", errors="ignore") if lc_file.exists() else ""
                 )
                 block = _lifecycle_block(spec.lifecycle_agent)
-                if _lifecycle_block_up_to_date(existing, block):
+                if not force and _lifecycle_block_up_to_date(existing, block):
                     _skip(f"Lifecycle block already up-to-date in {lc_file}")
                 else:
                     _ok(f"Would inject lifecycle block → {lc_file}")
             else:
-                changed = _inject_block(lc_file, _lifecycle_block(spec.lifecycle_agent))
+                changed = _inject_block(
+                    lc_file, _lifecycle_block(spec.lifecycle_agent), force=force
+                )
                 if changed:
                     _ok(f"Lifecycle block injected → {lc_file}")
                 else:
@@ -1844,20 +1888,26 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave serve start")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_daemon_macos(slowave_bin)
+                path, changed = _install_daemon_macos(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"launchd daemon service installed → {path}")
                 else:
                     _skip("launchd daemon service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_daemon_linux(slowave_bin)
+                path, changed = _install_daemon_linux(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"systemd daemon service installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-daemon")
                 else:
                     _skip("systemd daemon service already up-to-date")
             elif SYSTEM == "Windows":
-                ok, detail = _install_daemon_windows(slowave_bin)
+                ok, detail = _install_daemon_windows(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if ok:
                     _ok(f"Task Scheduler task SlowaveDaemon: {detail}")
                 else:
@@ -1906,20 +1956,26 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave worker --interval 300")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_worker_macos(slowave_bin)
+                path, changed = _install_worker_macos(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"launchd worker service installed → {path}")
                 else:
                     _skip("launchd worker service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_worker_linux(slowave_bin)
+                path, changed = _install_worker_linux(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"systemd worker service installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-worker")
                 else:
                     _skip("systemd worker service already up-to-date")
             elif SYSTEM == "Windows":
-                ok, detail = _install_worker_windows(slowave_bin)
+                ok, detail = _install_worker_windows(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if ok:
                     _ok(f"Task Scheduler task SlowaveWorker: {detail}")
                     _ok("Verify:  Get-ScheduledTask -TaskName SlowaveWorker")
@@ -1947,20 +2003,24 @@ def setup_cmd(client: str, worker: bool, dry_run: bool, as_json: bool = False) -
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave backup")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_backup_macos(slowave_bin)
+                path, changed = _install_backup_macos(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"launchd backup service installed → {path}")
                 else:
                     _skip("launchd backup service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_backup_linux(slowave_bin)
+                path, changed = _install_backup_linux(
+                    slowave_bin, **({"force": True} if force else {})
+                )
                 if changed:
                     _ok(f"systemd backup timer installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-backup.timer")
                 else:
                     _skip("systemd backup timer already up-to-date")
             elif SYSTEM == "Windows":
-                task, _ = _install_backup_windows(slowave_bin)
+                task, _ = _install_backup_windows(slowave_bin, **({"force": True} if force else {}))
                 _ok(f"Task Scheduler task registered: {task}")
                 _ok("Verify:  Get-ScheduledTask -TaskName SlowaveBackup")
             else:
@@ -1997,7 +2057,7 @@ _LAUNCHD_BACKUP_PLIST = """\
   <dict>
     <key>Label</key><string>com.slowave.backup</string>
     <key>EnvironmentVariables</key>
-    <dict><key>{runtime_env_key}</key><string>{runtime_env_value}</string></dict>
+    <dict>{runtime_environment}</dict>
     <key>ProgramArguments</key>
     <array>
       <string>{bin}</string>
@@ -2020,7 +2080,7 @@ Description=Slowave daily database backup
 
 [Service]
 Type=oneshot
-Environment="{runtime_env_key}={runtime_env_value}"
+{runtime_environment}
 ExecStart={bin} backup
 """
 
@@ -2037,7 +2097,7 @@ WantedBy=timers.target
 """
 
 
-def _install_backup_macos(slowave_bin: str) -> tuple[str, bool]:
+def _install_backup_macos(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     """Install the daily database backup as a launchd user agent (macOS).
 
     Uses StartCalendarInterval to run once per day at 03:00.
@@ -2050,27 +2110,36 @@ def _install_backup_macos(slowave_bin: str) -> tuple[str, bool]:
     plist_path = plist_dir / "com.slowave.backup.plist"
     paths = runtime_paths()
     ensure_runtime_dirs(paths)
-    env_key, env_value = _runtime_service_env()
     content = _LAUNCHD_BACKUP_PLIST.format(
         bin=escape(slowave_bin),
-        runtime_env_key=env_key,
-        runtime_env_value=escape(env_value),
+        runtime_environment=_launchd_runtime_environment(preserve_from=plist_path),
         backup_log=escape(str(paths.logs_dir / "backup.log")),
         backup_err=escape(str(paths.logs_dir / "backup.err")),
     )
-    if plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
+    if not force and plist_path.exists() and plist_path.read_text(encoding="utf-8") == content:
         return str(plist_path), False
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
-        subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, check=False)
+        domain = f"gui/{os.getuid()}"
+        unload = (
+            ["launchctl", "bootout", domain, str(plist_path)]
+            if force
+            else ["launchctl", "unload", str(plist_path)]
+        )
+        load = (
+            ["launchctl", "bootstrap", domain, str(plist_path)]
+            if force
+            else ["launchctl", "load", str(plist_path)]
+        )
+        subprocess.run(unload, capture_output=True, check=False)
+        subprocess.run(load, capture_output=True, check=False)
     except FileNotFoundError:
         pass
     return str(plist_path), True
 
 
-def _install_backup_linux(slowave_bin: str) -> tuple[str, bool]:
+def _install_backup_linux(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     """Install the daily database backup as a systemd timer + oneshot service (Linux)."""
     from slowave.core.paths import runtime_paths
 
@@ -2078,17 +2147,15 @@ def _install_backup_linux(slowave_bin: str) -> tuple[str, bool]:
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-backup.service"
     timer_path = svc_dir / "slowave-backup.timer"
-    env_key, env_value = _runtime_service_env()
-    value = env_value.replace("%", "%%").replace('"', '\\"')
     svc_content = _SYSTEMD_BACKUP_SERVICE.format(
-        bin=slowave_bin, runtime_env_key=env_key, runtime_env_value=value
+        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
     )
     timer_content = _SYSTEMD_BACKUP_TIMER
     svc_changed = not svc_path.exists() or svc_path.read_text(encoding="utf-8") != svc_content
     timer_changed = (
         not timer_path.exists() or timer_path.read_text(encoding="utf-8") != timer_content
     )
-    if not svc_changed and not timer_changed:
+    if not force and not svc_changed and not timer_changed:
         return str(timer_path), False
     svc_dir.mkdir(parents=True, exist_ok=True)
     svc_path.write_text(svc_content, encoding="utf-8")
@@ -2100,12 +2167,18 @@ def _install_backup_linux(slowave_bin: str) -> tuple[str, bool]:
             capture_output=True,
             check=False,
         )
+        if force:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "slowave-backup.timer"],
+                capture_output=True,
+                check=False,
+            )
     except FileNotFoundError:
         pass
     return str(timer_path), True
 
 
-def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
+def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[str, bool]:
     """Register a daily database backup as a Windows Scheduled Task."""
     task_name = "SlowaveBackup"
     execute, argument = _windows_runtime_action(slowave_bin, "backup")
@@ -2134,7 +2207,7 @@ def _install_backup_windows(slowave_bin: str) -> tuple[str, bool]:
     except FileNotFoundError:
         pass
 
-    if already_registered:
+    if already_registered and not force:
         return task_name, False
 
     # Daily trigger at 03:00

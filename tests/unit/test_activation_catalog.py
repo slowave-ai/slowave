@@ -49,11 +49,11 @@ def prepare(count, procedures=(), memories=None, spans=None, **kwargs):
         (0, [0]),
         (2, [2]),
         (4, [4]),
-        (8, [8]),
-        (10, [10]),
-        (13, [10, 3]),
-        (23, [10, 10, 3]),
-        (100, [10] * 10),
+        (8, [5, 3]),
+        (10, [5, 5]),
+        (13, [5, 5, 3]),
+        (23, [5, 5, 5, 5, 3]),
+        (100, [5] * 20),
     ],
 )
 def test_memory_page_contract_and_duplicate_free_replay(count, sizes):
@@ -74,6 +74,31 @@ def test_memory_page_contract_and_duplicate_free_replay(count, sizes):
         offset = successor
     assert observed == sizes
     assert ids == [f"sch_{i}" for i in range(count)]
+
+
+@pytest.mark.parametrize("size", [1, 5, 7, 10])
+def test_custom_page_size_is_frozen_across_restart(size):
+    catalog = FrozenActivationCatalog.read(prepare(23, page_size=size).snapshot_json)
+    offset = (0, 0)
+    seen = []
+    while True:
+        page, successor = catalog.page(*offset)
+        assert len(page["memories"]) <= size
+        seen.extend(m["memory_id"] for m in page["memories"])
+        if successor is None:
+            break
+        offset = successor
+    assert seen == [f"sch_{i}" for i in range(23)]
+
+
+def test_existing_v4_snapshot_retains_ten_memory_pages():
+    snapshot = json.loads(prepare(23).snapshot_json)
+    snapshot["paging_contract_version"] = "ten-memory-budget-pages-v4"
+    snapshot.pop("requested_page_size")
+    old = FrozenActivationCatalog.read(json.dumps(snapshot))
+    first, successor = old.page()
+    assert len(first["memories"]) == 10
+    assert len(old.page(*successor)[0]["memories"]) == 10
 
 
 @pytest.mark.parametrize(
@@ -266,10 +291,10 @@ def test_even_short_sources_require_valid_assessment_offsets():
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 4, 7, 11, 23, 100])
-def test_payload_pages_target_ten_without_capping_the_catalog(count):
+def test_payload_pages_default_to_five_without_capping_the_catalog(count):
     page, successor = prepare(count).page()
-    assert len(page["memories"]) == min(count, 10)
-    assert (successor is not None) == (count > 10)
+    assert len(page["memories"]) == min(count, 5)
+    assert (successor is not None) == (count > 5)
 
 
 def test_payload_budget_varies_counts_with_content_and_survives_restart():
@@ -289,7 +314,7 @@ def test_payload_budget_varies_counts_with_content_and_survives_restart():
             break
         assert successor[0] > offset[0]
         offset = successor
-    assert pages == [10, 10, 9]
+    assert pages == [5, 5, 5, 5, 5, 4]
     assert ids == [m["memory_id"] for m in memories]
 
 
@@ -310,11 +335,11 @@ def test_recall_evidence_has_separate_budget_and_does_not_displace_memories():
     }
     catalog = prepare(23, policy_version="recall-pool-relative-v1", recall_evidence=evidence)
     page, successor = catalog.page()
-    assert len(page["memories"]) == 10
+    assert len(page["memories"]) == 5
     assert page["evidence"] == evidence["evidence"]
     restored = FrozenActivationCatalog.read(catalog.snapshot_json)
     tail, _ = restored.page(*successor)
-    assert len(tail["memories"]) == 10
+    assert len(tail["memories"]) == 5
     assert tail["evidence"] == []
     assert tail["evidence_mode"] == "full"
 
@@ -344,7 +369,7 @@ def test_unicode_evidence_is_budgeted_without_silently_dropping_memories():
         "evidence_truncated": False,
     }
     page, _ = prepare(10, recall_evidence=evidence).page()
-    assert len(page["memories"]) == 10
+    assert len(page["memories"]) == 5
     assert 0 < len(page["evidence"]) < 8
     assert page["evidence_truncated"] is True
     assert len(evidence["evidence"]) == 8
