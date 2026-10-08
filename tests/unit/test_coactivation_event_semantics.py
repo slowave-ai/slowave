@@ -260,4 +260,4 @@ def test_single_used_id_does_not_trigger_explicit_couse(eng):
 
     assert stats["explicit_pairs_written"] == 0
     # Mere co-presentation edge still forms (both are pathway='direct').
-    assert _weight_between(eng, a, b) == 1.0
+    assert _weight_between(eng, a, b) == pytest.approx(1.0, abs=1e-5)

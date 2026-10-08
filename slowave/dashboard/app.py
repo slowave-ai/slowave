@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from slowave import __version__
 from slowave.lifecycle import LIFECYCLE_VERSION
+from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 
 VALID_SCHEMA_STATUSES = (
     "active",
@@ -2833,6 +2834,7 @@ def _effectiveness_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, 
 _RETRIEVAL_SIGNAL_KEYS = (
     "used",
     "not_used",
+    "unassessable",
     "irrelevant",
     "stale",
     "wrong",
@@ -2949,6 +2951,27 @@ def _retrieval_filters(qs: dict[str, list[str]]) -> tuple[str, list[Any]]:
     return " AND ".join(clauses), args
 
 
+def _effective_memory_page_size(conn: sqlite3.Connection, retrieval: dict[str, Any]) -> int | None:
+    """Resolve the effective page size, including legacy rows without the field."""
+    if retrieval.get("retrieval_type") != "context":
+        return None
+    value = retrieval.get("requested_page_size")
+    if type(value) is int and 1 <= value <= 10:
+        return value
+    cursor_row = conn.execute(
+        "SELECT candidates_json FROM retrieval_continuations "
+        "WHERE retrieval_id = ? ORDER BY created_at LIMIT 1",
+        (retrieval.get("context_id"),),
+    ).fetchone()
+    if cursor_row is not None:
+        cursor_value = _json_dict(cursor_row["candidates_json"]).get("requested_page_size")
+        if type(cursor_value) is int and 1 <= cursor_value <= 10:
+            return cursor_value
+    # Before requested_page_size was persisted, context retrievals used this
+    # shared server default. Keep legacy dashboard rows consistent with that API.
+    return DEFAULT_MEMORY_PAGE_SIZE
+
+
 def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     if not os.path.exists(db_path):
         return {
@@ -3008,6 +3031,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
         for row in rows:
             item = dict(row)
             item.pop("cue_embedding", None)
+            item["requested_page_size"] = _effective_memory_page_size(conn, item)
             item["task_preview"] = item.get("query") or item.get("goal") or "Context exposure"
             item["is_internal"] = _is_lifecycle_hook_query(item.get("query"))
             item["feedback"] = feedback_by_id.get(str(item["context_id"]), [])
@@ -3099,6 +3123,7 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
             return {"error": "retrieval not found", "retrieval_id": retrieval_id}
         retrieval = dict(row)
         retrieval.pop("cue_embedding", None)
+        retrieval["requested_page_size"] = _effective_memory_page_size(conn, retrieval)
         retrieval["situation"] = _json_dict(retrieval.pop("situation_json", "{}"))
         retrieval["requirements"] = _json_list(retrieval.pop("requirements_json", "[]"))
         retrieval["topics"] = _json_list(retrieval.pop("topics_json", "[]"))
@@ -3983,6 +4008,7 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         v9_feedback_counts = {
             "used": 0,
             "not_used": 0,
+            "unassessable": 0,
             "helped": 0,
             "no_effect": 0,
             "harmed": 0,
@@ -4000,7 +4026,7 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
             if status == "accepted":
                 assessment = str(row["assessment"] or "")
                 effect = str(row["effect"] or "unknown")
-                if assessment in {"used", "not_used"}:
+                if assessment in {"used", "not_used", "unassessable"}:
                     v9_feedback_counts[assessment] += 1
                 if effect in {"helped", "no_effect", "harmed", "unknown"}:
                     v9_feedback_counts[effect] += 1

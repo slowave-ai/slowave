@@ -75,6 +75,7 @@ def test_retrieval_projection_preserves_exposure_and_feedback_semantics(tmp_path
     assert visible["signal_counts"] == {
         "used": 1,
         "not_used": 0,
+        "unassessable": 0,
         "irrelevant": 0,
         "stale": 0,
         "wrong": 0,

@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from slowave.core.consolidation import Consolidator
+from slowave.core.services.effective_feedback import effective_feedback_sql
 from slowave.core.services.ingest import IngestService
 from slowave.latent.replay_engine import ReplayEngine
 from slowave.storage.sqlite_db import SQLiteDB
@@ -169,181 +170,142 @@ class ConsolidationService:
         return result
 
     def _write_coactivations(self, conn: Any, now_ts: int) -> dict[str, Any]:
-        """WP-6: write Hebbian co-activation edges from two honestly-distinct
-        signals, replacing the pre-WP-6 "any schema admitted anywhere in the
-        same session" rule the plan's Phase 4 flagged as dishonest:
+        """Version 2: rebuild derived edges from effective evidence.
 
-        1. Same-call, directly-relevant co-presentation -- schemas the client
-           literally saw together in one activate()/recall() response, and
-           only the ones admitted for actual query relevance (`pathway =
-           'direct'`), not a salience-filled exploration slot or a
-           graph-propagated association (`pathway` in ('exploration',
-           'graph') -- see WorkingMemoryItem.peripheral / expand_via_relations
-           and ops._pathway_for). Grouped by `context_id` (one retrieval
-           call), not `session_id` (the whole session): the old session-wide
-           grouping pairwise-crossed schemas across unrelated activate()
-           calls within one long session purely because they shared a
-           session_id, and it silently excluded every recall() call, which
-           never sets session_id at all. context_id is set on every
-           activate() and recall() call, so this also makes recall()
-           schemas visible to co-activation for the first time.
-        2. Explicit client-confirmed co-use -- when a single
-           `retrieval_feedback()` call names 2+ schemas in `used_memory_ids`,
-           that is a real behavioral signal grounded in what the client
-           actually relied on, not incidental co-presentation. Each such pair
-           gets an additional, stronger boost (_EXPLICIT_COUSE_BOOST) on top
-           of whatever ordinary co-presentation already wrote for the same
-           call.
-
-        See private/experiments/validate_retrieval_quality_plan.py's
-        experiment_wp6_coactivation_event_semantics for the deterministic
-        evidence, and the WP-6 section of
-        private/docs/iterations/20260728_retrieval_quality_execution_progress.md
-        for the comparison against the session-wide co-presentation rule this
-        replaced. Then applies pure exponential decay (half-life ~7 days) to
-        all untouched rows.
+        Co-presentation remains one unit per admitted direct-path retrieval;
+        explicit co-use remains the stronger, benefit-independent signal. Raw
+        events, not maintenance runs or transport retries, anchor exponential
+        aging. Rebuilding removes historical corrected-use leakage and is crash
+        safe: graph replacement commits as one transaction. No raw history is
+        rewritten. Recurrence history is deliberately not reconstructed here.
         """
+        import math
         import re
 
-        half_life_s = 604800.0
-        # Find the cutoff: process events newer than the last completed
-        # worker run (or all events on first run). Use ended_ts, not
-        # started_ts -- events created while the previous run was still
-        # executing were already processed by it, so anchoring on started_ts
-        # would reprocess and double-strengthen that overlap window on every
-        # subsequent pass.
-        cutoff_row = conn.execute(
-            "SELECT ended_ts FROM worker_runs "
-            "WHERE ended_ts IS NOT NULL AND started_ts < ? "
-            "ORDER BY started_ts DESC LIMIT 1",
-            (int(now_ts),),
-        ).fetchone()
-        cutoff_ts = int(cutoff_row["ended_ts"]) if cutoff_row else 0
-
-        _sch_id_pat = re.compile(r"sch_(\d+)")
-
-        def _ordered_pairs(ids: list[int]) -> list[tuple[int, int]]:
-            ordered = list(dict.fromkeys(ids))  # de-dup, preserve first-seen order
-            return [
-                (ordered[i], ordered[j])
-                for i in range(len(ordered))
-                for j in range(i + 1, len(ordered))
-            ]
-
-        # --- Signal 1: same-call, directly-relevant co-presentation ---
-        # admitted=1 only -- context_recall_items also stores rank=-1/
-        # admitted=0 rows for candidates the working-memory gate evaluated
-        # and REJECTED (e.g. cross-scope graph-expansion candidates correctly
-        # filtered out by scope isolation). Without this filter, a rejected
-        # candidate reads as "recalled together" with everything actually
-        # admitted in the same call, silently punching co-activation edges
-        # through the same scope boundary the rest of retrieval enforces.
-        # pathway='direct' only -- excludes exploration-slot and
-        # graph-propagated rows, which are shown alongside the direct items
-        # but were never themselves evidence the query needed them.
-        rows = conn.execute(
-            "SELECT cri.context_id, cri.memory_id "
-            "FROM context_recall_items cri "
-            "WHERE cri.memory_type = 'schema' "
-            "AND cri.admitted = 1 "
-            "AND cri.pathway = 'direct' "
-            "AND cri.created_at > ? "
-            "ORDER BY cri.context_id, cri.rank ASC",
-            (cutoff_ts,),
-        ).fetchall()
-
-        calls: dict[str, list[int]] = {}  # context_id -> [schema_id, ...]
-        for row in rows:
-            cid = str(row["context_id"])
-            m = _sch_id_pat.match(str(row["memory_id"]))
-            if not m:
-                continue
-            calls.setdefault(cid, []).append(int(m.group(1)))
-
-        pairs_written = 0
-        calls_processed = len(calls)
-        for ids in calls.values():
-            if len(ids) < 2:
-                continue
-            for src, dst in _ordered_pairs(ids):
-                self.schemas.upsert_coactivation(
-                    src,
-                    dst,
-                    now_ts=now_ts,
-                    half_life_s=half_life_s,
+        version = "effective-feedback-v2"
+        fingerprint = json.dumps(
+            [
+                tuple(
+                    conn.execute(
+                        f"SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM {table}"
+                    ).fetchone()
                 )
-                pairs_written += 1
+                for table in (
+                    "context_recall_items",
+                    "feedback_events",
+                    "context_feedback_events",
+                    "schemas",
+                )
+            ]
+        )
+        checkpoint = conn.execute(
+            "SELECT * FROM coactivation_projection_state WHERE id = 1"
+        ).fetchone()
+        if (
+            checkpoint
+            and checkpoint["version"] == version
+            and checkpoint["source_fingerprint"] == fingerprint
+        ):
+            decayed = self.schemas.decay_all_coactivations(now_ts=now_ts, half_life_s=604800.0)
+            return {
+                "calls_processed": 0,
+                "pairs_written": 0,
+                "explicit_pairs_written": 0,
+                "decayed": decayed,
+                "projection_version": version,
+            }
 
-        # --- Signal 2: explicit client-confirmed co-use ---
-        # WP-3: the canonical ledger (feedback_events, accepted active-mode
-        # rows with assessment='used') is the primary source, grouped per
-        # retrieval. Legacy context_feedback_events rows still contribute
-        # (typed legacy, one unit per row) but a retrieval already covered by
-        # the canonical view is never counted twice (canonical dominates).
-        used_rows = conn.execute(
-            "SELECT retrieval_id, target_id FROM feedback_events "
-            "WHERE target_kind = 'memory' AND status = 'accepted' "
-            "AND mutation_mode = 'active' AND assessment = 'used' "
-            "AND created_at > ? ORDER BY created_at, rowid",
-            (cutoff_ts,),
+        lam = math.log(2) / 604800.0
+        pattern = re.compile(r"sch_(\d+)$")
+        weights: dict[tuple[int, int], float] = {}
+        live_ids = {int(row[0]) for row in conn.execute("SELECT id FROM schemas")}
+
+        def add(ids: list[int], timestamp: int, boost: float) -> int:
+            ordered = sorted(set(ids) & live_ids)
+            contribution = boost * math.exp(-lam * max(0, now_ts - timestamp))
+            pairs = 0
+            for index, src in enumerate(ordered):
+                for dst in ordered[index + 1 :]:
+                    weights[(src, dst)] = weights.get((src, dst), 0.0) + contribution
+                    pairs += 1
+            return pairs
+
+        rows = conn.execute(
+            "SELECT context_id, memory_id, created_at FROM context_recall_items "
+            "WHERE memory_type = 'schema' AND admitted = 1 AND pathway = 'direct' "
+            "ORDER BY context_id, rank"
         ).fetchall()
-        canonical_groups: dict[str, list[int]] = {}
-        canonical_retrievals: set[str] = set()
-        for row in used_rows:
+        calls: dict[str, list[int]] = {}
+        timestamps: dict[str, int] = {}
+        for row in rows:
+            match = pattern.fullmatch(str(row["memory_id"]))
+            if match:
+                cid = str(row["context_id"])
+                calls.setdefault(cid, []).append(int(match.group(1)))
+                timestamps[cid] = min(
+                    timestamps.get(cid, int(row["created_at"])), int(row["created_at"])
+                )
+        pairs_written = sum(add(ids, timestamps[cid], 1.0) for cid, ids in calls.items())
+
+        # Any effective canonical observation dominates legacy feedback for
+        # that retrieval, including a correction to neutral/irrelevant.
+        rows = conn.execute(
+            "SELECT f.retrieval_id, f.target_id, f.assessment, "
+            "(SELECT MIN(old.created_at) FROM feedback_events old WHERE "
+            "old.retrieval_id = f.retrieval_id AND old.target_kind = 'memory' "
+            "AND old.target_id = f.target_id AND old.status = 'accepted' "
+            "AND old.mutation_mode = 'active' AND old.assessment = 'used') AS first_used "
+            "FROM feedback_events f WHERE f.target_kind = 'memory' AND " + effective_feedback_sql()
+        ).fetchall()
+        canonical: set[str] = set()
+        used: dict[str, list[int]] = {}
+        use_times: dict[str, int] = {}
+        for row in rows:
             cid = str(row["retrieval_id"])
-            canonical_retrievals.add(cid)
-            m = _sch_id_pat.match(str(row["target_id"]))
-            if m:
-                canonical_groups.setdefault(cid, []).append(int(m.group(1)))
-
-        feedback_rows = conn.execute(
-            "SELECT context_id, used_memory_ids_json FROM context_feedback_events "
-            "WHERE created_at > ?",
-            (cutoff_ts,),
+            canonical.add(cid)
+            match = pattern.fullmatch(str(row["target_id"]))
+            if row["assessment"] == "used" and match:
+                used.setdefault(cid, []).append(int(match.group(1)))
+                use_times[cid] = max(use_times.get(cid, 0), int(row["first_used"]))
+        legacy = conn.execute(
+            "SELECT context_id, used_memory_ids_json, created_at FROM context_feedback_events ORDER BY id"
         ).fetchall()
-        legacy_groups: dict[str, list[int]] = {}
-        for row in feedback_rows:
+        for row in legacy:
             cid = str(row["context_id"])
-            if cid in canonical_retrievals:
+            if cid in canonical:
                 continue
             try:
-                used = json.loads(row["used_memory_ids_json"] or "[]")
+                values = json.loads(row["used_memory_ids_json"] or "[]")
             except (TypeError, ValueError):
                 continue
-            ids = []
-            for mid in used:
-                m = _sch_id_pat.match(str(mid))
-                if m:
-                    ids.append(int(m.group(1)))
-            if ids:
-                legacy_groups[cid] = ids
-
-        explicit_pairs_written = 0
-        for group in (canonical_groups, legacy_groups):
-            for ids in group.values():
-                if len(ids) < 2:
-                    continue
-                for src, dst in _ordered_pairs(ids):
-                    self.schemas.upsert_coactivation(
-                        src,
-                        dst,
-                        now_ts=now_ts,
-                        half_life_s=half_life_s,
-                        boost=_EXPLICIT_COUSE_BOOST,
-                    )
-                    explicit_pairs_written += 1
-
-        # Pure decay for all rows
-        decayed = self.schemas.decay_all_coactivations(
-            now_ts=now_ts,
-            half_life_s=half_life_s,
+            used.setdefault(cid, []).extend(
+                int(match.group(1)) for value in values if (match := pattern.fullmatch(str(value)))
+            )
+            use_times[cid] = min(use_times.get(cid, int(row["created_at"])), int(row["created_at"]))
+        explicit_pairs = sum(
+            add(ids, use_times[cid], _EXPLICIT_COUSE_BOOST) for cid, ids in used.items()
         )
-
+        with conn:
+            conn.execute("DELETE FROM schema_coactivation")
+            conn.executemany(
+                "INSERT INTO schema_coactivation (src_schema_id, dst_schema_id, weight, last_touched_ts) VALUES (?, ?, ?, ?)",
+                [
+                    (src, dst, weight, now_ts)
+                    for (src, dst), weight in weights.items()
+                    if weight > 1e-6
+                ],
+            )
+            conn.execute(
+                "INSERT INTO coactivation_projection_state (id, version, source_fingerprint) VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET version = excluded.version, source_fingerprint = excluded.source_fingerprint",
+                (version, fingerprint),
+            )
         return {
-            "calls_processed": calls_processed,
+            "calls_processed": len(calls),
             "pairs_written": pairs_written,
-            "explicit_pairs_written": explicit_pairs_written,
-            "decayed": decayed,
+            "explicit_pairs_written": explicit_pairs,
+            "decayed": len(weights),
+            "projection_version": version,
         }
 
     def _refresh_generalization(self, conn: Any, now_ts: int) -> dict[str, Any]:

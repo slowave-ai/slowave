@@ -1051,15 +1051,26 @@ class FeedbackService:
             source_contract="slowave_feedback:v9",
             mutation_mode="active",
         )
-        rejected_targets = {item["target_id"] for item in result["rejected"]}
-        accepted_memory = [
-            item
-            for item in (memory_feedback or [])
-            if item.get("memory_id") not in rejected_targets
-        ]
+        # Drive mutations from the accepted ledger rows, not submitted IDs:
+        # one rejected duplicate must not hide another accepted observation.
+        accepted_memory = []
+        conn = self.db.connect()
+        for event_id in result["accepted_event_ids"]:
+            row = conn.execute(
+                "SELECT target_id AS memory_id, assessment, stale_reason, "
+                "replacement_target_id AS replacement_memory_id FROM feedback_events "
+                "WHERE event_id = ? AND target_kind = 'memory'",
+                (event_id,),
+            ).fetchone()
+            if row is not None:
+                accepted_memory.append(dict(row))
         applied: dict[str, list[str]] = {
             "strengthened": [],
             "already_known": [],
+            "not_used": [],
+            "unassessable": [],
+            "unchanged": [],
+            "weakened": [],
             "superseded": [],
             "contradicted": [],
             "outdated": [],
@@ -1086,7 +1097,7 @@ class FeedbackService:
                 # WP-2: learning is recomputed from the canonical ledger and
                 # applied as a target value (idempotent per retrieval
                 # identity), replacing the direct in-place tally.
-                self.learning_projection.apply_memory_observation(
+                observation = self.learning_projection.apply_memory_observation(
                     schema_id,
                     trigger_retrieval_id=str(retrieval_id),
                     salience_delta_per_use=signal.salience_delta,
@@ -1095,8 +1106,13 @@ class FeedbackService:
                     min_confidence=self.cfg.min_confidence,
                     max_confidence=self.cfg.max_confidence,
                 )
-                applied["strengthened"].append(memory_id)
-            elif assessment == "already_known":
+                bucket = (
+                    "strengthened"
+                    if observation.salience_delta > 0
+                    else "weakened" if observation.salience_delta < 0 else "unchanged"
+                )
+                applied[bucket].append(memory_id)
+            elif assessment in {"already_known", "not_used", "unassessable"}:
                 # Section-3: a dedup observation — the client already knew
                 # this. It is recorded evidence with no reinforcement and no
                 # suppression, but it still replaces prior observations for
@@ -1113,7 +1129,7 @@ class FeedbackService:
                         min_confidence=self.cfg.min_confidence,
                         max_confidence=self.cfg.max_confidence,
                     )
-                applied["already_known"].append(memory_id)
+                applied[assessment].append(memory_id)
             elif assessment == "stale":
                 # First accepted terminal assessment wins. A later conflicting
                 # assessment is still persisted above but cannot oscillate the
@@ -1163,18 +1179,15 @@ class FeedbackService:
                         min_confidence=self.cfg.min_confidence,
                         max_confidence=self.cfg.max_confidence,
                     )
-        irrelevant_ids = [
-            int(str(item["memory_id"]).removeprefix("sch_"))
-            for item in accepted_memory
-            if item["assessment"] == "irrelevant"
-        ]
-        if irrelevant_ids:
+        # Reconcile corrections and transport retries, not just new negatives.
+        if accepted_memory:
             conn = self.db.connect()
-            self.access_evidence.record_feedback(
+            self.access_evidence.reconcile_feedback(
                 conn,
                 retrieval_id=retrieval_id,
-                useful_ids=[],
-                irrelevant_ids=irrelevant_ids,
+                memory_ids=[
+                    int(str(item["memory_id"]).removeprefix("sch_")) for item in accepted_memory
+                ],
             )
             conn.commit()
         result["applied"] = applied

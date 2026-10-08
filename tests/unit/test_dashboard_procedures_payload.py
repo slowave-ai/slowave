@@ -246,6 +246,7 @@ def test_procedural_payload_defaults_to_current_lifecycle_and_attributes_feedbac
             "retrieved": 1,
             "used": 1,
             "not_used": 0,
+            "unassessable": 0,
             "helped": 1,
             "no_effect": 0,
             "harmed": 0,

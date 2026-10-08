@@ -171,7 +171,7 @@ Slowave works through 5 simple MCP tools:
 - `Activate`: start a task and load relevant memory.
 - `Remember`: save a fact, decision, preference, or instruction.
 - `Recall`: search memory during a task.
-- `Feedback`: mark retrieved memory as useful, irrelevant, or stale.
+- `Feedback`: assess retrieved memories as `used`, `not_used`, `unassessable`, `irrelevant`, `already_known`, or `stale`.
 - `Commit`: save the task outcome and any reusable procedure.
 
 A **background worker** consolidates relevant memories and procedures.

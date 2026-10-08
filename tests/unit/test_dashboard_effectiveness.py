@@ -18,6 +18,7 @@ from slowave.dashboard.app import (
     _schemas_payload,
     _scopes_payload,
 )
+from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 from slowave.storage.sqlite_db import SQLiteConfig, SQLiteDB
 
 
@@ -225,9 +226,19 @@ def test_schemas_payload_reports_exposure_and_usage_columns(tmp_path: Path) -> N
 def test_retrieval_detail_attaches_assessment_and_effect_per_item(tmp_path: Path) -> None:
     path = tmp_path / "detail.sqlite3"
     connection = _seed(path)
+    connection.execute(
+        "UPDATE context_recall_events SET requested_page_size = 7 WHERE context_id = 'ctx_visible'"
+    )
+    connection.commit()
     connection.close()
 
     detail = _retrieval_detail(str(path), "ctx_visible")
+    assert detail["retrieval"]["requested_page_size"] == 7
+    listing = _retrievals_payload(str(path), {"include_internal": "true"})
+    visible_retrieval = next(
+        item for item in listing["retrievals"] if item["context_id"] == "ctx_visible"
+    )
+    assert visible_retrieval["requested_page_size"] == 7
     by_id = {item["memory_id"]: item for item in detail["items"]}
     assert by_id["sch_1"]["assessment"] == "used"
     assert by_id["sch_2"]["assessment"] == "irrelevant"
@@ -235,6 +246,19 @@ def test_retrieval_detail_attaches_assessment_and_effect_per_item(tmp_path: Path
     assert by_id["proc_1"]["assessment"] == "used"
     assert by_id["proc_1"]["effect"] == "helped"
     assert detail["session"]["outcome"] == "success"
+
+
+def test_legacy_context_retrievals_use_shared_default_page_size(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_page_size.sqlite3"
+    connection = _seed(path)
+    connection.close()
+
+    listing = _retrievals_payload(str(path), {"include_internal": "true"})
+    visible = next(item for item in listing["retrievals"] if item["context_id"] == "ctx_visible")
+    detail = _retrieval_detail(str(path), "ctx_visible")
+
+    assert visible["requested_page_size"] == DEFAULT_MEMORY_PAGE_SIZE
+    assert detail["retrieval"]["requested_page_size"] == DEFAULT_MEMORY_PAGE_SIZE
 
 
 def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Path) -> None:
@@ -252,6 +276,32 @@ def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Pa
 
     assert item["content_text"] == "Current schema text"
     assert item["status"] == "needs_review"
+
+
+def test_retrieval_detail_recovers_page_size_from_activation_cursor(tmp_path: Path) -> None:
+    path = tmp_path / "detail_cursor_page_size.sqlite3"
+    connection = _seed(path)
+    connection.execute(
+        "INSERT INTO retrieval_continuations "
+        "(cursor_id, retrieval_id, session_id, scope_id, candidates_json, offset_n, "
+        "page_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "cur_activation",
+            "ctx_visible",
+            "sess_1",
+            "project:demo",
+            '{"requested_page_size":7}',
+            3,
+            5,
+            150,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    detail = _retrieval_detail(str(path), "ctx_visible")
+
+    assert detail["retrieval"]["requested_page_size"] == 7
 
 
 def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> None:

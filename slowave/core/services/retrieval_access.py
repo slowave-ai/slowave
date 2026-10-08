@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from slowave.core.services.effective_feedback import effective_feedback_sql
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.utils.vec import pack_f32, unpack_f32
 
@@ -217,6 +219,95 @@ class RetrievalAccessEvidenceStore:
                 )
             applied[label].append(f"sch_{schema_id}")
         return applied
+
+    def reconcile_feedback(
+        self, conn: sqlite3.Connection, *, retrieval_id: str, memory_ids: list[int]
+    ) -> None:
+        """Rebuild touched cue/pathway aggregates from durable evidence.
+
+        Canonical corrections replace observations; legacy CLI rows retain their
+        original per-event interpretation. Recomputing also heals a retry after
+        ledger persistence but before the derived write.
+        """
+        snapshot = conn.execute(
+            "SELECT * FROM context_recall_events WHERE context_id = ?", (retrieval_id,)
+        ).fetchone()
+        if snapshot is None or snapshot["cue_embedding"] is None or snapshot["cue_dim"] is None:
+            return
+        binding = (
+            snapshot["cue_embedding"],
+            snapshot["cue_dim"],
+            snapshot["scope_id"],
+            snapshot["task_type"],
+        )
+        cue = conn.execute(
+            "SELECT id FROM retrieval_cue_prototypes WHERE embedding = ? AND dim = ? "
+            "AND scope_id IS ? AND task_type IS ? ORDER BY id LIMIT 1",
+            binding,
+        ).fetchone()
+        if cue is None:
+            has_negative = conn.execute(
+                "SELECT 1 FROM feedback_events WHERE retrieval_id = ? "
+                "AND target_kind = 'memory' AND status = 'accepted' "
+                "AND mutation_mode = 'active' AND assessment = 'irrelevant' LIMIT 1",
+                (retrieval_id,),
+            ).fetchone()
+            if has_negative is None:
+                return  # Neutral/use feedback does not create new access evidence.
+        cue_id = int(cue["id"]) if cue else self._cue_prototype_id(conn, snapshot)
+        for schema_id in set(memory_ids):
+            target = f"sch_{schema_id}"
+            exposure = conn.execute(
+                "SELECT pathway FROM context_recall_items WHERE context_id = ? "
+                "AND memory_id = ? AND admitted = 1 AND memory_type IN ('schema', 'related')",
+                (retrieval_id, target),
+            ).fetchone()
+            if exposure is None or exposure["pathway"] not in self._PATHWAYS:
+                continue
+            pathway = str(exposure["pathway"])
+            # Match the exact cue binding used by the original evidence writer.
+            contexts = conn.execute(
+                "SELECT DISTINCT r.context_id FROM context_recall_events r "
+                "JOIN context_recall_items i ON i.context_id = r.context_id "
+                "WHERE r.cue_embedding = ? AND r.cue_dim = ? AND r.scope_id IS ? "
+                "AND r.task_type IS ? AND i.memory_id = ? AND i.pathway = ? "
+                "AND i.admitted = 1 AND i.memory_type IN ('schema', 'related')",
+                (*binding, target, pathway),
+            ).fetchall()
+            useful, irrelevant = 0, 0
+            for context in contexts:
+                context_id = str(context["context_id"])
+                irrelevant += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM feedback_events f WHERE f.retrieval_id = ? "
+                        "AND f.target_kind = 'memory' AND f.target_id = ? "
+                        "AND f.assessment = 'irrelevant' AND " + effective_feedback_sql(),
+                        (context_id, target),
+                    ).fetchone()[0]
+                )
+                legacy = conn.execute(
+                    "SELECT feedback, used_memory_ids_json, irrelevant_memory_ids_json "
+                    "FROM context_feedback_events WHERE context_id = ?",
+                    (context_id,),
+                ).fetchall()
+                for row in legacy:
+                    if row["feedback"] == "useful" and target in json.loads(
+                        row["used_memory_ids_json"] or "[]"
+                    ):
+                        useful += 1
+                    if row["feedback"] == "irrelevant" and target in json.loads(
+                        row["irrelevant_memory_ids_json"] or "[]"
+                    ):
+                        irrelevant += 1
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO schema_retrieval_evidence "
+                "(schema_id, cue_prototype_id, pathway, useful_count, irrelevant_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(schema_id, cue_prototype_id, pathway) "
+                "DO UPDATE SET useful_count = excluded.useful_count, irrelevant_count = excluded.irrelevant_count, "
+                "updated_at = excluded.updated_at",
+                (schema_id, cue_id, pathway, useful, irrelevant, now),
+            )
 
     def inspect_schema(self, schema_id: int) -> list[dict[str, object]]:
         """Return read-only access evidence for one semantic schema."""

@@ -112,7 +112,14 @@ def test_unauthorized_target_is_rejected_without_mutation() -> None:
             retrieval_id="rec_auth",
             memory_feedback=[{"memory_id": hidden, "assessment": "used"}],
         )
-        assert result["rejected"] == [{"target_id": hidden, "reason": "target_not_exposed"}]
+        assert result["rejected"] == [
+            {
+                "target_id": hidden,
+                "reason": "target_not_exposed",
+                "field": "target_id",
+                "hint": "Use an assessed target ID returned by this retrieval.",
+            }
+        ]
         assert eng.schemas.get(int(hidden[4:])).salience == before
     finally:
         eng.close()
@@ -131,7 +138,14 @@ def test_legacy_truth_aliases_are_rejected(assessment: str) -> None:
             retrieval_id=f"rec_alias_{assessment}",
             memory_feedback=[{"memory_id": mid, "assessment": assessment}],
         )
-        assert result["rejected"] == [{"target_id": mid, "reason": "invalid_memory_assessment"}]
+        assert result["rejected"] == [
+            {
+                "target_id": mid,
+                "reason": "invalid_memory_assessment",
+                "field": "assessment",
+                "hint": "Use used|not_used|unassessable|irrelevant|already_known|stale.",
+            }
+        ]
         assert eng.schemas.get(int(mid[4:])).status == "active"
     finally:
         eng.close()
@@ -459,6 +473,43 @@ def test_recall_snapshot_is_bound_to_explicit_matching_session() -> None:
                 session_id=sid,
                 scope="project:other",
             )
+    finally:
+        eng.close()
+        _cleanup(path)
+
+
+def test_invalid_procedure_preserves_valid_sibling_and_can_be_corrected() -> None:
+    eng, path = _engine()
+    try:
+        mid = _schema(eng)
+        eng.record_retrieval(
+            retrieval_id="rec_recovery",
+            response={"schemas": [{"id": mid}], "procedures": [{"id": "proc_recovery"}]},
+        )
+        result = eng.feedback(
+            retrieval_id="rec_recovery",
+            memory_feedback=[{"memory_id": mid, "assessment": "used"}],
+            procedure_feedback=[
+                {"procedure_id": "proc_recovery", "use": "not_used", "effect": "helped"}
+            ],
+            coverage="complete",
+        )
+        assert result["applied"]["strengthened"] == [mid]
+        assert (
+            result["rejected"][0]["reason"]
+            == "not_used_requires_unknown_effect_and_no_contribution"
+        )
+        assert result["rejected"][0]["field"] == "effect,contribution"
+        assert "omit contribution" in result["rejected"][0]["hint"]
+        fixed = eng.feedback(
+            retrieval_id="rec_recovery",
+            procedure_feedback=[
+                {"procedure_id": "proc_recovery", "use": "not_used", "effect": "unknown"}
+            ],
+            coverage="complete",
+        )
+        assert fixed["rejected"] == []
+        assert fixed["outstanding"] == {"memory_ids": [], "procedure_ids": []}
     finally:
         eng.close()
         _cleanup(path)
