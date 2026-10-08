@@ -46,6 +46,7 @@ from typing import Any
 
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.symbolic.schema_store import SALIENCE_CEILING, SchemaStore
+from slowave.utils.vec import dumps_json, loads_json
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,56 @@ class LearningProjectionService:
         return sum(units.values()) * float(delta_per_use)
 
     # ---- application -------------------------------------------------------
+
+    def _reconcile_recurrence(self, conn: Any, schema_id: int, trigger_retrieval_id: str) -> bool:
+        """Attribute one hit per effective non-neutral observation, not correction.
+
+        Adopt existing recurrence rather than resetting untraceable genuine recall
+        history. Pre-upgrade correction inflation cannot be reconstructed exactly.
+        """
+        count = sum(unit != 0 for unit in self._winning_observations(conn, schema_id).values())
+        state = conn.execute(
+            "SELECT effective_count FROM feedback_recurrence_state WHERE schema_id = ?",
+            (schema_id,),
+        ).fetchone()
+        if state is None:
+            # Reconstruct the view immediately before the triggering append.
+            rows = conn.execute(
+                "SELECT retrieval_id, assessment, effect FROM feedback_events "
+                "WHERE target_kind = 'memory' AND target_id = ? AND status = 'accepted' "
+                "AND mutation_mode = 'active' AND rowid != COALESCE((SELECT MAX(rowid) "
+                "FROM feedback_events WHERE retrieval_id = ? AND target_kind = 'memory' "
+                "AND target_id = ? AND status = 'accepted' AND mutation_mode = 'active'), -1) "
+                "ORDER BY created_at, rowid",
+                (f"sch_{schema_id}", trigger_retrieval_id, f"sch_{schema_id}"),
+            ).fetchall()
+            before = {str(row["retrieval_id"]): (row["assessment"], row["effect"]) for row in rows}
+            if (
+                conn.execute(
+                    "SELECT 1 FROM learning_projection_state WHERE schema_id = ?", (schema_id,)
+                ).fetchone()
+                is None
+            ):
+                # No committed numeric projection: this may be a retry after
+                # ledger-only persistence. The triggering use has not earned a hit.
+                before.pop(trigger_retrieval_id, None)
+            previous = sum(a == "used" and effect != "no_effect" for a, effect in before.values())
+        else:
+            previous = int(state["effective_count"])
+        row = conn.execute("SELECT facets_json FROM schemas WHERE id = ?", (schema_id,)).fetchone()
+        facets = loads_json(row["facets_json"]) or {}
+        delta = count - previous
+        if delta:
+            facets["recurrence_count"] = max(0, int(facets.get("recurrence_count", 0)) + delta)
+            conn.execute(
+                "UPDATE schemas SET facets_json = ? WHERE id = ?", (dumps_json(facets), schema_id)
+            )
+        conn.execute(
+            "INSERT INTO feedback_recurrence_state (schema_id, effective_count) VALUES (?, ?) "
+            "ON CONFLICT(schema_id) DO UPDATE SET effective_count = excluded.effective_count",
+            (schema_id, count),
+        )
+        return bool(delta)
 
     def apply_memory_observation(
         self,
@@ -215,10 +266,12 @@ class LearningProjectionService:
         salience_delta = salience_target - salience
         confidence_delta = confidence_target - confidence
 
+        self._reconcile_recurrence(conn, schema_id, trigger_retrieval_id)
         if mode != "replay" and abs(salience_delta) < _EPS and abs(confidence_delta) < _EPS:
             # The view's learning effect is already fully reflected in the
             # stored value (duplicate submission, or a delta a cap absorbs).
-            # No writes: the state is already at the computed target.
+            conn.commit()
+            self.schemas._update_utility_scores(int(schema_id), recall_hit=False)
             return ApplyResult(status="noop", observations=len(used_observations))
 
         if state is None:
@@ -263,7 +316,7 @@ class LearningProjectionService:
         # Mirror reinforce()'s structure: derived utility facets refresh after
         # the learning transaction commits.
         self.schemas._update_utility_scores(
-            int(schema_id), recall_hit=True, force_clear_labile=net_positive
+            int(schema_id), recall_hit=False, force_clear_labile=net_positive
         )
         return ApplyResult(
             status="applied",
@@ -275,5 +328,6 @@ class LearningProjectionService:
     def reset_schema(self, schema_id: int) -> None:
         """Drop bookkeeping after a terminal retirement (stale transition)."""
         conn = self.db.connect()
+        conn.execute("DELETE FROM feedback_recurrence_state WHERE schema_id = ?", (int(schema_id),))
         conn.execute("DELETE FROM learning_projection_state WHERE schema_id = ?", (int(schema_id),))
         conn.commit()

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 from slowave.dashboard.app import _retrievals_payload
+from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 from tests.acceptance.mcp_harness import (
     assert_acceptance_mutation_is_caught,
     open_harness,
@@ -276,9 +278,12 @@ def test_feedback_rejects_a_memory_that_the_client_was_not_shown(tmp_path: Path)
                 },
             )
             assert rejected["ok"] is True
-            assert {"target_id": "sch_not_returned", "reason": "target_not_exposed"} in rejected[
-                "data"
-            ]["rejected"]
+            assert {
+                "target_id": "sch_not_returned",
+                "reason": "target_not_exposed",
+                "field": "target_id",
+                "hint": "Use an assessed target ID returned by this retrieval.",
+            } in rejected["data"]["rejected"]
 
             await harness.feedback_all(retrieval, used_ids={memory_id})
             await harness.commit(retrieval["session_id"], "retrieve current refund policy")
@@ -312,9 +317,12 @@ def test_feedback_rejects_legacy_truth_aliases(tmp_path: Path) -> None:
                 },
             )
             assert rejected["ok"] is True
-            assert {"target_id": memory_id, "reason": "invalid_memory_assessment"} in rejected[
-                "data"
-            ]["rejected"]
+            assert {
+                "target_id": memory_id,
+                "reason": "invalid_memory_assessment",
+                "field": "assessment",
+                "hint": "Use used|not_used|unassessable|irrelevant|already_known|stale.",
+            } in rejected["data"]["rejected"]
             await harness.feedback_all(shown, used_ids={memory_id})
             await harness.commit(retrieval["session_id"], "verify feedback contract")
 
@@ -345,7 +353,7 @@ def test_recall_continuation_is_frozen_scoped_and_orientation_only(tmp_path: Pat
                 activation["session_id"],
                 scope,
             )
-            assert 5 < len(first["memories"]) < 40
+            assert len(first["memories"]) == 5
             assert first["more_available"] is True
             assert first["continue_from"].startswith("cur_")
             assert set(first["accessible_field"]) == {
@@ -439,7 +447,7 @@ def test_activation_pages_one_hundred_explicit_relevant_memories(tmp_path: Path)
             # honestly reports that independent per-need searching may have
             # hidden qualifying candidates; the union still recovered all 100.
             assert first["catalog_truncated"] is True
-            assert len(first["memories"]) == 10
+            assert len(first["memories"]) == 5
             assert first["more_available"] is True
 
             def displayed_count():
@@ -461,7 +469,7 @@ def test_activation_pages_one_hundred_explicit_relevant_memories(tmp_path: Path)
                     },
                 )
                 seen.extend(item["memory_id"] for item in page["memories"])
-                assert len(page["memories"]) == 10
+                assert len(page["memories"]) == 5
                 assert displayed_count() == len(set(seen))
                 replay, _ = await harness.call(
                     "slowave_recall",
@@ -504,10 +512,16 @@ def test_complementary_activation_delivers_twelve_memories_over_ten_item_pages(
                 for index, marker in enumerate(markers)
             )
         )
-        async with open_harness(tmp_path / "complementary-public.db") as harness:
+        db_path = tmp_path / "complementary-public.db"
+        async with open_harness(db_path) as harness:
             seed, _ = await harness.activate(
                 "complementary_seed", "Seed activation facts", "seed activation facts", scope
             )
+            with sqlite3.connect(db_path) as conn:
+                assert conn.execute(
+                    "SELECT requested_page_size FROM context_recall_events WHERE context_id=?",
+                    (seed["retrieval_id"],),
+                ).fetchone() == (DEFAULT_MEMORY_PAGE_SIZE,)
             await harness.remember_batch(
                 [
                     {
@@ -522,13 +536,24 @@ def test_complementary_activation_delivers_twelve_memories_over_ten_item_pages(
             await harness.feedback_all(seed)
             await harness.commit(seed["session_id"], "seed activation facts")
 
-            first, _ = await harness.activate(
-                "complementary_page_one", task, "Prepare the Atlas deployment", scope
+            first, _ = await harness.call(
+                "slowave_activate",
+                {
+                    "task": task,
+                    "initial_goal": "Prepare the Atlas deployment",
+                    "scope": scope,
+                    "page_size": 10,
+                },
             )
             assert first["retrieval_policy_version"] == "activation-pool-relative-v1"
             assert first["relevant_total"] == 12
             assert len(first["memories"]) == 10
             assert first["more_available"] is True
+            with sqlite3.connect(db_path) as conn:
+                assert conn.execute(
+                    "SELECT requested_page_size FROM context_recall_events WHERE context_id=?",
+                    (first["retrieval_id"],),
+                ).fetchone() == (10,)
             tail, _ = await harness.call(
                 "slowave_recall",
                 {
@@ -545,6 +570,31 @@ def test_complementary_activation_delivers_twelve_memories_over_ten_item_pages(
             first_content = " ".join(item["content"] for item in memories)
             assert sum(marker in first_content for marker in markers) == 12
 
+            # Fresh recall can choose a smaller bound; unseen continuation
+            # targets create no feedback obligation until actually returned.
+            small, _ = await harness.call(
+                "slowave_recall",
+                {
+                    "session_id": first["session_id"],
+                    "scope": scope,
+                    "query": task,
+                    "page_size": 3,
+                },
+            )
+            assert len(small["memories"]) == 3
+            assert small["more_available"] is True
+            invalid, _ = await harness.raw_call(
+                "slowave_recall",
+                {
+                    "session_id": first["session_id"],
+                    "scope": scope,
+                    "continue_from": small["continue_from"],
+                    "page_size": 7,
+                },
+            )
+            _assert_error(invalid, "invalid_input", "page_size")
+            await harness.feedback_all(small)
+
             feedback, _ = await harness.call(
                 "slowave_feedback",
                 {
@@ -557,5 +607,131 @@ def test_complementary_activation_delivers_twelve_memories_over_ten_item_pages(
             )
             assert feedback["rejected"] == [], feedback
             await harness.commit(first["session_id"], "complete complementary activation dogfood")
+
+    _run(scenario())
+
+
+def test_feedback_schema_and_empty_batch_recovery(tmp_path: Path) -> None:
+    """Real MCP definitions expose labels; empty/batch feedback can recover and close."""
+
+    async def scenario() -> None:
+        async with open_harness(tmp_path / "feedback-guidance.db") as harness:
+            tools = await harness.session.list_tools()
+            tool = next(t for t in tools.tools if t.name == "slowave_feedback")
+            definitions = tool.inputSchema["$defs"]
+            assert definitions["MemoryFeedbackEntry"]["properties"]["assessment"]["enum"] == [
+                "used",
+                "not_used",
+                "unassessable",
+                "irrelevant",
+                "already_known",
+                "stale",
+            ]
+            assert definitions["ProcedureFeedbackEntry"]["properties"]["use"]["enum"] == [
+                "used",
+                "not_used",
+                "unassessable",
+            ]
+            activation, _ = await harness.activate(
+                "feedback_guidance", "Check empty feedback", "verify feedback", "project:empty"
+            )
+            assert not activation["memories"] and not activation["procedures"]
+            rid = activation["retrieval_id"]
+            invalid, _ = await harness.raw_call(
+                "slowave_feedback", {"items": [{"retrieval_id": rid}], "coverage": "complete"}
+            )
+            _assert_error(invalid, "invalid_input", "mutually exclusive")
+            batch, _ = await harness.call(
+                "slowave_feedback",
+                {
+                    "items": [
+                        {"retrieval_id": "ctx_missing", "coverage": "complete"},
+                        {"retrieval_id": rid, "coverage": "complete"},
+                    ]
+                },
+            )
+            assert batch["results"][0]["ok"] is False
+            assert batch["results"][1]["ok"] is True
+            assert batch["results"][1]["data"]["rejected"] == []
+            await harness.commit(activation["session_id"], "verify feedback")
+
+    _run(scenario())
+
+
+def test_reported_rating_useful_used_feedback_sequence(tmp_path: Path) -> None:
+    """The reported work-agent mistakes produce actionable errors and recover safely."""
+
+    async def scenario() -> None:
+        async with open_harness(tmp_path / "reported-feedback-retries.db") as harness:
+            activation, _ = await harness.activate(
+                "reported_retries", "Check feedback contract", "verify feedback", "project:test"
+            )
+            await harness.feedback_all(activation)
+            mid = await harness.remember(
+                "The verification command is pytest.",
+                "fact",
+                activation["session_id"],
+                "project:test",
+            )
+            shown, _ = await harness.recall(
+                "reported_feedback",
+                "The verification command is pytest.",
+                activation["session_id"],
+                "project:test",
+            )
+            assert mid in {m["memory_id"] for m in shown["memories"]}
+            rid = shown["retrieval_id"]
+            wrong_field, _ = await harness.raw_call(
+                "slowave_feedback",
+                {
+                    "retrieval_id": rid,
+                    "memory_feedback": [{"memory_id": mid, "rating": "useful"}],
+                    "coverage": "complete",
+                },
+            )
+            _assert_error(wrong_field, "invalid_input", "assessment")
+            paths = {e["path"] for e in wrong_field["error"]["field_errors"]}
+            assert paths == {"memory_feedback[0].assessment", "memory_feedback[0].rating"}
+            wrong_label, _ = await harness.call(
+                "slowave_feedback",
+                {
+                    "retrieval_id": rid,
+                    "memory_feedback": [{"memory_id": mid, "assessment": "useful"}],
+                    "coverage": "complete",
+                },
+            )
+            assert wrong_label["coverage"] == "partial"
+            assert wrong_label["outstanding"]["memory_ids"] == [mid]
+            assert wrong_label["rejected"][0] == {
+                "target_id": mid,
+                "reason": "invalid_memory_assessment",
+                "field": "assessment",
+                "hint": "Use used|not_used|unassessable|irrelevant|already_known|stale.",
+            }
+            assert wrong_label["rejected"][1]["reason"] == "incomplete_coverage"
+            corrected, _ = await harness.call(
+                "slowave_feedback",
+                {
+                    "retrieval_id": rid,
+                    "memory_feedback": [{"memory_id": mid, "assessment": "used"}],
+                    "coverage": "complete",
+                },
+            )
+            assert corrected["rejected"] == []
+            assert corrected["outstanding"] == {"memory_ids": [], "procedure_ids": []}
+            committed, _ = await harness.call(
+                "slowave_commit",
+                {
+                    "session_id": activation["session_id"],
+                    "final_goal": "verify feedback",
+                    "outcome": "success",
+                    "outcome_summary": "Validated feedback recovery.",
+                    "verification": {
+                        "status": "verified",
+                        "summary": "Tested reported retry sequence.",
+                    },
+                },
+            )
+            assert committed["feedback_status"] == "complete"
 
     _run(scenario())

@@ -15,12 +15,95 @@ from slowave.storage.sqlite_db import SQLiteDB
 from slowave.utils.vec import dumps_json
 
 # Lifecycle status is intentionally separate from the client's semantic reason.
-MEMORY_ASSESSMENTS = frozenset({"used", "irrelevant", "already_known", "stale"})
+MEMORY_ASSESSMENTS = frozenset(
+    {"used", "not_used", "unassessable", "irrelevant", "already_known", "stale"}
+)
 RELEVANCE_VALUES = frozenset({"relevant", "irrelevant", "uncertain"})
 STALE_REASONS = frozenset({"contradicted", "superseded", "outdated", "unsupported", "withdrawn"})
-PROCEDURE_USES = frozenset({"used", "not_used"})
+PROCEDURE_USES = frozenset({"used", "not_used", "unassessable"})
 PROCEDURE_EFFECTS = frozenset({"helped", "no_effect", "harmed", "unknown"})
 COVERAGE_VALUES = frozenset({"partial", "complete"})
+
+
+# Additive recovery guidance: reason codes remain stable for existing clients.
+_FEEDBACK_HINTS = {
+    "neutral_requires_unknown_or_absent_effect": (
+        "effect",
+        "For not_used/unassessable omit effect or use unknown.",
+    ),
+    "unassessable_requires_reason": ("reason", "Explain why usage cannot be assessed."),
+    "target_not_exposed": ("target_id", "Use an assessed target ID returned by this retrieval."),
+    "invalid_memory_assessment": (
+        "assessment",
+        "Use used|not_used|unassessable|irrelevant|already_known|stale.",
+    ),
+    "invalid_relevance": ("relevance", "Use relevant|irrelevant|uncertain, or omit relevance."),
+    "used_requires_helped_no_effect_or_harmed_effect": (
+        "effect",
+        "For used memories use helped|no_effect|harmed, or omit effect (defaults to helped).",
+    ),
+    "already_known_requires_unknown_or_absent_effect": (
+        "effect",
+        "For already_known omit effect or use unknown.",
+    ),
+    "irrelevant_requires_unknown_or_absent_effect": (
+        "effect",
+        "For irrelevant omit effect or use unknown.",
+    ),
+    "stale_requires_unknown_or_absent_effect": ("effect", "For stale omit effect or use unknown."),
+    "already_known_requires_no_replacement": (
+        "replacement_memory_id",
+        "Omit replacement_memory_id for already_known.",
+    ),
+    "stale_requires_valid_stale_reason": (
+        "stale_reason",
+        "Use contradicted|superseded|outdated|unsupported|withdrawn with assessment=stale.",
+    ),
+    "stale_requires_reason": ("reason", "Provide a nonblank explanation for stale."),
+    "superseded_requires_replacement_memory_id": (
+        "replacement_memory_id",
+        "Provide a different active memory ID in this retrieval's scope.",
+    ),
+    "stale_reason_requires_stale_assessment": (
+        "stale_reason",
+        "Omit stale_reason unless assessment is stale.",
+    ),
+    "replacement_requires_stale_assessment": (
+        "replacement_memory_id",
+        "Omit replacement_memory_id unless assessment is stale.",
+    ),
+    "replacement_matches_retired_memory": (
+        "replacement_memory_id",
+        "Choose a replacement different from memory_id.",
+    ),
+    "invalid_replacement_memory_id": (
+        "replacement_memory_id",
+        "Use a canonical sch_<integer> memory ID.",
+    ),
+    "replacement_not_found": (
+        "replacement_memory_id",
+        "Use an existing active memory in this retrieval's scope.",
+    ),
+    "replacement_scope_mismatch": (
+        "replacement_memory_id",
+        "Use an active replacement in this retrieval's scope.",
+    ),
+    "replacement_not_current": ("replacement_memory_id", "Use an active replacement memory."),
+    "invalid_procedure_use": ("use", "Use used|not_used|unassessable."),
+    "invalid_procedure_effect": ("effect", "Use helped|no_effect|harmed|unknown, or omit effect."),
+    "used_procedure_requires_contribution": (
+        "contribution",
+        "Provide a nonblank description of how the used procedure contributed.",
+    ),
+    "not_used_requires_unknown_effect_and_no_contribution": (
+        "effect,contribution",
+        "For not_used omit contribution and omit effect or use unknown.",
+    ),
+    "incomplete_coverage": (
+        "coverage",
+        "Assess all outstanding targets, then resend coverage=complete for this retrieval.",
+    ),
+}
 
 
 class FeedbackEventService:
@@ -96,12 +179,8 @@ class FeedbackEventService:
         now = int(time.time())
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []
-        assessed_memories = {
-            str(item.get("memory_id", "")).strip() for item in (memory_feedback or [])
-        }
-        assessed_procedures = {
-            str(item.get("procedure_id", "")).strip() for item in (procedure_feedback or [])
-        }
+        assessed_memories: set[str] = set()
+        assessed_procedures: set[str] = set()
         previous = conn.execute(
             "SELECT target_kind, target_id FROM feedback_events WHERE retrieval_id = ? "
             "AND target_kind IN ('memory', 'procedure') AND status = 'accepted'",
@@ -113,11 +192,6 @@ class FeedbackEventService:
         assessed_procedures.update(
             str(row["target_id"]) for row in previous if row["target_kind"] == "procedure"
         )
-        outstanding = {
-            "memory_ids": sorted(exposed_memories - assessed_memories),
-            "procedure_ids": sorted(exposed_procedures - assessed_procedures),
-        }
-        coverage_error = coverage == "complete" and any(outstanding.values())
 
         def append(
             *,
@@ -176,17 +250,18 @@ class FeedbackEventService:
             )
             if status == "accepted":
                 accepted.append(event_id)
+                if target_kind == "memory":
+                    assessed_memories.add(target_id)
+                elif target_kind == "procedure":
+                    assessed_procedures.add(target_id)
             else:
-                rejected.append({"target_id": target_id, "reason": rejection_reason or "rejected"})
-
-        append(
-            target_kind="retrieval",
-            target_id=str(retrieval_id),
-            quality=self._clean_text(retrieval_quality),
-            missing_items=[str(item).strip() for item in (missing or []) if str(item).strip()],
-            status="rejected" if coverage_error else "accepted",
-            rejection_reason="incomplete_coverage" if coverage_error else None,
-        )
+                code = rejection_reason or "rejected"
+                field, hint = _FEEDBACK_HINTS.get(
+                    code, ("target_id", "Correct this target and resend feedback.")
+                )
+                rejected.append(
+                    {"target_id": target_id, "reason": code, "field": field, "hint": hint}
+                )
 
         for item in memory_feedback or []:
             target_id = self._clean_text(item.get("memory_id")) or ""
@@ -209,6 +284,11 @@ class FeedbackEventService:
                 # invalid with used (it would silently zero the observation).
                 if effect is not None and effect not in ("helped", "no_effect", "harmed"):
                     error = "used_requires_helped_no_effect_or_harmed_effect"
+            elif assessment in {"not_used", "unassessable"}:
+                if effect is not None and effect != "unknown":
+                    error = "neutral_requires_unknown_or_absent_effect"
+                elif assessment == "unassessable" and not reason:
+                    error = "unassessable_requires_reason"
             elif assessment == "already_known":
                 # Section-3: a dedup observation — no effect, no replacement.
                 if effect is not None and effect != "unknown":
@@ -227,7 +307,7 @@ class FeedbackEventService:
                     error = "stale_requires_reason"
                 elif stale_reason == "superseded" and replacement_target_id is None:
                     error = "superseded_requires_replacement_memory_id"
-            elif stale_reason is not None:
+            if error is None and stale_reason is not None and assessment != "stale":
                 error = "stale_reason_requires_stale_assessment"
             if error is None and replacement_target_id is not None:
                 if assessment != "stale":
@@ -278,8 +358,12 @@ class FeedbackEventService:
                 error = "invalid_procedure_effect"
             elif use == "used" and contribution is None:
                 error = "used_procedure_requires_contribution"
-            elif use == "not_used" and (effect != "unknown" or contribution is not None):
+            elif use in {"not_used", "unassessable"} and (
+                effect != "unknown" or contribution is not None
+            ):
                 error = "not_used_requires_unknown_effect_and_no_contribution"
+            elif use == "unassessable" and not reason:
+                error = "unassessable_requires_reason"
             append(
                 target_kind="procedure",
                 target_id=target_id,
@@ -291,14 +375,34 @@ class FeedbackEventService:
                 rejection_reason=error,
             )
 
+        outstanding = {
+            "memory_ids": sorted(exposed_memories - assessed_memories),
+            "procedure_ids": sorted(exposed_procedures - assessed_procedures),
+        }
+        coverage_error = coverage == "complete" and (bool(rejected) or any(outstanding.values()))
+        append(
+            target_kind="retrieval",
+            target_id=str(retrieval_id),
+            quality=self._clean_text(retrieval_quality),
+            missing_items=[str(item).strip() for item in (missing or []) if str(item).strip()],
+            status="rejected" if coverage_error else "accepted",
+            rejection_reason="incomplete_coverage" if coverage_error else None,
+        )
+
+        if coverage_error:
+            # Target observations can be accepted within an incomplete request,
+            # but must not advertise successful complete coverage to consumers.
+            conn.executemany(
+                "UPDATE feedback_events SET coverage = 'partial' WHERE event_id = ?",
+                [(event_id,) for event_id in accepted],
+            )
         if own_transaction:
             conn.commit()
         return {
             "retrieval_id": str(retrieval_id),
-            "coverage": coverage,
-            "outstanding": (
-                outstanding if coverage_error else {"memory_ids": [], "procedure_ids": []}
-            ),
+            "coverage": "partial" if coverage_error else coverage,
+            "requested_coverage": coverage,
+            "outstanding": outstanding,
             "accepted_event_ids": accepted,
             "rejected": rejected,
         }

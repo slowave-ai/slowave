@@ -8,7 +8,7 @@ duplication of tool logic.
 Tools registered (5 cognitive-cycle verbs):
   activate, remember, recall, feedback, commit
 
-remember and feedback each also accept an optional `items` list for
+remember accepts `memories` and feedback accepts `items` for
 batching several calls into one round trip (see their docstrings) — this
 does not add new tool names, just an alternate parameter shape on the
 existing two.
@@ -40,6 +40,7 @@ from pydantic import (
 import slowave.ops as ops
 from slowave.mcp import session_resolver
 from slowave.mcp.activation_catalog import (
+    DEFAULT_MEMORY_PAGE_SIZE,
     MEMORY_PAGE_SIZE,
     SUPPORTED_POLICIES,
     CatalogCompatibilityError,
@@ -71,7 +72,7 @@ _MCP_RECALL_TOP_K_DEFAULT = 2
 _MCP_FROZEN_CANDIDATE_LIMIT = _MCP_RECALL_TOP_K_DEFAULT + 8
 # `relevant-set-v2` builds the complete discovered catalog before paging it.
 # This is a page target, not a relevance or catalog limit.
-_MCP_CONTINUATION_PAGE_SIZE = 5
+_MCP_CONTINUATION_PAGE_SIZE = DEFAULT_MEMORY_PAGE_SIZE
 _MCP_FIELD_RESPONSE_CHARS = 160
 _MCP_MEMORY_CONTENT_LIMIT = 500
 _MCP_CONTINUITY_START_RESPONSE_CHARS = 3000
@@ -228,7 +229,22 @@ class CommitArguments(_StrictCommitModel):
         return value
 
 
+PageSize = Annotated[
+    int,
+    Field(
+        strict=True,
+        ge=1,
+        le=10,
+        description=(
+            f"Maximum memories per page (default {DEFAULT_MEMORY_PAGE_SIZE}); "
+            "continuations inherit this bound. Procedures have a separate limit."
+        ),
+    ),
+]
+
+
 class ActivateArguments(_StrictMCPModel):
+    page_size: PageSize = DEFAULT_MEMORY_PAGE_SIZE
     task: Annotated[str, Field(min_length=1)]
     initial_goal: Annotated[str, Field(min_length=1)]
     scope: Annotated[str, Field(min_length=3)]
@@ -238,6 +254,7 @@ class ActivateArguments(_StrictMCPModel):
 
 
 class RecallArguments(_StrictMCPModel):
+    page_size: PageSize | None = None
     session_id: Annotated[str, Field(min_length=1)]
     scope: Annotated[str, Field(min_length=3)]
     query: str | None = None
@@ -251,12 +268,13 @@ class RecallArguments(_StrictMCPModel):
         if self.continue_from is not None:
             if (
                 self.query is not None
+                or self.page_size is not None
                 or self.task_context is not None
                 or self.semantic_context is not None
                 or self.evidence != "references"
             ):
                 raise ValueError(
-                    "continue_from is mutually exclusive with query, task_context, and full evidence"
+                    "continue_from is mutually exclusive with query, task_context, page_size, and full evidence"
                 )
         elif not self.query or not self.query.strip():
             raise ValueError("query must be nonblank when continue_from is omitted")
@@ -287,21 +305,84 @@ class RememberArguments(_StrictMCPModel):
         return self
 
 
+# Advertise enum choices while retaining string validation in the handler.
+# Invalid semantic labels remain per-target rejections, preserving valid siblings.
+def _feedback_label(values: list[str], description: str, *, nullable: bool = False) -> Any:
+    choices: list[JsonValue] = list(values)
+    if nullable:
+        choices.append(None)
+    return Field(description=description, json_schema_extra={"enum": choices})
+
+
 class MemoryFeedbackEntry(_StrictMCPModel):
-    memory_id: Annotated[str, Field(min_length=1)]
-    assessment: Annotated[str, Field(min_length=1)]
-    relevance: str | None = None
-    effect: str | None = None
-    stale_reason: str | None = None
-    replacement_memory_id: str | None = None
-    reason: str | None = None
+    memory_id: Annotated[
+        str, Field(min_length=1, description="Assessed memory ID exposed by this retrieval.")
+    ]
+    assessment: Annotated[
+        str,
+        Field(min_length=1),
+        _feedback_label(
+            ["used", "not_used", "unassessable", "irrelevant", "already_known", "stale"],
+            "used requires observed influence on reasoning/action/check/constraint, not reading or topical similarity. not_used means no influence; irrelevant means task mismatch; unassessable means lost/uncertain usage evidence and requires reason. stale requires stale_reason and reason.",
+        ),
+    ]
+    relevance: Annotated[
+        str | None,
+        _feedback_label(
+            ["relevant", "irrelevant", "uncertain"],
+            "Optional relevance, independent of usage.",
+            nullable=True,
+        ),
+    ] = None
+    effect: Annotated[
+        str | None,
+        _feedback_label(
+            ["helped", "no_effect", "harmed", "unknown"],
+            "used: helped/no_effect/harmed; omitted means helped. Other assessments: omit or unknown.",
+            nullable=True,
+        ),
+    ] = None
+    stale_reason: Annotated[
+        str | None,
+        _feedback_label(
+            ["contradicted", "superseded", "outdated", "unsupported", "withdrawn"],
+            "Only for stale. superseded also requires replacement_memory_id.",
+            nullable=True,
+        ),
+    ] = None
+    replacement_memory_id: str | None = Field(
+        default=None,
+        description="For stale: different active memory in the retrieval scope; need not be exposed.",
+    )
+    reason: str | None = Field(
+        default=None, description="Nonblank explanation required for stale or unassessable."
+    )
 
 
 class ProcedureFeedbackEntry(_StrictMCPModel):
-    procedure_id: Annotated[str, Field(min_length=1)]
-    use: Annotated[str, Field(min_length=1)]
-    effect: str | None = None
-    contribution: str | None = None
+    procedure_id: Annotated[
+        str, Field(min_length=1, description="Procedure ID exposed by this retrieval.")
+    ]
+    use: Annotated[
+        str,
+        Field(min_length=1),
+        _feedback_label(
+            ["used", "not_used", "unassessable"],
+            "used requires nonblank contribution; not_used/unassessable forbid contribution; unassessable requires reason.",
+        ),
+    ]
+    effect: Annotated[
+        str | None,
+        _feedback_label(
+            ["helped", "no_effect", "harmed", "unknown"],
+            "Omitted means unknown. not_used permits only omitted or unknown.",
+            nullable=True,
+        ),
+    ] = None
+    contribution: str | None = Field(
+        default=None,
+        description="Nonblank description of how the procedure contributed; required when used, omit when not_used.",
+    )
     reason: str | None = None
 
 
@@ -950,7 +1031,11 @@ def _compensate_failed_activation(
 
 
 def _prepare_complementary_activation(
-    eng: Any, *, result: dict[str, Any], scope: str
+    eng: Any,
+    *,
+    result: dict[str, Any],
+    scope: str,
+    page_size: int = DEFAULT_MEMORY_PAGE_SIZE,
 ) -> tuple[dict[str, Any], FrozenActivationCatalog, tuple[int, int] | None]:
     candidates = _activation_candidates(result, scope, preserve_full_source=True)
     memories = [item["value"] for item in candidates if item["kind"] == "memory"]
@@ -984,6 +1069,7 @@ def _prepare_complementary_activation(
         contribution_spans=spans,
         catalog_truncated=bool(result.get("catalog_truncated")),
         first_page_metadata=metadata,
+        page_size=page_size,
         policy_version=result.get("retrieval_policy_version", "activation-complementary-v1"),
     )
     data, successor = catalog.page()
@@ -1059,7 +1145,7 @@ def _canonical_procedure(item: dict[str, Any], scope: str) -> dict[str, Any]:
     evidence = item.get("evidence") or {}
     compact_evidence = {
         key: int(evidence.get(key, 0))
-        for key in ("used", "not_used", "helped", "no_effect", "harmed", "unknown")
+        for key in ("used", "not_used", "unassessable", "helped", "no_effect", "harmed", "unknown")
         if int(evidence.get(key, 0))
     }
     contributions = [
@@ -1316,6 +1402,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     @mcp.tool(name="slowave_activate")
     async def slowave_activate(
         ctx: Context,
+        page_size: Any = DEFAULT_MEMORY_PAGE_SIZE,
         task: Any = None,
         initial_goal: Any = None,
         scope: Any = None,
@@ -1331,10 +1418,10 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
 
             The cognitive cycle:
                 1. slowave_activate(task, initial_goal, scope)      <- start here
-                2. slowave_remember(content, type, scope)           <- for durable facts
-                3. slowave_recall(query)                            <- mid-task lookup
-                4. slowave_feedback(retrieval_id, feedback, ...)    <- after using memories
-                5. slowave_commit(session_id, outcome, ...)         <- close the task
+                2. slowave_remember(session_id, scope, content, type)           <- for durable facts
+                3. slowave_recall(session_id, scope, query)                            <- mid-task lookup
+                4. slowave_feedback(retrieval_id, memory_feedback, procedure_feedback, coverage)    <- after using memories
+                5. slowave_commit(session_id, final_goal, outcome, outcome_summary, verification)         <- close the task
 
             Args:
                 task: verbatim task description (required, nonblank).
@@ -1342,7 +1429,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope: required retrieval boundary in ``kind:id`` form.
                 continuity_id: omit on the first client-conversation activation;
                     retain and resend the returned opaque token unchanged on later
-                    activations in that conversation. Never invent or reuse it.
+                    activations in that conversation. Never invent it or reuse it across different client conversations.
+                page_size: optional strict integer 1–10; omitted values use the server default.
                 task_context: optional structured facts that condition retrieval.
 
             Returns:
@@ -1367,6 +1455,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         try:
             request = ActivateArguments.model_validate(
                 {
+                    "page_size": page_size,
                     "task": task,
                     "initial_goal": initial_goal,
                     "scope": scope,
@@ -1437,7 +1526,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             )
             published_result = result
             data, frozen_catalog, successor = _prepare_complementary_activation(
-                eng, result=result, scope=request.scope
+                eng, result=result, scope=request.scope, page_size=request.page_size
             )
             next_cursor = None
             if successor is not None:
@@ -1459,6 +1548,11 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                             offset=successor,
                             cursor_id=next_cursor,
                         )
+                    conn.execute(
+                        "UPDATE context_recall_events SET requested_page_size=? "
+                        "WHERE context_id=?",
+                        (request.page_size, result["retrieval_id"]),
+                    )
                     session_resolver.bind(request.scope, result["session_id"])
                     _restrict_activation_exposure(
                         eng, retrieval_id=result["retrieval_id"], data=data, commit=False
@@ -1506,6 +1600,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         ctx: Context,
         session_id: Any = None,
         scope: Any = None,
+        page_size: Any = None,
         query: Any = None,
         task_context: Any = None,
         semantic_context: Any = None,
@@ -1517,6 +1612,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         context beyond what activate surfaced.
         Recall is explicitly bound to the active session and matching scope.
         Args:
+            page_size: optional strict integer 1–10; omitted values use the server default for a new query. Omit with continue_from.
             query: natural-language query; omit when continuing a frozen result.
             session_id: active session returned by slowave_activate.
             scope: required retrieval boundary; must match the session.
@@ -1550,6 +1646,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 {
                     "session_id": session_id,
                     "scope": scope,
+                    "page_size": page_size,
                     "query": query,
                     "task_context": task_context,
                     "semantic_context": semantic_context,
@@ -1605,6 +1702,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope=request.scope,
                 memories=full_data["memories"],
                 procedures=full_data["procedures"],
+                page_size=(
+                    request.page_size if request.page_size is not None else DEFAULT_MEMORY_PAGE_SIZE
+                ),
                 contribution_spans={},
                 catalog_truncated=bool(full_data.get("catalog_truncated")),
                 first_page_metadata=(
@@ -1683,7 +1783,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             memories: strict batch of {content, type, occurred_at?} objects inheriting the
                   outer scope and session.
         IMPORTANT: Use ONLY for durable knowledge that should persist across sessions.
-        Do NOT store ephemeral task state — that belongs in session events.
+        Keep ephemeral task state in the agent's working context.
 
         Returns:
             stored: true when the scalar claim was accepted.
@@ -1810,18 +1910,38 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         """Record append-only evidence about retrieved memories and procedures.
 
         Task outcome does not belong here; slowave_commit owns it. Declarative
-        assessments are used|irrelevant|stale. A stale assessment must include
+        assessments are used|not_used|unassessable|irrelevant|already_known|stale.
+        Report used only after observed influence on reasoning, an action, a check,
+        or an applied constraint; reading or topical similarity is insufficient.
+        not_used means no influence; irrelevant means task mismatch.
+        unassessable requires reason and records unknown usage, never guessed non-use.
+        Both not_used and unassessable are neutral and complete target accountability.
+        Complete all exposed targets after the relevant work, before commit.
+        Partial checkpoints may report observed use or stale evidence earlier.
+        Only returned targets need feedback; do not exhaust continuation pages.
+        You may batch multiple retrievals in items. A minimal memory entry is
+        {"memory_id":"<returned>","assessment":"not_used"}. A stale assessment must include
         ``stale_reason`` (contradicted|superseded|outdated|unsupported|withdrawn)
         and a concise ``reason``; superseded additionally requires
         ``replacement_memory_id``. Procedure feedback keeps
-        use (used|not_used) separate from effect
+        use (used|not_used|unassessable) separate from effect
         (helped|no_effect|harmed|unknown), with contribution required when used.
-        Memory feedback additionally accepts section-3 fields: ``relevance``
+        Memory feedback additionally accepts: ``relevance``
         (relevant|irrelevant|uncertain), ``effect`` for used marks
         (helped|no_effect|harmed; absent means helped, unknown is invalid),
         and the ``already_known`` assessment (dedup observation; no
         reinforcement, no suppression). Relevance never gates the usage axis
         and vice versa (decoupled axes).
+        For assessments other than used, omit effect or set unknown.
+        not_used/unassessable procedures require omitted/unknown effect and no contribution;
+        unassessable additionally requires reason.
+        Replacement memories must be active, different, and in the retrieval scope;
+        replacement IDs need not have been exposed by this retrieval.
+        Even an empty retrieval requires {"retrieval_id": "<returned>", "coverage": "complete"}.
+        Default coverage is partial. For batches put coverage inside each item,
+        never at top level. Outer ok=true can contain rejected targets or failed
+        batch items: inspect every results[i].ok, data.rejected and data.outstanding.
+        Correct rejected entries and outstanding targets, then declare complete.
 
         Args:
             retrieval_id: opaque ID returned by activate/recall.
@@ -1834,11 +1954,13 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                    and items are mutually exclusive.
         Returns:
             retrieval_id: the assessed scalar retrieval.
-            coverage: applied partial or complete coverage.
+            coverage: achieved partial or complete coverage. A rejected complete request reports partial.
+            requested_coverage: the client's requested coverage.
             outstanding: memory_ids and procedure_ids still requiring assessment.
             accepted_event_ids: append-only feedback events accepted by the server.
             rejected: feedback targets or shapes the server did not apply, with reasons.
-            applied: IDs grouped by the feedback effect recorded by the server.
+            applied: actual strengthened/weakened/unchanged numeric changes,
+                plus neutral not_used/unassessable observations and stale transitions.
             results: for batch input, ordered item envelopes with independent
                 ok/data or ok/error results.
         """

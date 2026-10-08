@@ -258,6 +258,7 @@ class SQLiteDB:
             ("context_recall_events", "continuity_state", "TEXT"),
             ("context_recall_events", "response_chars", "INTEGER"),
             ("context_recall_events", "estimated_tokens", "INTEGER"),
+            ("context_recall_events", "requested_page_size", "INTEGER"),
             ("context_recall_items", "topical_relevance", "REAL"),
             ("context_recall_items", "final_rank_score", "REAL"),
             ("context_recall_items", "score_margin", "REAL"),

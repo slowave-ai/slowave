@@ -1086,6 +1086,10 @@ td.primary-cell {
   font-size: 12px;
   font-weight: 400;
 }
+.retrieval-table td.retrieval-task-cell {
+  min-width: 200px;
+  max-width: 340px;
+}
 .long-text-cell {
   font-size: 12px;
   font-weight: 400;

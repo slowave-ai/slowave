@@ -334,6 +334,7 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
                 "retrieved": 0,
                 "used": 0,
                 "not_used": 0,
+                "unassessable": 0,
                 "helped": 0,
                 "no_effect": 0,
                 "harmed": 0,
@@ -399,7 +400,7 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
         evidence = procedure["evidence"]
         assessment = str(row["assessment"] or "")
         effect = str(row["effect"] or "unknown")
-        if assessment in {"used", "not_used"}:
+        if assessment in {"used", "not_used", "unassessable"}:
             evidence[assessment] += 1
         if effect in {"helped", "no_effect", "harmed", "unknown"}:
             evidence[effect] += 1

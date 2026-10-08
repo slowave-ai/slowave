@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS context_recall_events (
   continuity_state  TEXT,
   response_chars    INTEGER,
   estimated_tokens  INTEGER,
+  requested_page_size INTEGER,
   created_at        INTEGER NOT NULL,
   -- WP-8 (2026-07-28): lifecycle-instructions contract version in effect for
   -- this call (see slowave/lifecycle.py). Stamped per-call rather than
@@ -561,6 +562,21 @@ CREATE TABLE IF NOT EXISTS learning_projection_state (
   applied_extra_confidence      REAL NOT NULL DEFAULT 0.0,
   last_applied_ts               INTEGER,
   FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE
+);
+
+-- v1 feedback-derived recurrence attribution. Existing genuine recall history
+-- is preserved; new corrections replace an exposure contribution, not a hit.
+CREATE TABLE IF NOT EXISTS feedback_recurrence_state (
+  schema_id INTEGER PRIMARY KEY REFERENCES schemas(id) ON DELETE CASCADE,
+  effective_count INTEGER NOT NULL
+);
+
+-- Versioned co-use reconciliation checkpoint. Only raw-evidence changes
+-- require a full rebuild; ordinary worker ticks perform exponential aging.
+CREATE TABLE IF NOT EXISTS coactivation_projection_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  version TEXT NOT NULL,
+  source_fingerprint TEXT NOT NULL
 );
 
 -- ============================================================================
