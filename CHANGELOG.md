@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.7](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.6...slowave-v0.20.7) (2026-10-08)
+
+
+### Bug Fixes
+
+* align mcp endpoint instructions ([#168](https://github.com/slowave-ai/slowave/issues/168)) ([6d8ed46](https://github.com/slowave-ai/slowave/commit/6d8ed46a1f5c89cd20bd1d84ab27f38e2e0bbb8d))
+
 ## [0.20.6](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.5...slowave-v0.20.6) (2026-10-07)
 
 
