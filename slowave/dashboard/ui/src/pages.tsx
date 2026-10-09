@@ -177,9 +177,16 @@ function Availability({ home }: { home: Json }) {
   );
 }
 
-const formationSeries = [
-  { key: "schemas", label: "Memories" },
-  { key: "procedures", label: "Procedures" },
+const memoryActivitySeries = [
+  { key: "schemas", label: "Created" },
+  { key: "memory_retrievals", label: "Retrieved" },
+  { key: "used_memories", label: "Used" },
+] as const;
+
+const procedureActivitySeries = [
+  { key: "procedures", label: "Created" },
+  { key: "procedure_retrievals", label: "Retrieved" },
+  { key: "used_procedures", label: "Used" },
 ] as const;
 
 const clampNumber = (value: number, min: number, max: number) =>
@@ -213,16 +220,18 @@ function smoothFormationPath(points: { x: number; y: number }[]): string {
   return path;
 }
 
-/**
- * Home activity view, narrowed to what a user actually cares about: durable
- * memories and reusable procedures formed in the selected period. Raw events
- * and episodes stay in the API payload but are deliberately not shown here.
- */
-function MemoryFormationChart({ data }: { data?: Json }) {
-  const [visible, setVisible] = useState<Record<string, boolean>>({
-    schemas: true,
-    procedures: true,
-  });
+function ActivityChartPanel({
+  data,
+  series,
+  title,
+}: {
+  data?: Json;
+  series: readonly { key: string; label: string }[];
+  title: string;
+}) {
+  const [visible, setVisible] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(series.map(({ key }) => [key, true])),
+  );
   const [hovered, setHovered] = useState<{
     x: number;
     y: number;
@@ -232,12 +241,12 @@ function MemoryFormationChart({ data }: { data?: Json }) {
   const channels = data?.channels || {};
   const timestamps: string[] = Array.from(
     new Set(
-      formationSeries.flatMap(({ key }) =>
+      series.flatMap(({ key }) =>
         (channels[key] || []).map((bucket: any) => String(bucket.ts)),
       ),
     ),
   ).sort((a, b) => Number(a) - Number(b));
-  const seriesValues = formationSeries.map(({ key }) =>
+  const seriesValues = series.map(({ key }) =>
     timestamps.map((ts) =>
       Number(
         (channels[key] || []).find((bucket: any) => String(bucket.ts) === ts)?.n ||
@@ -248,7 +257,7 @@ function MemoryFormationChart({ data }: { data?: Json }) {
   const seriesTotals = seriesValues.map((values) =>
     values.reduce((sum, value) => sum + value, 0),
   );
-  const shownSeries = formationSeries
+  const shownSeries = series
     .map((definition, index) => ({ ...definition, index }))
     .filter((definition) => visible[definition.key]);
   const hasActivity = seriesValues.some((values) =>
@@ -313,53 +322,22 @@ function MemoryFormationChart({ data }: { data?: Json }) {
     });
   };
   return (
-    <Section
-      title={
-        <>
-          Memory formation
-          <DefinitionTooltip label="Memory formation definition">
-            New durable memories and reusable procedures created in the selected
-            period. Memories are facts or guidance distilled from past
-            interactions; procedures are reusable step-by-step methods captured
-            from completed work.
-          </DefinitionTooltip>
-        </>
-      }
-      actions={
-        <div className="formation-legend" aria-label="Visible series">
-          {formationSeries.map(({ key, label }, index) => (
-            <button
-              type="button"
-              key={key}
-              className={`formation-legend-item formation-legend-${key}`}
-              aria-pressed={visible[key]}
-              onClick={() =>
-                setVisible((current) => ({ ...current, [key]: !current[key] }))
-              }
-            >
-              <i aria-hidden="true" />
-              {label}
-              <b>{seriesTotals[index].toLocaleString()}</b>
-            </button>
-          ))}
-        </div>
-      }
-    >
+    <div className="activity-chart-panel">
       <div className="formation-chart" ref={chartRef}>
         {!hasActivity ? (
-          <EmptyState title="No memories formed yet">
-            New memories and procedures will appear here once Slowave
-            consolidates captured activity in the selected period.
+          <EmptyState title={`No ${title.toLowerCase()} activity yet`}>
+            Creation, retrieval, and reported use will appear here once Slowave
+            records activity in the selected period.
           </EmptyState>
         ) : (
           <>
             <svg
               viewBox={`0 0 ${width} ${chartHeight}`}
               role="img"
-              aria-label="Memories and procedures formed over the selected period"
+              aria-label={`${title} created, retrieved, and reported used over the selected period`}
             >
               <defs>
-                {formationSeries.map(({ key }) => (
+                {series.map(({ key }) => (
                   <linearGradient
                     key={key}
                     id={`formation-fill-${key}`}
@@ -473,6 +451,64 @@ function MemoryFormationChart({ data }: { data?: Json }) {
             )}
           </>
         )}
+      </div>
+      <div className="formation-legend" aria-label="Visible series">
+        {series.map(({ key, label }, index) => (
+          <button
+            type="button"
+            key={key}
+            className={`formation-legend-item formation-legend-${key}`}
+            aria-pressed={visible[key]}
+            onClick={() =>
+              setVisible((current) => ({ ...current, [key]: !current[key] }))
+            }
+          >
+            <i aria-hidden="true" />
+            {label}
+            <b>{seriesTotals[index].toLocaleString()}</b>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MemoryFormationChart({ data }: { data?: Json }) {
+  const [activeChart, setActiveChart] = useState<"memories" | "procedures">("memories");
+  const isMemories = activeChart === "memories";
+  return (
+    <Section
+      title={
+        <>
+          Memory activity
+          <DefinitionTooltip label="Memory activity definition">
+            Memories and procedures created, retrieved, and reported used in the
+            selected period. Retrieved counts are delivered item occasions;
+            reported use counts only items with accepted use feedback.
+          </DefinitionTooltip>
+        </>
+      }
+    >
+      <div className="knowledge-activity-tabs" role="group" aria-label="Knowledge type">
+        {(["memories", "procedures"] as const).map((tab) => (
+          <button
+            type="button"
+            key={tab}
+            aria-pressed={activeChart === tab}
+            className="knowledge-activity-tab"
+            onClick={() => setActiveChart(tab)}
+          >
+            {tab === "memories" ? "Memories" : "Procedures"}
+          </button>
+        ))}
+      </div>
+      <div>
+        <ActivityChartPanel
+          key={activeChart}
+          data={data}
+          series={isMemories ? memoryActivitySeries : procedureActivitySeries}
+          title={isMemories ? "Memories" : "Procedures"}
+        />
       </div>
     </Section>
   );
