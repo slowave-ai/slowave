@@ -2094,7 +2094,6 @@ def uninstall_cmd(dry_run: bool) -> None:
 from slowave.cli.backup import backup_cmd, restore_cmd
 from slowave.cli.cleanup import cleanup_cmd
 from slowave.cli.migrate_data import migrate_data_cmd
-
 from slowave.cli.services import restart_cmd, start_cmd, stop_cmd
 
 cli.add_command(start_cmd)

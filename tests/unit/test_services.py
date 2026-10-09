@@ -107,8 +107,9 @@ def test_service_status_does_not_open_database(monkeypatch):
 
 
 def test_docs_command_is_discoverable_without_browser(monkeypatch):
-    from slowave.cli.main import cli
     import webbrowser
+
+    from slowave.cli.main import cli
 
     def unexpected(*args, **kwargs):
         raise AssertionError("Browser should not open")
