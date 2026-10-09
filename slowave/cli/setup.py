@@ -872,8 +872,9 @@ _LIFECYCLE_BLOCK_TEMPLATE = f"""\
 <!-- slowave-lifecycle-start {LIFECYCLE_VERSION} -->
 ## MANDATORY — Slowave memory (5-verb cognitive cycle)
 
-Use this loop once per user task. Follow the connected MCP tools' schemas and
-descriptions for endpoint fields, allowed values, and conditional requirements.
+Use this loop once per user task; follow the connected MCP tools' schemas and
+descriptions for fields and conditional requirements.
+Retrieval uses meaning and specific terms; state subjects and context clearly.
 
 1. **Activate before your first response.** Call `slowave_activate` once with the
    verbatim task, concise action-led `initial_goal`, and stable scope. For coding,
@@ -881,29 +882,36 @@ descriptions for endpoint fields, allowed values, and conditional requirements.
    root, falling back to `project:<basename(cwd)>`. Save `session_id`,
    `retrieval_id`, and returned `continuity_id`; omit continuity on the first
    task and resend it unchanged on later tasks in this conversation only.
-2. **Use memory deliberately.** `slowave_recall` is for materially new questions;
-   `slowave_remember` is for novel, durable, standalone knowledge, never transient
-   task state. Both require the active `session_id` and matching scope.
-   `page_size`: activation/fresh recall only; integer 1–10, maximum memories/page
-   (not guaranteed). Omit for server default ({DEFAULT_MEMORY_PAGE_SIZE});
-   continuations keep it; omit with `continue_from`.
-3. **Assess every retrieval after the work, before commit.** Send `slowave_feedback`
-   for all returned targets, including continuations and empty results, using
-   `memory_feedback` / `procedure_feedback` arrays and `coverage="complete"`.
+2. **Remember proactively.** Call `slowave_remember` without an explicit request
+   when you discover new knowledge worth retaining as durable memory
+   because it could help you with future tasks.
+   Save standalone facts, preferences, decisions, constraints,
+   or lessons; skip duplicates, speculation, progress notes, pending steps,
+   and temporary task state.
+3. **Recall deliberately.** Use `slowave_recall` for materially new questions or
+   needed history absent from activation. Both require the
+   active `session_id` and matching scope. `page_size`: activation/fresh recall
+   only; integer 1–10, maximum memories/page (not guaranteed).
+   Omit for server default ({DEFAULT_MEMORY_PAGE_SIZE});
+   omit with `continue_from`.
+4. **Assess every retrieval after the work, before commit.** Send `slowave_feedback`
+   for all returned targets, including continuations and empty results, with
+   `coverage="complete"`.
    `used` requires actual influence, not reading or topical similarity;
-   `not_used` is neutral, `irrelevant` means task mismatch. For lost usage evidence,
-   use `unassessable` with a reason. Checkpoint use/staleness earlier
-   if helpful; follow the tool's conditional rules.
-4. **Commit before the final response.** `slowave_commit` requires `session_id`,
-   `final_goal`, actual `outcome`, standalone `outcome_summary`, and `verification`.
+   `not_used` is neutral, `irrelevant` means task mismatch. Lost usage evidence:
+   use `unassessable` with a reason; follow the tool's conditional rules.
+5. **Commit before the final response.** First save any missed useful claims via
+   `slowave_remember`; if none qualify, no write is needed. `slowave_commit`
+   requires `session_id`, `final_goal`, actual `outcome`,
+   standalone `outcome_summary`, and `verification`.
    Include a procedure for an attempted reusable multi-step method with at least
    two ordered task actions; omit it for trivial/answer-only work. Keep trajectory
    entries task-only. Report `partial` or `failure` honestly. Write outcome and
    procedure summaries as specific, standalone future-facing knowledge.
    Verify `feedback_status` and `verification_status`.
 
-**Cold start:** read one stable context document; remember only durable facts
-not already observable. Do not scan the whole codebase.
+**Cold start:** read one stable context document; remember selectively using
+step 2. Do not scan the whole codebase.
 
 Account for every warning before relying on a retrieval. Preserve cursors exactly
 and continue only when more context would help. A continuation sends only

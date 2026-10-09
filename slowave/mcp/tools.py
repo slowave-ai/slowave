@@ -1415,10 +1415,15 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             Call this once at the beginning of every task. Spreading activation surfaces
             relevant memories and procedures, and opens a server-side session so you
             never need to call session_start manually.
+            Retrieval considers meaning and specific terms, then selects context
+            applicable to the task. The bounded result is not a complete inventory
+            or a verification of the returned claims; assess their actual use.
 
             The cognitive cycle:
                 1. slowave_activate(task, initial_goal, scope)      <- start here
-                2. slowave_remember(session_id, scope, content, type)           <- for durable facts
+                2. slowave_remember(session_id, scope, content, type)
+                   <- when you discover new knowledge worth retaining as durable memory
+                      because it could help you with future tasks
                 3. slowave_recall(session_id, scope, query)                            <- mid-task lookup
                 4. slowave_feedback(retrieval_id, memory_feedback, procedure_feedback, coverage)    <- after using memories
                 5. slowave_commit(session_id, final_goal, outcome, outcome_summary, verification)         <- close the task
@@ -1611,6 +1616,21 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         Use for deliberate mid-task lookups when you need specific historical
         context beyond what activate surfaced.
         Recall is explicitly bound to the active session and matching scope.
+        Retrieval considers semantic meaning and specific lexical matches, then
+        selects context relevant to the current need. Ask a focused natural-language
+        question naming the subject, goal, and relevant conditions; preserve exact
+        project/service names, identifiers, and error text when known. Paraphrases
+        can match; you do not need to reproduce the stored wording. Avoid keyword
+        stuffing or assuming the answer in the query. For example, a stored claim
+        "Atlas authentication credentials expire after 45 minutes" can be queried
+        with "How long do Atlas login tokens remain valid?"
+        State independent needs as separate sentences when asking several questions.
+        Results are bounded suggestions, not proof of truth or a complete inventory.
+        If needed history is missing, clarify the question or use a returned
+        continuation when more context would help; an empty result does not prove
+        absence.
+        Inspect provenance/evidence and procedure outcomes/caveats before applying
+        guidance; use evidence="full" when source content is needed, noting truncation.
         Args:
             page_size: optional strict integer 1–10; omitted values use the server default for a new query. Omit with continue_from.
             query: natural-language query; omit when continuing a frozen result.
@@ -1767,8 +1787,35 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         occurred_at: Any = None,
         memories: Any = None,
     ) -> dict[str, Any]:
-        """Explicitly encode a durable typed claim into long-term memory.
+        """Record newly discovered knowledge worth retaining for future tasks in this scope.
         Scalar and batch forms inherit one explicitly verified session and scope.
+        Proactively call this when you discover new knowledge worth retaining
+        as durable memory because it could help you with future tasks:
+        pursue a goal, avoid rework or a wrong assumption, or avoid asking
+        the user again. Do not wait for the user to say “remember”.
+        Good candidates are confirmed facts, user preferences, decisions,
+        constraints, lessons, warnings, and open questions that affect future
+        goals. Save the claim when it becomes clear; review for missed claims
+        before commit. Use concise, standalone wording with enough context for
+        a later session, and batch independent claims. Check activated memories
+        and task context for duplicates; a matched claim is acceptable. Skip
+        speculation, progress notes, pending steps, temporary task state, and
+        details unlikely to matter again.
+        A fact recorded elsewhere can still be worth saving when rediscovery
+        would cost meaningful work.
+
+        Write for later retrieval: use one independent claim per entry and name
+        its subject explicitly instead of "this" or "that approach". Preserve
+        conditions, exceptions, and negation; include the reason for a decision
+        when it explains when to apply it. Keep meaningful exact names, identifiers,
+        commands, and error text alongside natural-language context. Retrieval
+        considers meaning and specific terms, so avoid keyword lists, repeated
+        synonyms, and unrelated claims in one entry. For example, prefer
+        "Atlas authentication credentials expire after 45 minutes" to
+        "Tokens: timeout, expiry, login, auth; same as discussed above."
+        Include source/time context when it affects applicability, and use
+        occurred_at only for the source-event time described below.
+
         Args:
             scope: required scope matching the active session.
             session_id: required active session returned by slowave_activate.
@@ -1782,8 +1829,6 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                          to the write time; occurred_at never changes event order.
             memories: strict batch of {content, type, occurred_at?} objects inheriting the
                   outer scope and session.
-        IMPORTANT: Use ONLY for durable knowledge that should persist across sessions.
-        Keep ephemeral task state in the agent's working context.
 
         Returns:
             stored: true when the scalar claim was accepted.
@@ -1909,8 +1954,12 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     ) -> dict[str, Any]:
         """Record append-only evidence about retrieved memories and procedures.
 
-        Task outcome does not belong here; slowave_commit owns it. Declarative
-        assessments are used|not_used|unassessable|irrelevant|already_known|stale.
+        Task outcome does not belong here; slowave_commit owns it. Memory
+        feedback informs future retrieval; procedure use/effect informs future
+        ordering. Task mismatch does not establish that a claim is false.
+        When a retrieved claim is replaced, remember the corrected claim first,
+        then mark the old one stale/superseded with its replacement_memory_id.
+        Declarative assessments are used|not_used|unassessable|irrelevant|already_known|stale.
         Report used only after observed influence on reasoning, an action, a check,
         or an applied constraint; reading or topical similarity is insufficient.
         not_used means no influence; irrelevant means task mismatch.
@@ -2091,6 +2140,10 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     ) -> dict[str, Any]:
         """Close the current task and trigger offline memory consolidation.
 
+        Before calling, review whether the task revealed useful knowledge that
+        a future task should retrieve directly. Store any such claims with
+        slowave_remember; if none qualifies, commit normally. Commit records the
+        task outcome and optional procedure, not a substitute for explicit claims.
         Call at the end of every task. If skipped, the idle-session reaper closes
         the session after SLOWAVE_SESSION_IDLE_TIMEOUT seconds (default 3600).
         Args:
