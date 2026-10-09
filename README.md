@@ -74,7 +74,11 @@ The quick start configures every detected client. To configure just one client a
 > [!IMPORTANT]
 > **No LLM API key required.**
 
-To remove Slowave, see the [removal guide](docs/install.md#remove-slowave).
+For upgrades and service management, see [Install, upgrade, run, and remove Slowave](docs/lifecycle.md).
+Use `slowave start`, `slowave stop`, and `slowave restart` for installed services;
+use `slowave status --services` and `slowave doctor` to diagnose problems.
+See [Troubleshooting](docs/troubleshooting.md) for recovery and logs, or run
+`slowave docs troubleshooting` to open it from your terminal.
 
 ## What changes in your workflow?
 
@@ -225,6 +229,7 @@ production-quality claim.
 - [Mintlify documentation](https://slowave-ai.mintlify.app/): full auto-generated documentation
 - [design.md](docs/design.md): design rationale, boundaries, and positioning
 - [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
+- [Lifecycle guide](docs/lifecycle.md): install, upgrade, start/stop/restart, and removal
 - [install.md](docs/install.md): installation, setup, lifecycle instructions, modified files, and removal
 - [benchmarks.md](docs/benchmarks.md): benchmark results, methodology, and reproduction
 - [troubleshooting.md](docs/troubleshooting.md): daemon, worker, dashboard, client integration, database, backup/restore

@@ -1238,9 +1238,11 @@ def _install_worker_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_path.write_text(content, encoding="utf-8")
     try:
         for command in _launchctl_service_commands(plist_path, force=force):
-            subprocess.run(command, capture_output=True, check=False)
-    except FileNotFoundError:
-        pass
+            subprocess.run(
+                command, capture_output=True, check=command[1] not in ("bootout", "unload")
+            )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
 
 
@@ -1258,20 +1260,20 @@ def _install_worker_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir.mkdir(parents=True, exist_ok=True)
     svc_path.write_text(content, encoding="utf-8")
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=True)
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "slowave-worker"],
             capture_output=True,
-            check=False,
+            check=True,
         )
         if force:
             subprocess.run(
                 ["systemctl", "--user", "restart", "slowave-worker"],
                 capture_output=True,
-                check=False,
+                check=True,
             )
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(svc_path), True
 
 
@@ -1354,6 +1356,13 @@ def _register_windows_task(
 
     ps = (
         f"$ErrorActionPreference='Stop';"
+        f"$existing=Get-ScheduledTask -TaskName '{name_q}' -ErrorAction SilentlyContinue;"
+        f"if ($existing) {{ Disable-ScheduledTask -TaskName '{name_q}' | Out-Null;"
+        f"Stop-ScheduledTask -TaskName '{name_q}';"
+        f"$deadline=(Get-Date).AddSeconds(30);"
+        f"while ((Get-ScheduledTask -TaskName '{name_q}').State -eq 'Running') {{"
+        f"if ((Get-Date) -gt $deadline) {{ throw 'Task did not stop' }};"
+        f"Start-Sleep -Milliseconds 200 }} }};"
         f"$a=New-ScheduledTaskAction -Execute '{exe_q}' -Argument '{arg_q}';"
         f"$logon=New-ScheduledTaskTrigger -AtLogOn;"
         f"$tick=New-ScheduledTaskTrigger -Once -At (Get-Date) "
@@ -1366,6 +1375,7 @@ def _register_windows_task(
         f"$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;"
         f"Register-ScheduledTask -TaskName '{name_q}' -Description '{_WINDOWS_TASK_MARKER}' "
         f"-Action $a -Trigger $logon,$tick -Settings $s -Principal $p -Force | Out-Null;"
+        f"Enable-ScheduledTask -TaskName '{name_q}' | Out-Null;"
         f"Start-ScheduledTask -TaskName '{name_q}'"
     )
     try:
@@ -1419,9 +1429,11 @@ def _install_daemon_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_path.write_text(content, encoding="utf-8")
     try:
         for command in _launchctl_service_commands(plist_path, force=force):
-            subprocess.run(command, capture_output=True, check=False)
-    except FileNotFoundError:
-        pass
+            subprocess.run(
+                command, capture_output=True, check=command[1] not in ("bootout", "unload")
+            )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
 
 
@@ -1440,20 +1452,20 @@ def _install_daemon_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir.mkdir(parents=True, exist_ok=True)
     svc_path.write_text(content, encoding="utf-8")
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=True)
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "slowave-daemon"],
             capture_output=True,
-            check=False,
+            check=True,
         )
         if force:
             subprocess.run(
                 ["systemctl", "--user", "restart", "slowave-daemon"],
                 capture_output=True,
-                check=False,
+                check=True,
             )
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(svc_path), True
 
 
@@ -1490,7 +1502,9 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
-                if resp.status == 200:
+                from slowave import __version__
+
+                if resp.status == 200 and json.loads(resp.read()).get("version") == __version__:
                     return True
         except Exception:
             pass
@@ -1696,12 +1710,12 @@ def _section(title: str) -> None:
     "--worker/--no-worker",
     default=True,
     show_default=True,
-    help="Install the background worker as a system service.",
+    help="Install/reapply daemon, worker, and backup user services; --no-worker skips all three.",
 )
 @click.option(
     "--force",
     is_flag=True,
-    help="Reapply client configuration and reinstall services even when already configured; run verification.",
+    help="Explicitly reapply client configuration. Services are always reapplied and restarted.",
 )
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing any files.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
@@ -1715,7 +1729,7 @@ def setup_cmd(
     automatically as system services — no manual steps needed.
 
     Automates MCP config, lifecycle instruction injection, and the daemon +
-    worker services. All steps are idempotent.
+    worker services. Services are reapplied and restarted on each run.
 
     \b
     Examples:
@@ -1787,20 +1801,29 @@ def setup_cmd(
             if change.status == ChangeStatus.SKIP:
                 change.status = ChangeStatus.UPDATE
     click.echo(summary.format())
+    if worker:
+        _ok("Services will be reapplied and restarted, including after package upgrades.")
     if summary.manual_steps:
         click.echo("\nPaste this block into the instruction settings listed above:")
         click.echo(_lifecycle_block("manual"))
 
     # Confirm unless dry-run — skip if nothing to do
     if not dry_run:
-        if not force and not summary.has_changes():
+        if not force and not worker and not summary.has_changes():
             click.echo(click.style("\nEverything already configured. Nothing to do.", fg="green"))
             if summary.manual_steps:
                 click.echo(click.style("\nReminders:", bold=True))
                 for step in summary.manual_steps:
                     _warn(step)
             sys.exit(0)
-        if not click.confirm("\nConfigure detected clients?", default=True):
+        if not click.confirm(
+            (
+                "\nApply configuration and restart managed services?"
+                if worker
+                else "\nConfigure detected clients?"
+            ),
+            default=True,
+        ):
             click.echo(click.style("\nSetup cancelled.", fg="yellow"))
             sys.exit(0)
 
@@ -1880,6 +1903,7 @@ def setup_cmd(
         elif spec.manual_lifecycle and spec.manual_note:
             _warn(f"REQUIRED — {spec.manual_note}")
 
+    # Reconcile running code even when service definitions are unchanged.
     # HTTP MCP daemon service
     _section("7. HTTP MCP daemon service")
     if worker:
@@ -1896,55 +1920,33 @@ def setup_cmd(
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave serve start")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_daemon_macos(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_daemon_macos(slowave_bin, force=True)
                 if changed:
                     _ok(f"launchd daemon service installed → {path}")
                 else:
                     _skip("launchd daemon service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_daemon_linux(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_daemon_linux(slowave_bin, force=True)
                 if changed:
                     _ok(f"systemd daemon service installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-daemon")
                 else:
                     _skip("systemd daemon service already up-to-date")
             elif SYSTEM == "Windows":
-                ok, detail = _install_daemon_windows(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                ok, detail = _install_daemon_windows(slowave_bin, force=True)
                 if ok:
                     _ok(f"Task Scheduler task SlowaveDaemon: {detail}")
                 else:
-                    _err(f"Task Scheduler task SlowaveDaemon: {detail}")
-                    _warn("Start manually: slowave serve start")
+                    raise click.ClickException(f"Task Scheduler task SlowaveDaemon: {detail}")
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave serve start")
             if _verify_daemon_health(selected_daemon_port):
                 _ok(f"Daemon is live: http://127.0.0.1:{selected_daemon_port}/health")
             else:
-                _err(
-                    f"Daemon did not respond on http://127.0.0.1:{selected_daemon_port}/health "
-                    f"within {_DAEMON_HEALTH_TIMEOUT:g}s."
+                raise click.ClickException(
+                    f"Daemon did not respond with the installed version on http://127.0.0.1:{selected_daemon_port}/health "
+                    f"within {_DAEMON_HEALTH_TIMEOUT:g}s. Run slowave status --services and slowave doctor; see docs/troubleshooting.md."
                 )
-                if SYSTEM == "Windows":
-                    _warn(
-                        "It may still come up — Task Scheduler retries this task every "
-                        "5 minutes if it isn't already running. Check: "
-                        "Get-ScheduledTask -TaskName SlowaveDaemon"
-                    )
-                    from slowave.core.paths import runtime_paths
-
-                    _warn(f"Check logs: {runtime_paths().logs_dir / 'pythonw-serve.log'}")
-                elif SYSTEM == "Linux":
-                    _warn("Check logs: journalctl --user -u slowave-daemon")
-                else:
-                    from slowave.core.paths import runtime_paths
-
-                    _warn(f"Check logs: {runtime_paths().logs_dir / 'daemon.err'}")
     else:
         _skip("Skipped (--no-worker). Run manually: slowave serve start")
 
@@ -1964,32 +1966,25 @@ def setup_cmd(
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave worker --interval 300")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_worker_macos(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_worker_macos(slowave_bin, force=True)
                 if changed:
                     _ok(f"launchd worker service installed → {path}")
                 else:
                     _skip("launchd worker service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_worker_linux(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_worker_linux(slowave_bin, force=True)
                 if changed:
                     _ok(f"systemd worker service installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-worker")
                 else:
                     _skip("systemd worker service already up-to-date")
             elif SYSTEM == "Windows":
-                ok, detail = _install_worker_windows(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                ok, detail = _install_worker_windows(slowave_bin, force=True)
                 if ok:
                     _ok(f"Task Scheduler task SlowaveWorker: {detail}")
                     _ok("Verify:  Get-ScheduledTask -TaskName SlowaveWorker")
                 else:
-                    _err(f"Task Scheduler task SlowaveWorker: {detail}")
-                    _warn("Start manually: slowave worker --interval 300")
+                    raise click.ClickException(f"Task Scheduler task SlowaveWorker: {detail}")
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave worker --interval 300")
     else:
@@ -2011,24 +2006,20 @@ def setup_cmd(
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave backup")
         else:
             if SYSTEM == "Darwin":
-                path, changed = _install_backup_macos(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_backup_macos(slowave_bin, force=True)
                 if changed:
                     _ok(f"launchd backup service installed → {path}")
                 else:
                     _skip("launchd backup service already up-to-date")
             elif SYSTEM == "Linux":
-                path, changed = _install_backup_linux(
-                    slowave_bin, **({"force": True} if force else {})
-                )
+                path, changed = _install_backup_linux(slowave_bin, force=True)
                 if changed:
                     _ok(f"systemd backup timer installed → {path}")
                     _ok("Verify:  systemctl --user status slowave-backup.timer")
                 else:
                     _skip("systemd backup timer already up-to-date")
             elif SYSTEM == "Windows":
-                task, _ = _install_backup_windows(slowave_bin, **({"force": True} if force else {}))
+                task, _ = _install_backup_windows(slowave_bin, force=True)
                 _ok(f"Task Scheduler task registered: {task}")
                 _ok("Verify:  Get-ScheduledTask -TaskName SlowaveBackup")
             else:
@@ -2141,9 +2132,9 @@ def _install_backup_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
             else ["launchctl", "load", str(plist_path)]
         )
         subprocess.run(unload, capture_output=True, check=False)
-        subprocess.run(load, capture_output=True, check=False)
-    except FileNotFoundError:
-        pass
+        subprocess.run(load, capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
 
 
@@ -2169,20 +2160,20 @@ def _install_backup_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_path.write_text(svc_content, encoding="utf-8")
     timer_path.write_text(timer_content, encoding="utf-8")
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=True)
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "slowave-backup.timer"],
             capture_output=True,
-            check=False,
+            check=True,
         )
         if force:
             subprocess.run(
                 ["systemctl", "--user", "restart", "slowave-backup.timer"],
                 capture_output=True,
-                check=False,
+                check=True,
             )
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(timer_path), True
 
 
@@ -2220,20 +2211,25 @@ def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[s
 
     # Daily trigger at 03:00
     ps = (
+        f"$ErrorActionPreference='Stop';"
         f"$a=New-ScheduledTaskAction -Execute '{_ps_squote(execute)}' "
         f"-Argument '{_ps_squote(argument)}';"
         f"$t=New-ScheduledTaskTrigger -Daily -At 03:00;"
         f"$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0;"
         f"$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;"
         f"Register-ScheduledTask -TaskName '{task_name}' -Action $a -Trigger $t -Settings $s "
-        f"-Principal $p -Force"
+        f"-Principal $p -Force | Out-Null;"
+        f"Enable-ScheduledTask -TaskName '{task_name}' | Out-Null"
     )
     try:
         subprocess.run(
             ["powershell", "-NonInteractive", "-Command", ps],
             capture_output=True,
-            check=False,
+            check=True,
+            timeout=60,
         )
-    except FileNotFoundError:
-        pass
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise click.ClickException(
+            f"Could not apply backup task: {exc}. Run slowave doctor."
+        ) from exc
     return task_name, True

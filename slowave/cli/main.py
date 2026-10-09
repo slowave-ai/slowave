@@ -93,7 +93,13 @@ def _print(obj: Any, as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="JSON output.")
 @click.pass_context
 def cli(ctx: click.Context, db: str, as_json: bool) -> None:
-    """Slowave: brain-inspired memory for AI agents."""
+    """Slowave: brain-inspired memory for AI agents.
+
+    Install/upgrade with your package manager, then run setup.
+    Services: start, stop, restart, status --services. Diagnose: doctor. Remove: uninstall.
+    Documentation: docs or docs troubleshooting.
+    Guide: https://github.com/mrsalty/slowave/blob/main/docs/lifecycle.md
+    """
     ctx.ensure_object(dict)
     try:
         paths = runtime_paths()
@@ -102,6 +108,25 @@ def cli(ctx: click.Context, db: str, as_json: bool) -> None:
     except RuntimePathError as exc:
         raise click.ClickException(str(exc)) from exc
     ctx.obj["json"] = as_json
+
+
+@cli.command("docs")
+@click.argument(
+    "topic",
+    type=click.Choice(["lifecycle", "troubleshooting", "install", "cli"]),
+    default="lifecycle",
+)
+@click.option(
+    "--no-open", is_flag=True, help="Print the documentation link without opening a browser."
+)
+def docs_cmd(topic: str, no_open: bool) -> None:
+    """Open the lifecycle guide or troubleshooting documentation."""
+    import webbrowser
+
+    url = f"https://github.com/mrsalty/slowave/blob/main/docs/{topic}.md"
+    click.echo(url)
+    if not no_open:
+        webbrowser.open(url)
 
 
 @cli.group()
@@ -1487,9 +1512,19 @@ def _lifecycle_version_health(db_path: str) -> dict[str, Any]:
 
 
 @cli.command("status")
+@click.option(
+    "--services",
+    is_flag=True,
+    help="Show supervisor state and daemon version without opening the database.",
+)
 @click.pass_context
-def status_cmd(ctx: click.Context) -> None:
+def status_cmd(ctx: click.Context, services: bool = False) -> None:
     """Print DB, memory-health, and local process status."""
+    if services:
+        from slowave.cli.services import service_status
+
+        _print(service_status(), ctx.obj["json"])
+        return
     db = ctx.obj["db"]
     eng = _build_engine(db)
     payload = {
@@ -2060,6 +2095,11 @@ from slowave.cli.backup import backup_cmd, restore_cmd
 from slowave.cli.cleanup import cleanup_cmd
 from slowave.cli.migrate_data import migrate_data_cmd
 
+from slowave.cli.services import restart_cmd, start_cmd, stop_cmd
+
+cli.add_command(start_cmd)
+cli.add_command(stop_cmd)
+cli.add_command(restart_cmd)
 cli.add_command(setup_cmd)
 cli.add_command(cleanup_cmd)
 cli.add_command(cleanup_cmd, "cleanup")
@@ -2116,7 +2156,9 @@ def serve_start(
     log_level: str,
     foreground: bool,
 ) -> None:
-    """Start the Slowave HTTP MCP daemon.
+    """Run the HTTP MCP daemon in the foreground (advanced use).
+
+    Use slowave start for installed services.
 
     Starts a persistent HTTP MCP server on http://<HOST>:<PORT>/mcp
     (default http://127.0.0.1:8766/mcp).  Only ONE daemon process should
@@ -2154,18 +2196,10 @@ def serve_start(
 @serve_cmd.command("stop")
 def serve_stop() -> None:
     """Stop the running Slowave HTTP MCP daemon."""
-    from slowave.mcp.daemon import is_running, read_pid, stop_daemon
+    from slowave.cli.services import control
 
-    if not is_running():
-        click.echo("  No daemon is currently running.")
-        return
-
-    pid = read_pid()
-    if stop_daemon():
-        click.echo(click.style("  Stopped", fg="green") + f"  daemon (pid={pid}).")
-    else:
-        click.echo(click.style("  ERROR", fg="red") + "  Could not stop daemon.")
-        sys.exit(1)
+    click.echo("Use slowave stop to stop all installed services.")
+    control("stop", ("daemon",))
 
 
 @serve_cmd.command("status")
@@ -2236,35 +2270,16 @@ def serve_status(as_json: bool) -> None:
 @click.option("--log-level", default="INFO", show_default=True)
 def serve_restart(host: str, port: int | None, log_level: str) -> None:
     """Restart the Slowave HTTP MCP daemon."""
-    import time as _time
+    from slowave.cli.services import control, verify_daemon
+    from slowave.core.paths import daemon_port
 
-    from slowave.mcp.daemon import is_running, read_pid, stop_daemon
-    from slowave.mcp.http_server import main as http_main
-
-    if port is None:
-        from slowave.core.paths import assign_daemon_port
-
-        port = assign_daemon_port()
-
-    if is_running():
-        pid = read_pid()
-        click.echo(f"  Stopping daemon (pid={pid})...")
-        stop_daemon()
-        # Wait briefly for old process to exit
-        for _ in range(10):
-            _time.sleep(0.3)
-            if not is_running():
-                break
-        if is_running():
-            click.echo(click.style("  ERROR", fg="red") + "  Old daemon did not exit in time.")
-            sys.exit(1)
-        click.echo("  Old daemon stopped.")
-
-    click.echo(
-        click.style("  Starting", fg="green", bold=True)
-        + f"  Slowave HTTP MCP daemon on http://{host}:{port}/mcp"
-    )
-    http_main(host=host, port=port, log_level=log_level)
+    if host != "127.0.0.1" or (port is not None and port != daemon_port()) or log_level != "INFO":
+        raise click.ClickException(
+            "Configure custom foreground servers with serve start; use restart for installed services."
+        )
+    click.echo("Use slowave restart to restart all installed services.")
+    control("restart", ("daemon",))
+    verify_daemon()
 
 
 # Expose serve under the main CLI

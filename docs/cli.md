@@ -1,5 +1,8 @@
 # Slowave CLI
 
+For the recommended commands and complete workflows, see
+[Install, upgrade, run, and remove Slowave](lifecycle.md).
+
 The Slowave CLI is for local setup, inspection, maintenance, backups, and
 manual experiments. Its JSON output makes it useful in scripts and CI:
 
@@ -127,7 +130,7 @@ deletion for individual memories and procedures.
 ```bash
 slowave setup --client codex
 slowave doctor --verbose
-slowave serve status
+slowave status --services
 ```
 
 `setup` configures detected clients, lifecycle instructions, enforcement
@@ -136,8 +139,14 @@ hooks where supported, and daemon/worker services. Choose one client with
 Use `--dry-run` before changing configuration, or `--no-worker` to skip
 worker-service installation. `doctor` verifies the local environment.
 
-`serve start|stop|restart|status` manages the HTTP MCP daemon. By default it
-listens at `http://127.0.0.1:8766/mcp`.
+Use `slowave start|stop|restart` for installed daemon, worker, and backup
+schedule. `slowave status --services` reports supervisor state and daemon
+version; `slowave doctor` diagnoses setup and runtime issues.
+
+`serve start` runs a foreground daemon for advanced use. Legacy `serve stop`
+and `serve restart` control only the registered daemon through its supervisor.
+`serve status` remains available for daemon-only inspection. The MCP URL uses
+the assigned per-user port (8766 upward).
 
 ## Backups, removal, and recovery
 
