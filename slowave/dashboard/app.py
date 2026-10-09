@@ -577,7 +577,7 @@ def _status_payload(db_path: str) -> dict[str, Any]:
 
 
 def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
-    """Return four zero-filled bucket series for the Home activity view.
+    """Return zero-filled bucket series for the Home knowledge activity view.
 
     Channels:
       - raw_events   : incoming observations (raw_events.ts)
@@ -585,13 +585,15 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
       - schemas      : durable memory writes (schemas.first_formed_ts)
       - procedures   : captured procedures (procedure_search_documents.completed_at)
 
-    All channels share the same bucket grid so they can be stacked on one canvas.
+    All channels share the same bucket grid. Retrieval channels count admitted
+    memory/procedure delivery occasions and their latest accepted use reports.
 
     Query params:
         - hours:    look-back window in hours  (default 2, max 8760)
         - bucket_m: bucket size in minutes     (default 5, max 10080)
     """
     requested_hours = (qs.get("hours") or ["2"])[0].strip().lower()
+    scope = (qs.get("scope") or [""])[0].strip()
     bucket_m = min(max(_qs_int(qs, "bucket_m", 5), 1), 10080)
     bucket_s = bucket_m * 60
     now = int(time.time())
@@ -614,16 +616,53 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         counts = {int(r["bucket_ts"]): int(r["n"]) for r in rows}
         return [{"ts": ts, "n": counts.get(ts, 0)} for ts in all_ts]
 
-    def _bucket_rows(conn: sqlite3.Connection, table: str, ts_col: str) -> list:
+    def _bucket_rows(
+        conn: sqlite3.Connection, table: str, ts_col: str, scope_col: str | None = None
+    ) -> list:
         # Tables may not exist yet on a brand-new database -- treat that the
         # same as "no rows in range" so the pulse still renders (flatlined)
         # instead of the endpoint 500ing.
         try:
+            scope_filter = f" AND {scope_col} = ?" if scope and scope_col else ""
+            params: list[Any] = [bucket_s, bucket_s, window_start, now]
+            if scope and scope_col:
+                params.append(scope)
             return conn.execute(
                 f"""SELECT ({ts_col} / ?) * ? AS bucket_ts, COUNT(*) AS n
-                   FROM {table} WHERE {ts_col} >= ? AND {ts_col} <= ?
+                   FROM {table} WHERE {ts_col} >= ? AND {ts_col} <= ?{scope_filter}
                    GROUP BY bucket_ts ORDER BY bucket_ts""",
-                (bucket_s, bucket_s, window_start, now),
+                params,
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+
+    def _retrieval_bucket_rows(conn: sqlite3.Connection, *, kind: str, used: bool) -> list:
+        """Count delivered item occasions, optionally limited to reported use."""
+        if kind == "memory":
+            item_filter = "i.memory_type IN ('schema', 'related') AND i.memory_id LIKE 'sch_%'"
+            target_kind = "memory"
+        else:
+            item_filter = "i.memory_type IN ('procedural_memory', 'procedure')"
+            target_kind = "procedure"
+        scope_filter = " AND r.scope_id = ?" if scope else ""
+        used_filter = (
+            f" AND EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id = r.context_id "
+            f"AND f.target_kind = '{target_kind}' AND f.target_id = i.memory_id "
+            f"AND f.assessment = 'used' AND {_latest_accepted_feedback_sql('f')})"
+            if used
+            else ""
+        )
+        params: list[Any] = [bucket_s, bucket_s, window_start, now]
+        if scope:
+            params.append(scope)
+        try:
+            return conn.execute(
+                "SELECT (r.created_at / ?) * ? AS bucket_ts, COUNT(*) AS n "
+                "FROM context_recall_items i JOIN context_recall_events r ON r.context_id = i.context_id "
+                f"WHERE i.admitted = 1 AND {item_filter}{used_filter} "
+                f"AND r.created_at >= ? AND r.created_at <= ?{scope_filter} "
+                "GROUP BY bucket_ts ORDER BY bucket_ts",
+                params,
             ).fetchall()
         except sqlite3.Error:
             return []
@@ -632,14 +671,24 @@ def _pulse_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     try:
         raw_rows = _bucket_rows(conn, "raw_events", "ts")
         epi_rows = _bucket_rows(conn, "episodic_memories", "ts")
-        sch_rows = _bucket_rows(conn, "schemas", "first_formed_ts")
-        procedure_rows = _bucket_rows(conn, "procedure_search_documents", "completed_at")
+        sch_rows = _bucket_rows(conn, "schemas", "first_formed_ts", "scope_id")
+        procedure_rows = _bucket_rows(
+            conn, "procedure_search_documents", "completed_at", "scope_id"
+        )
+        memory_retrieval_rows = _retrieval_bucket_rows(conn, kind="memory", used=False)
+        procedure_retrieval_rows = _retrieval_bucket_rows(conn, kind="procedure", used=False)
+        used_memory_rows = _retrieval_bucket_rows(conn, kind="memory", used=True)
+        used_procedure_rows = _retrieval_bucket_rows(conn, kind="procedure", used=True)
 
         channels = {
             "raw_events": _bucketize(raw_rows),
             "episodes": _bucketize(epi_rows),
             "schemas": _bucketize(sch_rows),
             "procedures": _bucketize(procedure_rows),
+            "memory_retrievals": _bucketize(memory_retrieval_rows),
+            "procedure_retrievals": _bucketize(procedure_retrieval_rows),
+            "used_memories": _bucketize(used_memory_rows),
+            "used_procedures": _bucketize(used_procedure_rows),
         }
         global_max = max(
             (b["n"] for ch in channels.values() for b in ch),
@@ -2399,6 +2448,7 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                 {
                     "hours": ["all" if all_time else str(hours)],
                     "bucket_m": [str(activity_bucket_minutes)],
+                    "scope": [scope],
                 },
             )
             if exists

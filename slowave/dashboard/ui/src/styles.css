@@ -813,7 +813,32 @@ main {
   background: var(--raised);
   opacity: 0.72;
 }
-.formation-legend { display: flex; flex-wrap: wrap; gap: 8px; }
+.formation-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.knowledge-activity-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.knowledge-activity-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--muted);
+}
+.knowledge-activity-tab[aria-pressed="true"] {
+  border-bottom-color: var(--link);
+  color: var(--text);
+  font-weight: 600;
+}
 .formation-legend-item {
   display: inline-flex;
   align-items: center;
@@ -838,8 +863,12 @@ main {
 }
 .formation-legend-item b { font-variant-numeric: tabular-nums; font-weight: 600; }
 .formation-legend-item[aria-pressed="false"] { opacity: 0.4; }
-.formation-legend-schemas { color: var(--accent-memory); }
-.formation-legend-procedures { color: var(--accent-procedure); }
+.formation-legend-schemas,
+.formation-legend-procedures { color: var(--success); }
+.formation-legend-memory_retrievals,
+.formation-legend-procedure_retrievals { color: var(--accent-activity); }
+.formation-legend-used_memories,
+.formation-legend-used_procedures { color: var(--accent-procedure); }
 .formation-chart { position: relative; }
 .formation-chart svg {
   display: block;
@@ -871,20 +900,30 @@ main {
 }
 .formation-dot { opacity: 0.85; transition: r 120ms ease, opacity 120ms ease; }
 .formation-dot-active { opacity: 1; }
-.formation-series-schemas .formation-line {
-  stroke: var(--accent-memory);
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-memory) 55%, transparent));
-}
-.formation-series-procedures .formation-line {
-  stroke: var(--accent-procedure);
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-procedure) 55%, transparent));
-}
-.formation-series-schemas .formation-dot { fill: var(--accent-memory); }
-.formation-series-procedures .formation-dot { fill: var(--accent-procedure); }
-.formation-stop-top.formation-stop-schemas { stop-color: var(--accent-memory); stop-opacity: 0.38; }
-.formation-stop-bottom.formation-stop-schemas { stop-color: var(--accent-memory); stop-opacity: 0; }
-.formation-stop-top.formation-stop-procedures { stop-color: var(--accent-procedure); stop-opacity: 0.38; }
-.formation-stop-bottom.formation-stop-procedures { stop-color: var(--accent-procedure); stop-opacity: 0; }
+.formation-series-schemas .formation-line,
+.formation-series-procedures .formation-line { stroke: var(--success); }
+.formation-series-memory_retrievals .formation-line,
+.formation-series-procedure_retrievals .formation-line { stroke: var(--accent-activity); }
+.formation-series-used_memories .formation-line,
+.formation-series-used_procedures .formation-line { stroke: var(--accent-procedure); }
+.formation-series-schemas .formation-dot,
+.formation-series-procedures .formation-dot { fill: var(--success); }
+.formation-series-memory_retrievals .formation-dot,
+.formation-series-procedure_retrievals .formation-dot { fill: var(--accent-activity); }
+.formation-series-used_memories .formation-dot,
+.formation-series-used_procedures .formation-dot { fill: var(--accent-procedure); }
+.formation-stop-top.formation-stop-schemas,
+.formation-stop-top.formation-stop-procedures { stop-color: var(--success); stop-opacity: 0.24; }
+.formation-stop-bottom.formation-stop-schemas,
+.formation-stop-bottom.formation-stop-procedures { stop-color: var(--success); stop-opacity: 0; }
+.formation-stop-top.formation-stop-memory_retrievals,
+.formation-stop-top.formation-stop-procedure_retrievals { stop-color: var(--accent-activity); stop-opacity: 0.24; }
+.formation-stop-bottom.formation-stop-memory_retrievals,
+.formation-stop-bottom.formation-stop-procedure_retrievals { stop-color: var(--accent-activity); stop-opacity: 0; }
+.formation-stop-top.formation-stop-used_memories,
+.formation-stop-top.formation-stop-used_procedures { stop-color: var(--accent-procedure); stop-opacity: 0.24; }
+.formation-stop-bottom.formation-stop-used_memories,
+.formation-stop-bottom.formation-stop-used_procedures { stop-color: var(--accent-procedure); stop-opacity: 0; }
 .formation-hit-area { fill: transparent; pointer-events: all; }
 .formation-tooltip {
   position: absolute;
@@ -917,8 +956,12 @@ main {
   background: currentColor;
   box-shadow: 0 0 6px currentColor;
 }
-.formation-tooltip-schemas { color: var(--accent-memory) !important; }
-.formation-tooltip-procedures { color: var(--accent-procedure) !important; }
+.formation-tooltip-schemas,
+.formation-tooltip-procedures { color: var(--success) !important; }
+.formation-tooltip-memory_retrievals,
+.formation-tooltip-procedure_retrievals { color: var(--accent-activity) !important; }
+.formation-tooltip-used_memories,
+.formation-tooltip-used_procedures { color: var(--accent-procedure) !important; }
 @keyframes formation-draw {
   to { stroke-dashoffset: 0; }
 }
