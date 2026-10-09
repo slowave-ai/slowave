@@ -81,7 +81,7 @@ def _seed(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def test_effectiveness_defaults_to_v9_cohort_with_numerators_and_denominators(
+def test_effectiveness_defaults_to_all_recorded_requests_with_delivered_feedback(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "eff.sqlite3"
@@ -90,20 +90,18 @@ def test_effectiveness_defaults_to_v9_cohort_with_numerators_and_denominators(
 
     payload = _effectiveness_payload(str(path), {})
 
-    assert payload["cohort"] == "v9"
-    assert payload["annotation"] == "Since lifecycle v9 · August 17"
+    assert payload["cohort"] == "all"
     assert payload["memory_exposed"] == 3
     assert payload["memory_total"] == 3
     assert payload["memory_assessed"] == 2
     assert payload["memory_used"] == 1
-    assert payload["memory_irrelevant"] == 1
-    assert payload["procedure_exposed"] == 1
-    assert payload["procedure_used"] == 1
-    assert payload["procedure_helped"] == 1
-    assert payload["retrievals_total"] == 2  # legacy excluded
-    assert payload["retrievals_no_match"] == 1
-    assert payload["retrievals_feedback_complete"] == 1
-    assert payload["available_scopes"] == ["project:demo"]
+    assert payload["irrelevant"] == 1
+    assert payload["procedure_exposed"] == 0
+    assert payload["procedure_used"] == 0
+    assert payload["procedure_helped"] == 0
+    assert payload["retrievals_total"] == 3  # every recorded request, including legacy
+    assert payload["retrievals_no_match"] == 2
+    assert payload["retrievals_feedback_complete"] == 0
 
 
 def test_used_never_exceeds_exposed_when_a_memory_is_used_across_retrievals(
@@ -149,8 +147,8 @@ def test_used_never_exceeds_exposed_when_a_memory_is_used_across_retrievals(
     connection.close()
 
     payload = _effectiveness_payload(str(path), {})
-    assert payload["memory_exposed"] == 1
-    assert payload["memory_used"] == 1
+    assert payload["memory_exposed"] == 0  # no current inventory row
+    assert payload["memory_used"] == 0
     assert payload["memory_used"] <= payload["memory_exposed"]
     listing = _retrievals_payload(str(path), {})
     assert [item["signal_counts"]["used"] for item in listing["retrievals"]] == [0, 1, 1]
@@ -165,7 +163,7 @@ def test_effectiveness_respects_selected_retrieval_window(tmp_path: Path) -> Non
 
     assert payload["retrievals_total"] == 1
     assert payload["memory_exposed"] == 3
-    assert payload["procedure_exposed"] == 1
+    assert payload["procedure_exposed"] == 0
 
 
 def test_effectiveness_all_cohort_includes_legacy(tmp_path: Path) -> None:
@@ -204,8 +202,7 @@ def test_schemas_payload_reports_exposure_and_usage_columns(tmp_path: Path) -> N
     memories = _schemas_payload(str(path), {"states": ["active"]})
     assert memories["summary"] == {
         "active": 3,
-        "needs_review": 0,
-        "stale": 0,
+        "assessed_active": 2,
         "retrieved_active": 3,
         "used_active": 1,
     }
@@ -216,7 +213,7 @@ def test_schemas_payload_reports_exposure_and_usage_columns(tmp_path: Path) -> N
     assert used["times_exposed"] == 1
     assert used["times_used"] == 1
     assert used["times_irrelevant"] == 0
-    assert used["last_used_ts"] == 160
+    assert used["last_used_ts"] == 150  # use belongs to request time
     assert irrelevant["times_irrelevant"] == 1
     assert irrelevant["times_used"] == 0
     assert untouched["times_exposed"] == 1
@@ -347,14 +344,14 @@ def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> N
     assert visible["signal_counts"]["irrelevant"] == visible["signal_irrelevant"] == 2
     assert visible["signal_counts"]["not_used"] == 1
     assert visible["signal_counts"]["harmed"] == 0
-    assert visible["effect_rank"] == 2
+    assert visible["effect_rank"] == 0  # not_used effect is not a use outcome
     assert listing["summary"]["demonstrated_value"] == 0
-    assert listing["summary"]["feedback_complete"] == 1
+    assert listing["summary"]["feedback_complete"] == 0  # missing delivered sch_3 assessment
 
     effectiveness = _effectiveness_payload(str(path), {})
     assert effectiveness["memory_used"] == effectiveness["procedure_used"] == 0
-    assert effectiveness["memory_irrelevant"] == 2
-    assert effectiveness["procedure_not_used"] == effectiveness["procedure_no_effect"] == 1
+    assert effectiveness["irrelevant"] == 2
+    assert effectiveness["procedure_no_effect"] == 0  # effect on not_used is excluded
     assert effectiveness["procedure_harmed"] == 0
     memories = _schemas_payload(str(path), {"states": ["active"]})
     memory = next(item for item in memories["schemas"] if item["content"] == "memory 1")

@@ -133,14 +133,14 @@ def test_structured_dogfood_payload_covers_precedents_retrieval_and_influence() 
         # The current v9 payload joins canonical feedback_events as well as
         # legacy commit-time procedure_uses.  These are two distinct
         # retrievals, so both influences remain visible on the precedent.
-        assert precedent["evidence"]["used"] == 2
-        assert precedent["evidence"]["helped"] == 2
+        assert precedent["evidence"]["used"] == 1
+        assert precedent["evidence"]["helped"] == 1
         assert precedent["evidence"]["not_used"] == 0
         assert precedent["contributions"][0]["downstream_goal"] == (
             "repair another service configuration"
         )
         assert precedent["contributions"][0]["downstream_session_id"] == (influenced["session_id"])
-        assert payload["influence_counts"]["helped"] == 2
+        assert payload["influence_counts"]["helped"] == 1
         assert payload["procedure_retrievals"] >= 2
         assert payload["feedback_counts"]["used"] == 1
         assert payload["feedback_counts"]["legacy"]["used"] == 1
@@ -154,7 +154,8 @@ def test_structured_dogfood_payload_covers_precedents_retrieval_and_influence() 
         influenced_retrieval = next(
             item for item in retrieval_history if item["session_id"] == influenced["session_id"]
         )
-        assert influenced_retrieval["procedure_assessment"] == {
+        assert influenced_retrieval["procedure_assessment"] is None
+        assert influenced_retrieval["historical_assessment"] == {
             "procedure_id": procedure_id,
             "use": "used",
             "effect": "helped",
@@ -242,7 +243,20 @@ def test_procedural_payload_defaults_to_current_lifecycle_and_attributes_feedbac
         assert current["cohort"] == LIFECYCLE_VERSION
         assert current["structured_attempts"] == 1
         assert current["procedures"][0]["id"] == procedure_id
-        assert current["procedures"][0]["evidence"] == {
+        current_evidence = current["procedures"][0]["evidence"]
+        assert {
+            key: current_evidence[key]
+            for key in (
+                "retrieved",
+                "used",
+                "not_used",
+                "unassessable",
+                "helped",
+                "no_effect",
+                "harmed",
+                "unknown",
+            )
+        } == {
             "retrieved": 1,
             "used": 1,
             "not_used": 0,

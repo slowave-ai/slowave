@@ -129,7 +129,9 @@ function Availability({ home }: { home: Json }) {
           ? "Available"
           : database.integrity_status === "needs_attention"
             ? "Needs attention"
-            : "Unknown",
+            : database.integrity_status === "unavailable" || database.integrity_status === "unknown"
+              ? "Not checked"
+              : "Unknown",
       observed: database.checked_at || home.observed_at,
       source: "Integrity check",
       detail: !status.db_exists
@@ -513,30 +515,339 @@ function MemoryFormationChart({ data }: { data?: Json }) {
     </Section>
   );
 }
-function MemoryEffectiveness({ data, summary }: { data: Json; summary?: Json }) {
-  const active = Number(summary?.current_memories ?? data.memory_total ?? 0);
-  const retrieved = Number(data.memory_exposed ?? 0);
-  const assessed = Number(data.memory_assessed ?? 0);
-  const used = Number(data.memory_used ?? 0);
-  const retrievals = Number(data.retrievals_total ?? 0);
-  const matched = Math.max(0, retrievals - Number(data.retrievals_no_match ?? 0));
-  const feedbackComplete = Number(data.retrievals_feedback_complete ?? 0);
-  const activeScopes = Number(summary?.active_scopes ?? 0);
-  const procedures = Number(summary?.current_procedures ?? 0);
+const stageNames = ["Scoped", "Portable", "Contextual", "Global"];
+const stageTooltip =
+  "How broadly this memory is eligible for retrieval beyond its original context. Stages are assigned from recorded evidence across contexts and tasks. A higher stage means broader eligibility, not greater accuracy or usefulness.";
+const stageDefinitions = [
+  "Ordinarily restricted to origin context.",
+  "Eligible in other contexts of the same kind when sufficiently relevant.",
+  "Eligible across context kinds with score discount and relevance floor.",
+  "Broad cross-context eligibility; relevance still determines selection.",
+];
+const feedbackTooltip =
+  "Latest supported assessments divided by actually delivered item/request occasions. Repeated requests count; page retries do not. Missing feedback is unknown. Later accepted corrections may revise past periods.";
+function metricHref(path: string, data: Json) {
+  return `${path}?scope=${encodeURIComponent(data.scope || "")}&from=${data.window?.from || ""}&to=${data.window?.to || ""}`;
+}
+function LibraryCards({
+  data,
+  kind,
+  compact = false,
+}: {
+  data: Json;
+  kind: "memory" | "procedure";
+  compact?: boolean;
+}) {
+  const memory = kind === "memory";
+  const name = memory ? "Memory" : "Procedure";
+  const path = memory ? "/memory" : "/procedures";
   return (
-    <div className="memory-health-section">
-      <Section title="Memory health">
-        <div className="metric-card-grid home-metric-card-grid" aria-label="Memory health summary">
-          <MetricCard title="Active memories" value={active.toLocaleString()} tooltip={glossary.active_memories} href="/memory" className="metric-active" />
-          <RateMetricCard title="Memory retrieval coverage" numerator={retrieved} denominator={active} tooltip="Distinct active memories retrieved during the selected period divided by the active memory inventory. Retrieval is exposure, not use." className="metric-retrieved" />
-          <RateMetricCard title="Assessed memories used" numerator={used} denominator={assessed} tooltip={`Distinct retrieved active memories explicitly assessed as used divided by distinct retrieved active memories with an applicable feedback assessment. A memory retrieved multiple times counts once; ${assessed.toLocaleString()} assessed + ${Math.max(0, retrieved - assessed).toLocaleString()} unassessed = ${retrieved.toLocaleString()} retrieved.`} className="metric-used" secondary={assessed < retrieved ? `${Math.max(0, retrieved - assessed).toLocaleString()} unassessed` : undefined} />
-          <RateMetricCard title="Retrieval match rate" numerator={matched} denominator={retrievals} tooltip="Eligible retrieval operations returning at least one admitted item divided by eligible retrieval operations. An empty result is not proof that no stored memory was relevant." className="metric-no-match" secondary={`${(retrievals - matched).toLocaleString()} empty`} />
-          <RateMetricCard title="Feedback coverage" numerator={feedbackComplete} denominator={retrievals} tooltip={glossary.retrievals_feedback_complete} className="metric-feedback" />
-          <MetricCard title="Active scopes" value={activeScopes.toLocaleString()} tooltip={glossary.active_scopes} href="/memory" className="metric-scopes" />
-          <MetricCard title="Procedures" value={procedures.toLocaleString()} tooltip="Reusable step-by-step methods captured from completed work." href="/procedures" className="metric-procedures" />
+    <>
+      <MetricCard
+        title={memory ? "Active memories" : "Saved procedures"}
+        value={
+          data.available
+            ? Number(data[`${kind}_total`]).toLocaleString()
+            : "No data"
+        }
+        tooltip="Current canonical inventory; period selection applies to activity, not the inventory snapshot."
+        href={metricHref(path, data)}
+      />
+      <RateMetricCard
+        compact={compact}
+        title={`${name} retrieval coverage`}
+        numerator={data[`${kind}_exposed`]}
+        denominator={data[`${kind}_total`]}
+        tooltip="Distinct current inventory records delivered during the selected period divided by the current inventory. A record counts once even if delivered repeatedly. Retrieval does not establish use or quality."
+        href={metricHref(path, data)}
+      />
+      <RateMetricCard
+        compact={compact}
+        title={`${name} usage rate`}
+        numerator={data[`${kind}_used`]}
+        denominator={data[`${kind}_assessed`]}
+        secondary={`Among assessed retrieved ${memory ? "memories" : "procedures"} · ${data[`${kind}_unknown`] ?? 0} ${memory ? "unassessed" : "unknown use"}`}
+        tooltip={`Distinct delivered records reported used divided by distinct delivered records with supported use assessments. Each record counts once even if delivered repeatedly. ${data[`${kind}_unknown`] ?? 0} delivered records have unknown use.`}
+        href={metricHref(path, data)}
+      />
+      {!compact && (
+        <RateMetricCard
+          title="Feedback coverage · occasions"
+          numerator={data[`${kind}_feedback`]}
+          denominator={data[`${kind}_deliveries`]}
+          secondary={`${Number(data[`${kind}_deliveries`] || 0) - Number(data[`${kind}_feedback`] || 0)} unassessed delivery occasions`}
+          tooltip={`${feedbackTooltip} The same record can count again when delivered in a separate request.`}
+        />
+      )}
+    </>
+  );
+}
+function StageCard({ data }: { data: Json }) {
+  const total = Number(data.memory_total || 0);
+  return (
+    <MetricCard
+      className="distribution-card"
+      title="Generalization stages"
+      tooltip={stageTooltip}
+      value={
+        <div className="stage-distribution">
+          <div className="distribution-bar">
+            {(data.stages || [0, 0, 0, 0]).map((n: number, k: number) => (
+              <span
+                key={k}
+                className={`stage-${k}`}
+                style={{ width: `${total ? (n / total) * 100 : 0}%` }}
+                title={`${k} · ${stageNames[k]}: ${n}. ${stageDefinitions[k]}`}
+              />
+            ))}
+            {data.unknown_stage > 0 && (
+              <span
+                className="stage-unknown"
+                style={{ width: `${(data.unknown_stage / total) * 100}%` }}
+              />
+            )}
+          </div>
+          <div className="distribution-legend stage-legend">
+            {stageNames.map((name, k) => (
+              <span
+                key={k}
+                className={`stage-label-${k}`}
+                title={`${k} · ${name}: ${data.stages?.[k] || 0} memories. ${stageDefinitions[k]}`}
+              >
+                {k} · {name}{" "}
+                {total
+                  ? `${Math.round(((data.stages?.[k] || 0) / total) * 100)}%`
+                  : "No data"}
+              </span>
+            ))}
+          </div>
+          {data.unknown_stage > 0 && (
+            <small>{data.unknown_stage} missing or unrecognized stage</small>
+          )}
         </div>
-      </Section>
-    </div>
+      }
+    />
+  );
+}
+const outcomeCategories = [
+  { key: "successful_closed", label: "Success", color: "success" },
+  { key: "partial_closed", label: "Partial", color: "partial" },
+  { key: "failure_closed", label: "Failure", color: "failure" },
+  { key: "unknown_outcome_closed", label: "Not reported", color: "unknown" },
+];
+
+function ReportedOutcomesCard({ summary }: { summary: Json }) {
+  const total = Number(summary.closed || 0);
+  return (
+    <MetricCard
+      className="distribution-card"
+      title="Reported outcomes"
+      tooltip="Distribution over ended activities, including not reported outcomes. Missing closure is not failure."
+      value={
+        <div className="stage-distribution">
+          <div className="distribution-bar">
+            {outcomeCategories.map(({ key, label, color }) => (
+              <span
+                key={key}
+                className={`outcome-${color}`}
+                style={{
+                  width: `${total ? (Number(summary[key] || 0) / total) * 100 : 0}%`,
+                }}
+                title={`${label}: ${summary[key] || 0}`}
+              />
+            ))}
+          </div>
+          <div className="distribution-legend outcome-legend">
+            {outcomeCategories.map(({ key, label, color }) => (
+              <span key={key} className={`outcome-label-${color}`}>
+                {label} · {summary[key] || 0}
+              </span>
+            ))}
+          </div>
+        </div>
+      }
+    />
+  );
+}
+
+function FocusedChart({
+  data,
+  kind,
+  tabs = false,
+}: {
+  data?: Json;
+  kind: "memory" | "procedure";
+  tabs?: boolean;
+}) {
+  const [selected, setSelected] = useState(kind);
+  const series =
+    selected === "memory" ? memoryActivitySeries : procedureActivitySeries;
+  return (
+    <Section title="Activity">
+      {tabs && (
+        <div
+          className="knowledge-activity-tabs"
+          role="group"
+          aria-label="Knowledge type"
+        >
+          {(["memory", "procedure"] as const).map((k) => (
+            <button
+              type="button"
+              className="knowledge-activity-tab"
+              key={k}
+              aria-pressed={selected === k}
+              onClick={() => setSelected(k)}
+            >
+              {k === "memory" ? "Memories" : "Procedures"}
+            </button>
+          ))}
+        </div>
+      )}
+      <ActivityChartPanel
+        key={selected}
+        data={data}
+        series={tabs ? series.filter((s) => s.label !== "Created") : series}
+        title={selected === "memory" ? "Memories" : "Procedures"}
+      />
+    </Section>
+  );
+}
+function estimateResponseTokens(chars: unknown): number | null {
+  if (chars == null || chars === "") return null;
+  const value = Number(chars);
+  return Number.isFinite(value) && value >= 0 ? Math.ceil(value / 4) : null;
+}
+
+function formatTokenEstimate(tokens: number | null): string {
+  if (tokens == null) return "No data";
+
+  const magnitude = Math.abs(tokens);
+  const units = [
+    { threshold: 1_000_000_000_000, divisor: 1_000_000_000_000, suffix: "T" },
+    { threshold: 1_000_000_000, divisor: 1_000_000_000, suffix: "B" },
+    { threshold: 1_000_000, divisor: 1_000_000, suffix: "M" },
+    { threshold: 1_000, divisor: 1_000, suffix: "K" },
+  ];
+  const unit = units.find(({ threshold }) => magnitude >= threshold);
+  if (!unit) return `~${tokens.toLocaleString()} tokens`;
+
+  const amount = Math.floor((magnitude / unit.divisor) * 10) / 10;
+  const formatted = Number.isInteger(amount) ? amount.toString() : amount.toFixed(1);
+  return `~${tokens < 0 ? "-" : ""}${formatted}${unit.suffix} tokens`;
+}
+
+function ContextVolumeCards({ data }: { data: Json }) {
+  const estimate = (kind: "Activate" | "Recall") => {
+    const sample = data.context_size?.[kind];
+    const medianTokens = estimateResponseTokens(sample?.median_chars);
+    const samples = Number(sample?.samples);
+    if (medianTokens == null || !Number.isFinite(samples) || samples <= 0)
+      return null;
+    return { samples, medianTokens, total: medianTokens * samples };
+  };
+  const activate = estimate("Activate");
+  const recall = estimate("Recall");
+  const combined = activate && recall ? activate.total + recall.total : null;
+  return (
+    <>
+      <MetricCard
+        title="Activate volume estimate"
+        value={formatTokenEstimate(activate?.total ?? null)}
+        tooltip={
+          activate
+            ? `Median-based proxy: ~${activate.medianTokens.toLocaleString()} tokens × ${activate.samples.toLocaleString()} Activate responses. This is not the sum of actual per-response tokens or billed model usage.`
+            : "No Activate context-size samples are available."
+        }
+      />
+      <MetricCard
+        title="Recall volume estimate"
+        value={formatTokenEstimate(recall?.total ?? null)}
+        tooltip={
+          recall
+            ? `Median-based proxy: ~${recall.medianTokens.toLocaleString()} tokens × ${recall.samples.toLocaleString()} Recall responses. This is not the sum of actual per-response tokens or billed model usage.`
+            : "No Recall context-size samples are available."
+        }
+      />
+      <MetricCard
+        title="Combined volume estimate"
+        value={formatTokenEstimate(combined)}
+        tooltip={
+          activate && recall
+            ? `Sum of the Activate and Recall median-based proxies (${activate.total.toLocaleString()} + ${recall.total.toLocaleString()} estimated tokens). This is not the sum of actual per-response tokens or billed model usage.`
+            : "Both Activate and Recall context-size samples are needed for this estimate."
+        }
+      />
+    </>
+  );
+}
+function MemoryEffectiveness({ data }: { data: Json }) {
+  return (
+    <Section title="Overview">
+      <div className="metric-card-grid home-metric-card-grid">
+        <LibraryCards data={data} kind="memory" compact />
+        <LibraryCards data={data} kind="procedure" compact />
+        <RateMetricCard
+          compact
+          title="Retrieval match rate"
+          numerator={
+            Number(data.retrievals_total || 0) -
+            Number(data.retrievals_no_match || 0)
+          }
+          denominator={data.retrievals_total}
+          tooltip="Requests delivering supported context divided by recorded requests. Empty can be appropriate; a match does not establish relevance."
+          href={metricHref("/retrieval", data)}
+        />
+        <RateMetricCard
+          compact
+          title="Feedback coverage"
+          numerator={data.feedback_assessed}
+          denominator={data.deliveries}
+          secondary={`${data.feedback_unknown || 0} unassessed delivery occasions`}
+          tooltip={feedbackTooltip}
+          href={metricHref("/retrieval", data)}
+        />
+        <MetricCard
+          title="Active scopes"
+          value={
+            data.available
+              ? Number(data.active_scopes).toLocaleString()
+              : "No data"
+          }
+          tooltip={glossary.active_scopes}
+          href={metricHref("/memory", data)}
+        />
+        <ContextVolumeCards data={data} />
+      </div>
+    </Section>
+  );
+}
+function PeriodFilter({
+  location,
+  path,
+}: {
+  location: PageProps["location"];
+  path: string;
+}) {
+  return (
+    <label>
+      Activity period
+      <select
+        value={param(location, "hours", "all")}
+        onChange={(e) =>
+          updateParams(path, location, {
+            hours: e.target.value,
+            from: undefined,
+            to: undefined,
+            page: 1,
+          })
+        }
+      >
+        <option value="all">All times</option>
+        <option value="24">Last day</option>
+        <option value="168">Last week</option>
+        <option value="720">Last month</option>
+      </select>
+    </label>
   );
 }
 
@@ -591,7 +902,7 @@ export function HomePage({ location }: PageProps) {
             <Availability home={home} />
             <MemoryFormationChart data={home.activity} />
             {home.effectiveness ? (
-              <MemoryEffectiveness data={home.effectiveness} summary={home.at_a_glance} />
+              <MemoryEffectiveness data={home.effectiveness} />
             ) : (
               <Section title="Memory health">
                 <EmptyState title="No memory metrics available">Memory-health metrics will appear when the dashboard receives memory and retrieval data.</EmptyState>
@@ -721,8 +1032,8 @@ function DeleteConfirmation({
   );
 }
 
-function MemoryUseRateBar({ used, retrieved }: { used: unknown; retrieved: unknown }) {
-  const percent = getRatePercent(used, retrieved);
+function MemoryUseRateBar({ used, assessed }: { used: unknown; assessed: unknown }) {
+  const percent = getRatePercent(used, assessed);
   const available = percent !== null;
   return (
     <div
@@ -893,7 +1204,7 @@ export function MemoryPage({ location }: PageProps) {
     const timer = setTimeout(() => setDebounced(search), 250);
     return () => clearTimeout(timer);
   }, [search]);
-  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}`;
+  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}`;
   const request = useApi<Json>(endpoint);
   const rows = request.data?.schemas || [];
   const pagination = request.data?.pagination || {
@@ -918,6 +1229,7 @@ export function MemoryPage({ location }: PageProps) {
         onRefresh={request.reload}
       />
       <div className="filter-bar">
+        <PeriodFilter location={location} path="/memory" />
         <label>
           Search<span className="sr-only"> memory text</span>
           <input
@@ -953,19 +1265,19 @@ export function MemoryPage({ location }: PageProps) {
           }
         />
         <label>
-          Changed since
+          Saved since
           <input
             type="date"
             value={
-              param(location, "from")
-                ? new Date(Number(param(location, "from")) * 1000)
+              param(location, "saved_from")
+                ? new Date(Number(param(location, "saved_from")) * 1000)
                     .toISOString()
                     .slice(0, 10)
                 : ""
             }
             onChange={(e) =>
               updateParams("/memory", location, {
-                from: e.target.value
+                saved_from: e.target.value
                   ? Math.floor(new Date(e.target.value).getTime() / 1000)
                   : undefined,
                 page: 1,
@@ -988,14 +1300,35 @@ export function MemoryPage({ location }: PageProps) {
           </button>
         </div>
       )}
-      {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Memory summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <>
-        <div className="metric-card-grid" aria-label="Memory summary">
-          <MetricCard title="Active memories" value={Number(request.data.summary?.active ?? counts.active ?? 0).toLocaleString()} tooltip={glossary.active_memories} href="/memory?states=active" className="metric-active" />
-          <RateMetricCard title="Retrieved at least once" numerator={request.data.summary?.retrieved_active ?? 0} denominator={request.data.summary?.active ?? counts.active ?? 0} tooltip="Distinct active memories retrieved during the selected period divided by active memories in the selected scope." className="metric-retrieved" />
-          <RateMetricCard title="Used at least once" numerator={request.data.summary?.used_active ?? 0} denominator={request.data.summary?.retrieved_active ?? 0} tooltip="Distinct retrieved active memories explicitly assessed as used divided by distinct retrieved active memories. Unassessed memories are excluded." className="metric-used" />
-          <MetricCard title="Needs attention" value={(Number(request.data.summary?.needs_review ?? counts.needs_review ?? 0) + Number(request.data.summary?.stale ?? counts.stale ?? 0)).toLocaleString()} secondary={`${Number(request.data.summary?.needs_review ?? counts.needs_review ?? 0).toLocaleString()} review · ${Number(request.data.summary?.stale ?? counts.stale ?? 0).toLocaleString()} stale`} tooltip="Memories currently marked needs review or stale; this is a lifecycle attention queue, not a quality score." href="/memory?states=needs_review,stale" className="metric-warning" />
-        </div>
-      </> : <EmptyState title="No memory summary available">Summary metrics will appear when the memory service returns a result.</EmptyState>}
+      {request.loading && !request.data ? (
+        <MetricCardsSkeleton count={4} />
+      ) : request.error && !request.data ? (
+        <ErrorState
+          title="Memory summary unavailable"
+          error={request.error}
+          retry={request.reload}
+        />
+      ) : request.data ? (
+        <>
+          <div
+            className="metric-card-grid knowledge-summary-grid"
+            aria-label="Memory summary"
+          >
+            <LibraryCards data={request.data.metrics || {}} kind="memory" />
+          </div>
+          <div
+            className="metric-card-grid distribution-card-grid generalization-card-grid"
+            aria-label="Memory generalization stages"
+          >
+            <StageCard data={request.data.metrics || {}} />
+          </div>
+          <FocusedChart data={request.data.metrics?.chart} kind="memory" />
+        </>
+      ) : (
+        <EmptyState title="No memory summary available">
+          Summary metrics will appear when the memory service returns a result.
+        </EmptyState>
+      )}
       <InlineError
         error={request.error}
         retained={Boolean(request.data)}
@@ -1004,7 +1337,11 @@ export function MemoryPage({ location }: PageProps) {
       {request.loading && !request.data ? (
         <LoadingRows />
       ) : request.error && !request.data ? (
-        <ErrorState title="Memory results unavailable" error={request.error} retry={request.reload} />
+        <ErrorState
+          title="Memory results unavailable"
+          error={request.error}
+          retry={request.reload}
+        />
       ) : rows.length ? (
         <>
           <TableFrame label="Memory results">
@@ -1091,7 +1428,21 @@ export function MemoryPage({ location }: PageProps) {
                       {glossary.used}
                     </DefinitionTooltip>
                   </th>}
-                  {visible("use_rate") && <th className="numeric"><SortButton label="Use rate %" active={sort === "use_rate"} direction={dir} onClick={() => changeSort("use_rate")} /><DefinitionTooltip label="Use rate definition">Used retrievals divided by retrieval events that admitted this memory.</DefinitionTooltip></th>}
+                  {visible("use_rate") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Use rate among assessed %"
+                        active={sort === "use_rate"}
+                        direction={dir}
+                        onClick={() => changeSort("use_rate")}
+                      />
+                      <DefinitionTooltip label="Use rate definition">
+                        Delivered occasions reported used divided by delivered
+                        occasions with a supported assessment; only use assessed
+                        items in the denominator.
+                      </DefinitionTooltip>
+                    </th>
+                  )}
                   {visible("irrelevant") && <th className="numeric">
                     <SortButton
                       label="Irrelevant"
@@ -1103,9 +1454,36 @@ export function MemoryPage({ location }: PageProps) {
                       {glossary.irrelevant}
                     </DefinitionTooltip>
                   </th>}
-                  {visible("stale") && <th className="numeric"><SortButton label="Stale feedback" active={sort === "stale"} direction={dir} onClick={() => changeSort("stale")} /></th>}
-                  {visible("wrong") && <th className="numeric"><SortButton label="Wrong feedback" active={sort === "wrong"} direction={dir} onClick={() => changeSort("wrong")} /></th>}
-                  {visible("related") && <th className="numeric"><SortButton label="Related memories" active={sort === "related"} direction={dir} onClick={() => changeSort("related")} /></th>}
+                  {visible("stale") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Stale feedback"
+                        active={sort === "stale"}
+                        direction={dir}
+                        onClick={() => changeSort("stale")}
+                      />
+                    </th>
+                  )}
+                  {visible("wrong") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Wrong feedback"
+                        active={sort === "wrong"}
+                        direction={dir}
+                        onClick={() => changeSort("wrong")}
+                      />
+                    </th>
+                  )}
+                  {visible("related") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Related memories"
+                        active={sort === "related"}
+                        direction={dir}
+                        onClick={() => changeSort("related")}
+                      />
+                    </th>
+                  )}
                   {visible("source_activity") && <th className="numeric"><SortButton label="Source activity count" active={sort === "source_activity"} direction={dir} onClick={() => changeSort("source_activity")} /></th>}
                   {visible("last_used") && <th>
                     <SortButton
@@ -1129,31 +1507,77 @@ export function MemoryPage({ location }: PageProps) {
                         rowKeys(e, () => openDetail(href, location))
                       }
                     >
-                      {visible("memory") && <td className="primary-cell">
-                        <ClampedText text={memory.content} />
-                      </td>}
-                      {visible("state") && <td>
-                        <StatusBadge value={memory.status} />
-                      </td>}
-                      {visible("salience") && <td className="numeric"><SalienceBar salience={memory.salience} /></td>}
-                      {visible("scope") && <td className="scope-text" title={memory.scope || undefined}>
-                        {memory.scope ? truncate(memory.scope, 30) : "No scope"}
-                      </td>}
-                      {visible("created") && <td title={formatDate(memory.first_formed_ts)}>
-                        {relativeDate(memory.first_formed_ts)}
-                      </td>}
-                      {visible("changed") && <td title={formatDate(memory.last_updated_ts)}>
-                        {relativeDate(memory.last_updated_ts)}
-                      </td>}
-                      {visible("evidence") && <td className="numeric">{memory.evidence_count}</td>}
-                      {visible("retrieved") && <td className="numeric">{memory.times_exposed ?? 0}</td>}
-                      {visible("used") && <td className="numeric">{memory.times_used ?? 0}</td>}
-                      {visible("use_rate") && <td className="numeric"><MemoryUseRateBar used={memory.times_used} retrieved={memory.times_exposed} /></td>}
-                      {visible("irrelevant") && <td className="numeric">{memory.times_irrelevant ?? 0}</td>}
-                      {visible("stale") && <td className="numeric">{memory.times_stale ?? 0}</td>}
-                      {visible("wrong") && <td className="numeric">{memory.times_wrong ?? 0}</td>}
-                      {visible("related") && <td className="numeric">{memory.related_count ?? 0}</td>}
-                      {visible("source_activity") && <td className="numeric">{memory.source_activity_count ?? 0}</td>}
+                      {visible("memory") && (
+                        <td className="primary-cell">
+                          <ClampedText text={memory.content} />
+                        </td>
+                      )}
+                      {visible("state") && (
+                        <td>
+                          <StatusBadge value={memory.status} />
+                        </td>
+                      )}
+                      {visible("salience") && (
+                        <td className="numeric">
+                          <SalienceBar salience={memory.salience} />
+                        </td>
+                      )}
+                      {visible("scope") && (
+                        <td
+                          className="scope-text"
+                          title={memory.scope || undefined}
+                        >
+                          {memory.scope
+                            ? truncate(memory.scope, 30)
+                            : "No scope"}
+                        </td>
+                      )}
+                      {visible("created") && (
+                        <td title={formatDate(memory.first_formed_ts)}>
+                          {relativeDate(memory.first_formed_ts)}
+                        </td>
+                      )}
+                      {visible("changed") && (
+                        <td title={formatDate(memory.last_updated_ts)}>
+                          {relativeDate(memory.last_updated_ts)}
+                        </td>
+                      )}
+                      {visible("evidence") && (
+                        <td className="numeric">{memory.evidence_count}</td>
+                      )}
+                      {visible("retrieved") && (
+                        <td className="numeric">{memory.times_exposed ?? 0}</td>
+                      )}
+                      {visible("used") && (
+                        <td className="numeric">{memory.times_used ?? 0}</td>
+                      )}
+                      {visible("use_rate") && (
+                        <td className="numeric">
+                          <MemoryUseRateBar
+                            used={memory.times_used}
+                            assessed={memory.times_assessed}
+                          />
+                        </td>
+                      )}
+                      {visible("irrelevant") && (
+                        <td className="numeric">
+                          {memory.times_irrelevant ?? 0}
+                        </td>
+                      )}
+                      {visible("stale") && (
+                        <td className="numeric">{memory.times_stale ?? 0}</td>
+                      )}
+                      {visible("wrong") && (
+                        <td className="numeric">{memory.times_wrong ?? 0}</td>
+                      )}
+                      {visible("related") && (
+                        <td className="numeric">{memory.related_count ?? 0}</td>
+                      )}
+                      {visible("source_activity") && (
+                        <td className="numeric">
+                          {memory.source_activity_count ?? 0}
+                        </td>
+                      )}
                       {visible("last_used") && <td title={formatDate(memory.last_used_ts)}>
                         {memory.last_used_ts
                           ? relativeDate(memory.last_used_ts)
@@ -1238,8 +1662,10 @@ function MemoryDetail({ id, onClose, onDeleted }: {
           <>
             <h2 className="detail-title">{memory.content}</h2>
             <dl className="key-values">
-              <dt>Created</dt>
+              <dt>Saved</dt>
               <dd>{formatDate(memory.first_formed_ts)}</dd>
+              <dt>Source event</dt>
+              <dd>{formatDate(data.evidence?.[0]?.event_occurred_at || data.evidence?.[0]?.event_ts)}</dd>
               <dt>Last updated</dt>
               <dd>{formatDate(memory.last_updated_ts)}</dd>
             </dl>
@@ -1272,11 +1698,11 @@ function MemoryDetail({ id, onClose, onDeleted }: {
             </Section>
             <Section title="Value signals">
               {(() => {
-                const feedback = data.feedback || [];
-                const count = (assessment: string) => feedback.filter((item: any) => item.assessment === assessment && item.status === "accepted").length;
-                const retrieved = (data.retrievals || []).length;
+                const totals = memory.use_history_totals || {};
+                const count = (assessment: string) => Number(totals[assessment] || 0);
+                const retrieved = Number(totals.retrieved || 0);
                 const used = count("used");
-                return <dl className="key-values wide"><dt>Retrieved</dt><dd>{retrieved}</dd><dt>Used</dt><dd>{used}</dd><dt>Use rate</dt><dd>{formatRate(used, retrieved)}</dd><dt>Irrelevant / stale / wrong</dt><dd>{count("irrelevant")} / {count("stale")} / {count("wrong")}</dd><dt>Last retrieved</dt><dd>{data.retrievals?.[0]?.created_at ? formatDate(data.retrievals[0].created_at) : "—"}</dd></dl>;
+                return <dl className="key-values wide"><dt>Retrieved</dt><dd>{retrieved}</dd><dt>Used</dt><dd>{used}</dd><dt>Use rate</dt><dd>{formatRate(used, memory.use_history_totals?.assessed)}</dd><dt>Irrelevant / stale / wrong</dt><dd>{count("irrelevant")} / {count("stale")} / {count("wrong")}</dd><dt>Last retrieved</dt><dd>{formatDate(memory.use_history_totals?.last_retrieved)}</dd></dl>;
               })()}
             </Section>
             <Section title="Related records">
@@ -1408,8 +1834,8 @@ function MemoryDetail({ id, onClose, onDeleted }: {
                 <dd>{memory.salience == null ? "—" : Number(memory.salience).toFixed(1)}</dd>
                 <dt>Confidence</dt>
                 <dd>{memory.confidence}</dd>
-                <dt>Availability stage</dt>
-                <dd>{memory.generalization_stage}</dd>
+                <dt>Generalization stage <DefinitionTooltip label="Generalization stage definition">{stageTooltip} Global/user scopes have explicit cross-context exceptions; stage is not an authorization guarantee.</DefinitionTooltip></dt>
+                <dd>{memory.generalization_stage == null || !stageNames[memory.generalization_stage] ? "Missing / unrecognized" : `${memory.generalization_stage} · ${stageNames[memory.generalization_stage]}`}<p className="neutral">{stageDefinitions[memory.generalization_stage]}</p></dd>
                 <dt>Tags</dt>
                 <dd>{memory.tags?.join(", ") || "None"}</dd>
               </dl>
@@ -1476,7 +1902,7 @@ export function RetrievalPage({ location }: PageProps) {
   const feedback = param(location, "feedback");
   const noMatch = param(location, "no_match");
   const contains = param(location, "contains");
-  const includeInternal = param(location, "include_internal", "false");
+  const includeInternal = param(location, "include_internal", "true");
   const sort = param(location, "sort", "when");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
@@ -1487,7 +1913,7 @@ export function RetrievalPage({ location }: PageProps) {
     return () => clearTimeout(timer);
   }, [search]);
   const request = useApi<Json>(
-    `/api/retrievals?scope=${encodeURIComponent(scope)}&type=${type}&feedback=${feedback}&no_match=${noMatch}&contains=${contains}&include_internal=${includeInternal}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}`,
+    `/api/retrievals?scope=${encodeURIComponent(scope)}&type=${type}&feedback=${feedback}&no_match=${noMatch}&contains=${contains}&include_internal=${includeInternal}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}`,
   );
   const rows = request.data?.retrievals || [];
   const summary = request.data?.summary || {};
@@ -1512,6 +1938,7 @@ export function RetrievalPage({ location }: PageProps) {
         onRefresh={request.reload}
       />
       <div className="filter-bar filter-bar-nowrap">
+        <PeriodFilter location={location} path="/retrieval" />
         <label>
           Search
           <input
@@ -1598,15 +2025,79 @@ export function RetrievalPage({ location }: PageProps) {
           />
         </label>
       </div>
-      {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Retrieval summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <>
-        <div className="metric-card-grid" aria-label="Retrieval summary">
-          <MetricCard title="Retrievals" value={Number(summary.retrievals ?? 0).toLocaleString()} tooltip={glossary.retrievals_total} className="metric-retrieved" />
-          <RateMetricCard title="Match rate" numerator={Math.max(0, Number(summary.retrievals ?? 0) - Number(summary.no_match ?? 0))} denominator={Number(summary.retrievals ?? 0)} secondary={`${Number(summary.no_match ?? 0).toLocaleString()} empty`} tooltip={glossary.retrievals_no_match} className="metric-no-match" />
-          <RateMetricCard title="Utility rate" numerator={Number(summary.demonstrated_value ?? 0)} denominator={Number(summary.feedback_complete ?? 0)} tooltip="Percentage of feedback-complete retrievals where at least one returned memory was marked Used or one returned procedure was marked Helpful. This is an explicit feedback signal, not a measure of overall system value or task success." className="metric-helpful" />
-          <RateMetricCard title="Feedback coverage" numerator={Number(summary.feedback_complete ?? 0)} denominator={Number(summary.retrievals ?? 0)} tooltip={glossary.retrievals_feedback_complete} className="metric-feedback" />
-        </div>
-        {Number(summary.unknown ?? 0) > 0 && <div className="notice compact evidence-notice"><Icon name="info" /><div><strong>Historical feedback is incomplete <DefinitionTooltip label="Historical feedback definition">{glossary.retrievals_unknown} It may reflect records created before feedback was available.</DefinitionTooltip></strong><span>{Number(summary.unknown).toLocaleString()} historical exposed-item records have no explicit assessment.</span></div></div>}
-      </> : <EmptyState title="No retrieval summary available">Summary metrics will appear when the retrieval service returns a result.</EmptyState>}
+      {request.loading && !request.data ? (
+        <MetricCardsSkeleton count={4} />
+      ) : request.error && !request.data ? (
+        <ErrorState
+          title="Retrieval summary unavailable"
+          error={request.error}
+          retry={request.reload}
+        />
+      ) : request.data ? (
+        <>
+          <div className="metric-card-grid" aria-label="Retrieval summary">
+            <MetricCard
+              title="Retrievals"
+              value={Number(summary.retrievals || 0).toLocaleString()}
+              secondary={`${request.data.metrics?.task_starts || 0} Task starts · ${request.data.metrics?.additional_requests || 0} Additional requests`}
+              tooltip="Distinct recorded requests; continuations and retries retain the request identity."
+            />
+            <RateMetricCard
+              title="Retrieval match rate"
+              numerator={
+                Number(summary.retrievals || 0) - Number(summary.no_match || 0)
+              }
+              denominator={summary.retrievals}
+              secondary={`${summary.no_match || 0} empty`}
+              tooltip="Requests delivering supported context divided by recorded requests. Context returned does not establish relevance."
+            />
+            <RateMetricCard
+              title="Retrieval usage rate"
+              numerator={summary.demonstrated_value}
+              denominator={
+                Number(summary.retrievals || 0) - Number(summary.no_match || 0)
+              }
+              secondary="Among requests returning context"
+              tooltip="Requests with actually delivered context reported used divided by requests returning supported context. Missing feedback remains in the denominator; use does not require request finalization."
+            />
+            <RateMetricCard
+              title="Feedback coverage"
+              numerator={summary.assessed}
+              denominator={summary.exposed}
+              secondary={`${summary.unknown || 0} unassessed occasions`}
+              tooltip={feedbackTooltip}
+            />
+            <RateMetricCard
+              title="Irrelevant context"
+              numerator={request.data.metrics?.irrelevant}
+              denominator={request.data.metrics?.assessed_memory_deliveries}
+              secondary={`${request.data.metrics?.missing_memory_feedback || 0} missing memory feedback`}
+              tooltip="Memory deliveries the assistant reported as not relevant to that task, among assessed memory deliveries. Missing feedback is shown separately; this does not establish independent retrieval accuracy."
+            />
+            {(["Activate", "Recall"] as const).map((kind) => {
+              const size = request.data?.metrics?.context_size?.[kind];
+              const medianTokens = estimateResponseTokens(size?.median_chars);
+              const p95Tokens = formatTokenEstimate(
+                estimateResponseTokens(size?.p95_chars),
+              );
+              return (
+                <MetricCard
+                  key={kind}
+                  title={`${kind} median context size`}
+                  value={formatTokenEstimate(medianTokens)}
+                  tooltip={`Median approximate serialized response size for ${kind}, including returned context and metadata; this is not an average. A stored sample may reflect a continuation page rather than all pages combined. Estimated at one token per four response characters. ${size?.samples || 0} samples; p95 ${p95Tokens}.`}
+                />
+              );
+            })}
+          </div>
+          <FocusedChart data={request.data.metrics?.chart} kind="memory" tabs />
+        </>
+      ) : (
+        <EmptyState title="No retrieval summary available">
+          Summary metrics will appear when the retrieval service returns a
+          result.
+        </EmptyState>
+      )}
       <InlineError
         error={request.error}
         retained={Boolean(request.data)}
@@ -2003,7 +2494,7 @@ export function ProceduresPage({ location }: PageProps) {
   const [visibleColumns] = useState<string[]>(["procedure", "scope", "outcome", "verification", "created", "retrieved", "used", "effect", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
-    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}`,
+    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}`,
   );
   const rows = request.data?.procedures || [];
   const pagination = request.data?.pagination || {
@@ -2027,6 +2518,7 @@ export function ProceduresPage({ location }: PageProps) {
         onRefresh={request.reload}
       />
       <div className="filter-bar">
+        <PeriodFilter location={location} path="/procedures" />
         <label>View
           <select value={sort} onChange={(e) => updateParams("/procedures", location, { sort: e.target.value, dir: "desc", page: 1 })}>
             <option value="recent">Recently created</option><option value="retrieved">Most retrieved</option><option value="used">Most used</option><option value="helped">Most helpful</option><option value="harmed">Most harmful</option>
@@ -2097,12 +2589,49 @@ export function ProceduresPage({ location }: PageProps) {
           />
         </label>
       </div>
-      {request.loading && !request.data ? <MetricCardsSkeleton count={4} /> : request.error && !request.data ? <ErrorState title="Procedure summary unavailable" error={request.error} retry={request.reload} /> : request.data ? <div className="metric-card-grid" aria-label="Procedure summary">
-        <RateMetricCard title="Retrieved procedures" numerator={request.data.summary?.retrieved_procedures ?? 0} denominator={request.data.summary?.current_procedures ?? 0} tooltip="Distinct procedures retrieved in the selected population divided by current procedures in the selected population." className="metric-retrieved" />
-        <RateMetricCard title="Used after retrieval" numerator={request.data.summary?.used_procedures ?? 0} denominator={request.data.summary?.assessed_retrieved_procedures ?? 0} tooltip="Distinct retrieved procedures assessed as used divided by distinct retrieved procedures with an applicable use assessment." className="metric-used" />
-        <RateMetricCard title="Helpful rate" numerator={request.data.summary?.helpful_assessments ?? 0} denominator={request.data.summary?.effect_assessed ?? 0} tooltip="Percentage of procedure feedback marked Helpful." className="metric-helpful" />
-        <RateMetricCard title="Harmful rate" numerator={request.data.summary?.harmful_assessments ?? 0} denominator={request.data.summary?.effect_assessed ?? 0} tooltip="Percentage of procedure feedback marked Harmful." className="metric-warning" />
-      </div> : <EmptyState title="No procedure summary available">Summary metrics will appear when the procedure service returns a result.</EmptyState>}
+      {request.loading && !request.data ? (
+        <MetricCardsSkeleton count={4} />
+      ) : request.error && !request.data ? (
+        <ErrorState
+          title="Procedure summary unavailable"
+          error={request.error}
+          retry={request.reload}
+        />
+      ) : request.data ? (
+        <div>
+          <div
+            className="metric-card-grid knowledge-summary-grid"
+            aria-label="Procedure summary"
+          >
+            <LibraryCards data={request.data.metrics || {}} kind="procedure" />
+          </div>
+          <div
+            className="metric-card-grid"
+            aria-label="Procedure usage outcomes"
+          >
+            <RateMetricCard
+              title="Helpful rate · uses"
+              numerator={request.data.metrics?.procedure_helped}
+              denominator={request.data.metrics?.effect_known}
+              secondary={`Among uses with reported effects · ${request.data.metrics?.effect_unknown || 0} unknown effects`}
+              tooltip="Used procedure delivery occasions reported helped divided by used delivery occasions with known effects. A procedure delivered in several requests contributes several occasions; these counts can exceed the distinct-procedure usage rate."
+            />
+            <RateMetricCard
+              title="Harmful rate · uses"
+              numerator={request.data.metrics?.procedure_harmed}
+              denominator={request.data.metrics?.effect_known}
+              secondary={`Among uses with reported effects · ${request.data.metrics?.effect_unknown || 0} unknown effects`}
+              tooltip="Used procedure delivery occasions reported harmed divided by the same known-effect use occasions. A procedure delivered in several requests contributes several occasions. No harm reports is not proof of safety."
+            />
+          </div>
+          <FocusedChart data={request.data.metrics?.chart} kind="procedure" />
+        </div>
+      ) : (
+        <EmptyState title="No procedure summary available">
+          Summary metrics will appear when the procedure service returns a
+          result.
+        </EmptyState>
+      )}
       <InlineError
         error={request.error}
         retained={Boolean(request.data)}
@@ -2111,7 +2640,11 @@ export function ProceduresPage({ location }: PageProps) {
       {request.loading && !request.data ? (
         <LoadingRows />
       ) : request.error && !request.data ? (
-        <ErrorState title="Procedure results unavailable" error={request.error} retry={request.reload} />
+        <ErrorState
+          title="Procedure results unavailable"
+          error={request.error}
+          retry={request.reload}
+        />
       ) : rows.length ? (
         <>
           <TableFrame label="Procedure results">
@@ -2129,16 +2662,93 @@ export function ProceduresPage({ location }: PageProps) {
                   </th>}
                   {visible("retrieved") && <th className="numeric"><SortButton label="Retrieved" active={sort === "retrieved"} direction={dir} onClick={() => changeSort("retrieved")} /><DefinitionTooltip label="Retrieved definition">{sharedColumnHelp.retrieved}</DefinitionTooltip></th>}
                   {visible("used") && <th className="numeric"><SortButton label="Used" active={sort === "used"} direction={dir} onClick={() => changeSort("used")} /><DefinitionTooltip label="Used definition">{sharedColumnHelp.used}</DefinitionTooltip></th>}
-                  {visible("effect") && <th>Effect <DefinitionTooltip label="Effect definition">{sharedColumnHelp.effect}</DefinitionTooltip></th>}
-                  {visible("last_used") && <th><SortButton label="Last used" active={sort === "last_used"} direction={dir} onClick={() => changeSort("last_used")} /></th>}
-                  {visible("use_rate") && <th className="numeric"><SortButton label="Use rate" active={sort === "use_rate"} direction={dir} onClick={() => changeSort("use_rate")} /></th>}
-                  {visible("helped") && <th className="numeric"><SortButton label="Helpful count" active={sort === "helped"} direction={dir} onClick={() => changeSort("helped")} /></th>}
-                  {visible("no_effect") && <th className="numeric"><SortButton label="No-effect count" active={sort === "no_effect"} direction={dir} onClick={() => changeSort("no_effect")} /></th>}
-                  {visible("harmed") && <th className="numeric"><SortButton label="Harmful count" active={sort === "harmed"} direction={dir} onClick={() => changeSort("harmed")} /></th>}
-                  {visible("unknown") && <th className="numeric"><SortButton label="Unknown count" active={sort === "unknown"} direction={dir} onClick={() => changeSort("unknown")} /></th>}
+                  {visible("effect") && (
+                    <th>
+                      Effect{" "}
+                      <DefinitionTooltip label="Effect definition">
+                        {sharedColumnHelp.effect}
+                      </DefinitionTooltip>
+                    </th>
+                  )}
+                  {visible("last_used") && <th>
+                    <SortButton
+                      label="Last used"
+                      active={sort === "last_used"}
+                      direction={dir}
+                      onClick={() => changeSort("last_used")}
+                    />
+                  </th>}
+                  {visible("use_rate") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Use rate"
+                        active={sort === "use_rate"}
+                        direction={dir}
+                        onClick={() => changeSort("use_rate")}
+                      />
+                    </th>
+                  )}
+                  {visible("helped") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Helpful count"
+                        active={sort === "helped"}
+                        direction={dir}
+                        onClick={() => changeSort("helped")}
+                      />
+                    </th>
+                  )}
+                  {visible("no_effect") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="No-effect count"
+                        active={sort === "no_effect"}
+                        direction={dir}
+                        onClick={() => changeSort("no_effect")}
+                      />
+                    </th>
+                  )}
+                  {visible("harmed") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Harmful count"
+                        active={sort === "harmed"}
+                        direction={dir}
+                        onClick={() => changeSort("harmed")}
+                      />
+                    </th>
+                  )}
+                  {visible("unknown") && (
+                    <th className="numeric">
+                      <SortButton
+                        label="Unknown count"
+                        active={sort === "unknown"}
+                        direction={dir}
+                        onClick={() => changeSort("unknown")}
+                      />
+                    </th>
+                  )}
                   {visible("feedback_coverage") && <th className="numeric"><SortButton label="Feedback coverage" active={sort === "feedback_coverage"} direction={dir} onClick={() => changeSort("feedback_coverage")} /></th>}
-                  {visible("last_retrieved") && <th><SortButton label="Last retrieved" active={sort === "last_retrieved"} direction={dir} onClick={() => changeSort("last_retrieved")} /></th>}
-                  {visible("source_activity") && <th><SortButton label="Source activity / session" active={sort === "source_activity"} direction={dir} onClick={() => changeSort("source_activity")} /></th>}
+                  {visible("last_retrieved") && (
+                    <th>
+                      <SortButton
+                        label="Last retrieved"
+                        active={sort === "last_retrieved"}
+                        direction={dir}
+                        onClick={() => changeSort("last_retrieved")}
+                      />
+                    </th>
+                  )}
+                  {visible("source_activity") && (
+                    <th>
+                      <SortButton
+                        label="Source activity / session"
+                        active={sort === "source_activity"}
+                        direction={dir}
+                        onClick={() => changeSort("source_activity")}
+                      />
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -2310,26 +2920,22 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
             <Section title="Value signals">
               {(() => {
                 const evidence = p.evidence || {};
-                const retrieved = Number(evidence.retrieved || p.retrievals?.length || 0);
-                const used = Number(evidence.used || 0);
-                const lastUsed = (p.feedback || [])
-                  .filter((item: any) => item.status === "accepted" && item.assessment === "used")
-                  .map((item: any) => Number(item.created_at || 0))
-                  .sort((a: number, b: number) => b - a)[0];
+                const retrieved = Number(p.use_history_totals?.retrieved || 0);
+                const used = Number(p.use_history_totals?.used || 0);
                 return (
                   <dl className="key-values wide">
                     <dt>Retrieved</dt><dd>{retrieved}</dd>
                     <dt>Used</dt><dd>{used}</dd>
-                    <dt>Use rate</dt><dd>{formatRate(used, retrieved)}</dd>
+                    <dt>Use rate among assessed</dt><dd>{formatRate(used, p.use_history_totals?.assessed)}</dd>
                     <dt>Effect</dt>
                     <dd className="badge-stack">
                       <StatusBadge value="helped" count={Number(evidence.helped || 0)} />
                       <StatusBadge value="no effect" count={Number(evidence.no_effect || 0)} />
                       <StatusBadge value="harmed" count={Number(evidence.harmed || 0)} />
-                      <StatusBadge value="unknown" count={Number(evidence.unknown || 0)} />
+                      <StatusBadge value="unknown" count={Number(evidence.unknown_effect || 0)} />
                     </dd>
-                    <dt>Last retrieved</dt><dd>{p.retrievals?.[0]?.created_at ? formatDate(p.retrievals[0].created_at) : "—"}</dd>
-                    <dt>Last used</dt><dd>{lastUsed ? formatDate(lastUsed) : "—"}</dd>
+                    <dt>Last retrieved</dt><dd>{formatDate(p.use_history_totals?.last_retrieved)}</dd>
+                    <dt>Last used</dt><dd>{formatDate(p.use_history_totals?.last_used)}</dd>
                   </dl>
                 );
               })()}
@@ -2577,12 +3183,58 @@ export function ActivityPage({ location }: PageProps) {
           </button>
         </div>
       )}
-      {summaryRequest.loading && !summaryRequest.data ? <MetricCardsSkeleton count={4} /> : summaryRequest.error && !summaryRequest.data ? <ErrorState title="Activity summary unavailable" error={summaryRequest.error} retry={reloadActivity} /> : summaryRequest.data ? <div className="metric-card-grid activity-metric-card-grid" aria-label="Activity summary">
-        <RateMetricCard title="Closure coverage" numerator={summaryRequest.data.summary?.complete ?? 0} denominator={summaryRequest.data.summary?.closure_eligible ?? 0} secondary={`${Number(summaryRequest.data.summary?.incomplete ?? 0).toLocaleString()} incomplete · ${Number(summaryRequest.data.summary?.pending ?? 0).toLocaleString()} pending`} tooltip={`Complete feedback closures divided by the mutually exclusive lifecycle cohort of complete, incomplete, and pending activities. Historical closed activities without a lifecycle feedback state are excluded; ${Number(summaryRequest.data.summary?.closure_unclassified ?? 0).toLocaleString()} historical or unclassified records are excluded.`} className="metric-feedback" />
-        <RateMetricCard title="Successful outcomes" numerator={summaryRequest.data.summary?.successful_closed ?? 0} denominator={summaryRequest.data.summary?.known_outcome_closed ?? 0} tooltip={`Successful closed activities divided by closed activities with a known success, partial, or failure outcome. ${Number(summaryRequest.data.summary?.unknown_outcome_closed ?? 0).toLocaleString()} unknown-outcome activities are excluded from this denominator.`} className="metric-helpful" />
-        <RateMetricCard title="Partial or failed" numerator={summaryRequest.data.summary?.partial_failed_closed ?? 0} denominator={summaryRequest.data.summary?.known_outcome_closed ?? 0} tooltip={`Partial or failed closed activities divided by the same closed activities with a known outcome used by Successful outcomes. ${Number(summaryRequest.data.summary?.unknown_outcome_closed ?? 0).toLocaleString()} unknown-outcome activities are excluded from this denominator.`} className="metric-warning" />
-        <RateMetricCard title="Used context" numerator={summaryRequest.data.summary?.context_use ?? 0} denominator={summaryRequest.data.summary?.context_denominator ?? 0} tooltip="Feedback-complete activities that performed retrieval and recorded a used memory or helpful procedure, divided by feedback-complete activities that performed retrieval. This is recorded association, not proof Slowave caused the outcome." className="metric-used" />
-      </div> : <EmptyState title="No activity summary available">Summary metrics will appear when the activity service returns a result.</EmptyState>}
+      {summaryRequest.loading && !summaryRequest.data ? (
+        <MetricCardsSkeleton count={3} />
+      ) : summaryRequest.error && !summaryRequest.data ? (
+        <ErrorState
+          title="Activity summary unavailable"
+          error={summaryRequest.error}
+          retry={reloadActivity}
+        />
+      ) : summaryRequest.data ? (
+        <>
+          <div
+            className="metric-card-grid activity-metric-card-grid"
+            aria-label="Activity summary"
+          >
+            <MetricCard
+              title="Activities"
+              value={Number(
+                summaryRequest.data?.summary?.eligible || 0,
+              ).toLocaleString()}
+              secondary={`${summaryRequest.data?.summary?.closed || 0} Ended · ${summaryRequest.data?.summary?.pending || 0} Ongoing`}
+              tooltip="Activity records started in period. An activity is a work segment; several may represent one human task."
+            />
+            <RateMetricCard
+              title="Feedback completion"
+              numerator={summaryRequest.data?.summary?.complete}
+              denominator={summaryRequest.data?.summary?.closure_eligible}
+              secondary={`${summaryRequest.data?.summary?.closure_unclassified || 0} older untracked ended records excluded`}
+              tooltip="Ended activities with finalized item accountability divided by ended activities with supported feedback tracking. Ongoing activities are excluded."
+            />
+            <RateMetricCard
+              title="Context usage rate"
+              numerator={summaryRequest.data?.summary?.context_use}
+              denominator={summaryRequest.data?.summary?.context_denominator}
+              secondary="Among activities receiving supported context"
+              tooltip="Activities with a delivered item reported used divided by activities receiving supported context. Each activity counts once."
+            />
+          </div>
+          <div
+            className="metric-card-grid distribution-card-grid outcome-card-grid"
+            aria-label="Activity reported outcomes"
+          >
+            <ReportedOutcomesCard
+              summary={summaryRequest.data?.summary || {}}
+            />
+          </div>
+        </>
+      ) : (
+        <EmptyState title="No activity summary available">
+          Summary metrics will appear when the activity service returns a
+          result.
+        </EmptyState>
+      )}
       <InlineError
         error={rowsRequest.error || summaryRequest.error}
         retained={Boolean(rowsRequest.data || summaryRequest.data)}
@@ -2919,16 +3571,6 @@ export function DiagnosticsPage({}: PageProps) {
     : !database.data && database.error
       ? <span className="diagnostic-stale">Health check failed</span>
       : undefined;
-  const statusValue = status.data
-    ? status.data.last_consolidation_ts ? relativeDate(status.data.last_consolidation_ts) : "No run observed"
-    : status.loading ? "Checking…" : "Unavailable";
-  const statusSecondary = status.data
-    ? status.data.last_consolidation_ts
-      ? <>{formatDate(status.data.last_consolidation_ts)}{status.error && <span className="diagnostic-stale"> · stale</span>}</>
-      : "No completed run observed"
-    : status.error
-      ? <span className="diagnostic-stale">Status check failed</span>
-      : undefined;
   const storageValue = (value: unknown) =>
     value != null ? `${Number(value).toLocaleString()} bytes` : !status.data && status.loading ? "Checking…" : "Unavailable";
   const foreignKeyValue = database.data
@@ -2937,10 +3579,7 @@ export function DiagnosticsPage({}: PageProps) {
       : "Unavailable"
     : database.loading ? "Checking…" : "Unavailable";
   const recentRuns = workers.data?.summary?.recent_7d;
-  const needsReview = Number(status.data?.schema_health?.needs_review_schemas || 0);
   const duplicateRows = Number(status.data?.schema_health?.active_exact_duplicate_rows || 0);
-  const completedRunAt = Number(status.data?.last_consolidation_ts || 0);
-  const maintenanceIsStale = completedRunAt > 0 && Date.now() / 1000 - completedRunAt > 7 * 86400;
   const attentionItems = [
     !daemon.data?.running && {
       title: "MCP daemon is unavailable",
@@ -2952,11 +3591,6 @@ export function DiagnosticsPage({}: PageProps) {
       detail: "Inspect database health before relying on this installation.",
       href: "/diagnostics#database",
     },
-    maintenanceIsStale && {
-      title: "Maintenance has not completed recently",
-      detail: `Last completed run ${relativeDate(completedRunAt)}. Check the worker if this installation has ongoing activity.`,
-      href: "/diagnostics#maintenance",
-    },
     Number(recentRuns?.failed || 0) > 0 && {
       title: `${Number(recentRuns.failed).toLocaleString()} maintenance run${Number(recentRuns.failed) === 1 ? "" : "s"} failed in the last 7 days`,
       detail: "Open maintenance history to inspect the failure details.",
@@ -2966,11 +3600,6 @@ export function DiagnosticsPage({}: PageProps) {
       title: `${Number(recentRuns.incomplete).toLocaleString()} maintenance run${Number(recentRuns.incomplete) === 1 ? " is" : "s are"} incomplete`,
       detail: "An incomplete run may still be in progress; investigate if it remains unchanged.",
       href: "/diagnostics#maintenance",
-    },
-    needsReview > 0 && {
-      title: `${needsReview.toLocaleString()} memor${needsReview === 1 ? "y needs" : "ies need"} review`,
-      detail: "Review-state memories are retained but should be assessed before relying on them.",
-      href: "/memory?states=needs_review",
     },
     duplicateRows > 0 && {
       title: `${duplicateRows.toLocaleString()} exact duplicate memory row${duplicateRows === 1 ? "" : "s"} detected`,
@@ -3010,22 +3639,20 @@ export function DiagnosticsPage({}: PageProps) {
             </Link>)}
           </div>}
           <div className="metric-card-grid" aria-label="Operational health summary">
-            <MetricCard title="MCP daemon" value={daemon.data?.running ? "Available" : "Unavailable"} secondary={daemon.data?.running ? `Version ${daemon.data?.version || status.data?.slowave_version || "unknown"}` : "No reachable process observed"} tooltip="Whether the local HTTP MCP daemon responded to a health probe." className={daemon.data?.running ? "metric-active" : "metric-warning"} />
+            <MetricCard title="MCP daemon" value={daemon.data ? daemon.data.running ? "Responding" : "Not reachable" : "Not checked"} secondary={`Local HTTP probe · ${daemon.updatedAt ? formatDate(new Date(daemon.updatedAt).getTime() / 1000) : "Not checked"}`} tooltip="Whether the local HTTP MCP daemon responded to a health probe." className={daemon.data?.running ? "metric-active" : "metric-warning"} />
             <MetricCard title="Database integrity" value={database.data?.integrity_status === "ok" ? "Passed" : database.data?.integrity_status === "needs_attention" ? "Failed" : databaseHealthValue(database.data?.integrity_status)} secondary={databaseHealthSecondary} tooltip="The latest database integrity check status. This is an operational check, not a memory-quality measure." className={database.data?.integrity_status === "ok" ? "metric-active" : database.data?.integrity_status === "needs_attention" ? "metric-warning" : "metric-subtle"} />
-            <MetricCard title="Maintenance freshness" value={statusValue} secondary={statusSecondary} tooltip="Most recent completed maintenance run. A run older than seven days is highlighted only when ongoing activity may warrant investigation." className={maintenanceIsStale ? "metric-warning" : "metric-subtle"} />
-            <MetricCard title="Memory review" value={needsReview ? `${needsReview.toLocaleString()} pending` : "Clear"} secondary={needsReview ? "Memories retained for review" : "No memories currently need review"} tooltip="Memories can be retained in a review state when their reliability needs assessment. This is a memory-management signal, not a system failure." href="/memory?states=needs_review" className={needsReview ? "metric-warning" : "metric-active"} />
+            <MetricCard title="Last maintenance run" value={workers.data?.summary?.last_completed_ts ? formatDate(workers.data.summary.last_completed_ts) : "No data"} tooltip="Most recent completed maintenance run; recorded errors remain available in run history." className="metric-subtle" />
           </div>
         </>}
       </Section>
       <Section title="Pipeline behavior">
         <p className="neutral">Recent maintenance behavior helps explain whether the local pipeline is keeping up. These are operational signals, not memory-value scores.</p>
         {!workers.data ? workers.error ? <ErrorState title="Pipeline behavior unavailable" error={workers.error} retry={workers.reload} /> : <MetricCardsSkeleton count={3} /> : <div className="metric-card-grid pipeline-metric-grid">
-          <RateMetricCard title="Run reliability" numerator={recentRuns?.successful ?? 0} denominator={recentRuns?.runs ?? 0} secondary={<>{Number(recentRuns?.failed ?? 0).toLocaleString()} failed · last 7 days{workers.error && <span className="diagnostic-stale"> · stale</span>}</>} tooltip="Successful maintenance runs divided by all runs started in the last seven days. Incomplete runs remain in the denominator." className="metric-feedback" />
-          <MetricCard title="Typical duration" value={recentRuns?.duration_ms != null ? formatDuration(Number(recentRuns.duration_ms) / 1000) : "Unavailable"} secondary={<>{recentRuns?.duration_stat === "p95" ? "p95" : "Median"} of successful runs · last 7 days</>} tooltip="The p95 duration with four or more successful runs; otherwise the median." className="metric-retrieved" />
-          <MetricCard title="Worker process" value={workers.data.worker?.running ? "Running" : "Not observed"} secondary={workers.data.worker?.running ? `${Number(workers.data.worker?.process_count || 0).toLocaleString()} process${Number(workers.data.worker?.process_count || 0) === 1 ? "" : "es"} observed` : "No background worker process observed"} tooltip="Whether a local Slowave worker process was observed. An idle installation may intentionally have no worker process." className={workers.data.worker?.running ? "metric-active" : "metric-subtle"} />
+          <RateMetricCard title="Run reliability" numerator={workers.data.summary?.finished_without_error} denominator={workers.data.summary?.finished} secondary={`${workers.data.summary?.incomplete_passes || 0} running / interrupted excluded`} tooltip="Finished runs without recorded error divided by finished runs." />
+          <MetricCard title="Median run duration" value={workers.data.summary?.median_duration_ms == null ? "No data" : `${Number(workers.data.summary.median_duration_ms).toLocaleString()} ms`} secondary={`${workers.data.summary?.duration_samples || 0} samples · ${workers.data.summary?.missing_durations || 0} missing · ${workers.data.summary?.zero_durations || 0} recorded zero`} tooltip="Median of finished runs with recorded duration, including failures. Durations use whole-second timestamps × 1000: recorded zero does not establish zero-time execution." />
         </div>}
         <details className="advanced diagnostics-inventory">
-          <summary>Operational inventory</summary>
+          <summary>Operational inventory</summary><p className="neutral">Worker process: {workers.data?.worker?.running ? "Running" : "Not observed"} · observed {formatDate(workers.data?.worker?.observed_at)}. Process presence does not establish successful processing.</p>
           <p className="neutral">These retained record totals are useful for diagnostics, but they do not measure memory quality.</p>
           <div className="lifetime-totals">{[["Sessions", status.data?.stats?.sessions], ["Raw events", status.data?.stats?.raw_events], ["Episodes", status.data?.stats?.episodes], ["Memories", status.data?.stats?.schemas]].map(([label, value]) => <span key={String(label)}><strong>{status.data ? value == null ? "Unavailable" : Number(value).toLocaleString() : status.loading ? "Checking…" : "Unavailable"}</strong>{label}</span>)}</div>
         </details>
@@ -3220,7 +3847,7 @@ export function GraphPage() {
             <div className="toggle-group" role="group" aria-label="Memory states"><span className="toggle-label">States</span>{[["active","Active"],["needs_review","Review"],["stale","Stale"]].map(([value,label]) => <button type="button" key={value} className={`toggle-badge toggle-state-${value} ${graphStatuses.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphStatuses.split(",").includes(value)} onClick={() => setGraphStatuses((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
             <div className="toggle-group" role="group" aria-label="Edge types"><span className="toggle-label">Edges</span>{[["relates_to","Related to","related"],["coactivated_with","Co-activated","coactivated"]].map(([value,label,kind]) => <button type="button" key={value} className={`toggle-badge toggle-${kind} ${graphRelations.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphRelations.split(",").includes(value)} onClick={() => setGraphRelations((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
           </div>
-          {graphData && <p className="graph-context-line">Visible memories <strong>{graphData.nodes?.length ?? 0}</strong> · Visible connections <strong>{graphData.edges?.length ?? 0}</strong> · Scopes represented <strong>{new Set((graphData.nodes || []).map((node: any) => node.scope).filter(Boolean)).size}</strong><span>Counts describe the current graph result. Configured limit: {Number(graphData.limit || 0).toLocaleString()}; {Number(graphData.nodes?.length || 0) >= Number(graphData.limit || 0) ? "limit reached" : "limit not reached"}.</span></p>}
+          {graphData && Number(graphData.nodes?.length || 0) >= Number(graphData.limit || 0) && <p className="neutral">Display limit reached ({graphData.limit}); additional memories may be omitted.</p>}
           {graph.loading && !graphData ? <LoadingRows /> : graph.error && !graphData ? <ErrorState title="Graph unavailable" error={graph.error} retry={graph.reload} /> : graphData?.nodes?.length ? <Suspense fallback={<LoadingRows rows={3} />}><GraphExplorer data={graphData} onSelect={setSelectedSchema} /></Suspense> : <EmptyState title="No connected memories">At least two related memories are needed to draw a network.</EmptyState>}
       </Section>
       {selectedSchema && <MemoryDetail id={selectedSchema} onClose={() => setSelectedSchema("")} />}

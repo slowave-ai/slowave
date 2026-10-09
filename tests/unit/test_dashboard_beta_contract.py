@@ -68,7 +68,7 @@ def test_retrieval_projection_preserves_exposure_and_feedback_semantics(tmp_path
     ]
     assert listing["summary"]["retrievals"] == 2
     assert listing["summary"]["no_match"] == 1
-    assert listing["summary"]["feedback_complete"] == 1
+    assert listing["summary"]["feedback_complete"] == 0  # declaration does not cover missing items
     assert listing["summary"]["demonstrated_value"] == 1
     assert listing["summary"]["unknown"] == 4
     visible = listing["retrievals"][0]
@@ -135,6 +135,12 @@ def test_retrieval_effect_sort_matches_the_displayed_effect_priority(tmp_path: P
             ("fb_harmed", "ctx_harmed", "harmed"),
         ],
     )
+    for rid in ("ctx_unknown", "ctx_helped", "ctx_no_effect", "ctx_harmed"):
+        connection.execute(
+            "INSERT INTO context_recall_items(context_id,memory_id,memory_type,rank,admitted,created_at) VALUES (?, 'proc_1','procedure',1,1,100)",
+            [rid],
+        )
+    connection.execute("UPDATE feedback_events SET assessment='used'")
     connection.commit()
     connection.close()
 
@@ -200,6 +206,8 @@ def test_memory_and_activity_lists_are_server_paginated(tmp_path: Path) -> None:
         "closure_unclassified": 1,
         "context_denominator": 0,
         "context_use": 0,
+        "partial_closed": 0,
+        "failure_closed": 0,
     }
     assert _activity_payload(str(path), {"summary_only": ["true"]})["activities"] == []
     started = time.perf_counter()
