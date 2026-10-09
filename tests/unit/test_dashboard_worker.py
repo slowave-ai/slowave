@@ -73,7 +73,8 @@ def test_worker_payload_separates_pass_health_from_successful_work(
 
     payload = dashboard_app._worker_runs_payload(str(db_path), {"limit": ["10"]})
 
-    assert payload["worker"] == {
+    assert payload["worker"]["observed_at"] > 0
+    assert {k: v for k, v in payload["worker"].items() if k != "observed_at"} == {
         "running": True,
         "process_count": 1,
         "processes": [{"kind": "worker", "pid": 42, "age_seconds": 60}],

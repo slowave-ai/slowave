@@ -505,6 +505,14 @@ main {
   padding: 12px 14px;
 }
 .metric-card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.distribution-card-grid { grid-template-columns: minmax(0, 1fr); }
+.generalization-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.outcome-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.distribution-card { min-height: 132px; }
+.distribution-card .stage-distribution { font-size: 14px; }
+.distribution-card .distribution-bar { height: 16px; margin: 8px 0 16px; }
+.distribution-card .distribution-legend { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.distribution-card .distribution-legend > span { min-width: 0; }
 .pipeline-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .diagnostics-health-banner {
   display: flex;
@@ -548,13 +556,16 @@ main {
 .diagnostics-attention-item small { position: absolute; top: 12px; right: 12px; color: var(--warning); font-size: 11px; }
 .diagnostics-inventory { margin-top: 14px; }
 .metric-card-link { display: block; min-width: 0; color: inherit; text-decoration: none; }
-.metric-card { box-sizing: border-box; height: 96px; min-height: 96px; justify-content: center; }
+.knowledge-summary-grid > .metric-card-link { display: flex; }
+.knowledge-summary-grid > .metric-card-link > .metric-card { flex: 1; }
+.metric-card { box-sizing: border-box; height: auto; min-height: 96px; justify-content: center; }
+.metric-card > * { flex-shrink: 0; }
 .metric-card-link:hover { text-decoration: none; }
-.metric-card-secondary { min-height: 16px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .metric-low-sample { display: block; color: var(--warning); font-size: 11px; }
 .metric-warning { --metric-accent: var(--warning); }
 .metric-subtle { --metric-accent: var(--border); }
 .home-metric-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.home-metric-card-grid .metric-card { min-height: 80px; }
 .activity-metric-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric-warning-note { margin-top: 12px; }
 .evidence-notice { margin-top: 12px; border-color: var(--border); background: var(--raised); color: var(--muted); }
@@ -583,6 +594,7 @@ main {
 }
 .effectiveness-card-value {
   display: flex;
+  flex: 0 0 auto;
   min-width: 0;
   align-items: baseline;
   justify-content: space-between;
@@ -1953,7 +1965,7 @@ pre {
   }
 }
 .compact-state-chips > .summary-badge { height: auto; min-height: 48px; justify-content: initial; }
-:is(.memory-health-section .metric-card, .metric-card) { box-sizing: border-box; height: 96px; min-height: 96px; padding: 10px 12px; }
+.metric-card { padding: 10px 12px; }
 .effectiveness-card-title { min-width: 0; max-width: 100%; line-height: 13px; }
 .metric-card .effectiveness-card-title { overflow: visible; }
 .metric-card .effectiveness-card-title-text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -1981,3 +1993,32 @@ pre {
   .home-metric-card-grid,
   .activity-metric-card-grid { grid-template-columns: 1fr; }
 }
+
+.stage-distribution { width: 100%; font-size: 12px; font-weight: 400; }
+.distribution-bar { display: flex; width: 100%; height: 12px; overflow: hidden; border-radius: 4px; background: var(--surface-muted, #ddd); margin: 8px 0 12px; }
+.distribution-bar > span { display: block; height: 100%; }
+.stage-0 { background: var(--accent-memory); } .stage-1 { background: var(--accent-retrieval); }
+.stage-2 { background: var(--accent-procedure); } .stage-3 { background: var(--accent-activity); }
+.stage-unknown { background: var(--muted); }
+.stage-label-0 { color: var(--accent-memory); } .stage-label-1 { color: var(--accent-retrieval); }
+.stage-label-2 { color: var(--accent-procedure); } .stage-label-3 { color: var(--accent-activity); }
+.outcome-success { background: var(--success); }
+.outcome-partial { background: var(--warning); }
+.outcome-failure { background: var(--danger); }
+.outcome-unknown { background: var(--muted); }
+.outcome-label-success { color: var(--success); }
+.outcome-label-partial { color: var(--warning); }
+.outcome-label-failure { color: var(--danger); }
+.outcome-label-unknown { color: var(--muted); }
+.distribution-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; line-height: 1.5; }
+.metric-rate-value { display: flex; flex-direction: column; align-items: flex-start; }
+.metric-rate-percent { order: 0; }
+.metric-rate-ratio { order: 1; }
+@media (max-width: 700px) {
+  .generalization-card-grid,
+  .outcome-card-grid { grid-template-columns: 1fr; }
+  .distribution-legend { gap: 8px; }
+  .distribution-card .distribution-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-bar { flex-wrap: wrap; }
+}
+@media (max-width: 380px) { .distribution-card .distribution-legend { grid-template-columns: 1fr; } }

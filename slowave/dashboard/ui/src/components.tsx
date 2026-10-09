@@ -882,7 +882,7 @@ export const formatRateParts = (numerator: unknown, denominator: unknown) => {
   const retrieved = Number(denominator);
   if (!Number.isFinite(used) || !Number.isFinite(retrieved)) return null;
   return {
-    ratio: `${used.toLocaleString()} / ${retrieved.toLocaleString()} ·`,
+    ratio: `${used.toLocaleString()} / ${retrieved.toLocaleString()}`,
     percent: retrieved > 0 ? ratePercentLabel(used, retrieved) : "—",
   };
 };
@@ -923,18 +923,27 @@ export function MetricCard({
   href?: string;
   className?: string;
 }) {
-  const displayValue = typeof value === "string" ? <strong>{value}</strong> : value;
+  const displayValue =
+    typeof value === "string" ? <strong>{value}</strong> : value;
   const card = (
     <div className={`metric-card effectiveness-card ${className}`}>
       <div className="effectiveness-card-title">
         <span className="effectiveness-card-title-text">{title}</span>
-        <DefinitionTooltip label={`${title} definition`}>{tooltip}</DefinitionTooltip>
+        <DefinitionTooltip label={`${title} definition`}>
+          {tooltip}
+          {typeof secondary === "string" ? ` ${secondary}` : ""}
+        </DefinitionTooltip>
       </div>
       <div className="effectiveness-card-value">{displayValue}</div>
-      {secondary && <div className="metric-card-secondary">{secondary}</div>}
     </div>
   );
-  return href ? <Link to={href} className="metric-card-link">{card}</Link> : card;
+  return href ? (
+    <Link to={href} className="metric-card-link">
+      {card}
+    </Link>
+  ) : (
+    card
+  );
 }
 
 export function RateMetricCard({
@@ -945,6 +954,7 @@ export function RateMetricCard({
   secondary,
   href,
   className = "",
+  compact = false,
 }: {
   title: string;
   numerator: unknown;
@@ -953,32 +963,28 @@ export function RateMetricCard({
   secondary?: ReactNode;
   href?: string;
   className?: string;
+  compact?: boolean;
 }) {
-  const unavailable = [numerator, denominator].some(
-    (value) => value === null || value === undefined || value === "",
-  );
-  const denominatorNumber = Number(denominator);
-  const lowSample = !unavailable && denominatorNumber > 0 && denominatorNumber < 10;
-  const secondaryContent = secondary || lowSample ? (
-    <>
-      {secondary}
-      {lowSample && <span className="metric-low-sample">Low sample · n={denominatorNumber.toLocaleString()}</span>}
-    </>
-  ) : undefined;
   const parts = formatRateParts(numerator, denominator);
+  const empty = denominator == null || Number(denominator) === 0 || !parts;
   return (
     <MetricCard
       title={title}
-      value={unavailable || !parts ? "—" : (
-        <span className="metric-rate-value">
-          <span className="metric-rate-ratio">{parts?.ratio}</span>
-          <span className="metric-rate-percent">{parts?.percent}</span>
-        </span>
-      )}
-      tooltip={tooltip}
+      value={
+        empty ? (
+          "No data"
+        ) : (
+          <span className="metric-rate-value">
+            <span className="metric-rate-percent">{parts.percent}</span>
+            {!compact && (
+              <span className="metric-rate-ratio">{parts.ratio}</span>
+            )}
+          </span>
+        )
+      }
+      tooltip={`${tooltip} ${parts ? parts.ratio : "No eligible observations."}${typeof secondary === "string" ? ` ${secondary}` : ""}`}
       href={href}
       className={className}
-      secondary={secondaryContent}
     />
   );
 }

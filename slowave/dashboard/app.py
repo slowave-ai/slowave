@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import statistics
 import subprocess
 import threading
 import time
@@ -24,6 +25,16 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from slowave import __version__
+from slowave.dashboard.metrics import (
+    MEMORY_ASSESSMENTS,
+    assessed,
+    bounds,
+    complete_request_sql,
+    delivered_sql,
+    history,
+    occasions,
+    projection,
+)
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 
@@ -431,11 +442,11 @@ def _schema_row_to_node(row: sqlite3.Row, prototype_ids: list[int] | None = None
     tags = _tags_from_json(row["tags_json"])
     supporting = _ids_from_json(row["supporting_episode_ids"])
     content = str(row["content_text"])
-    # Generalization stage (Stage 11) — default 0 for legacy rows without the column
+    # Generalization stage is unavailable for legacy rows without a recorded value.
     try:
         gen_stage = int(row["generalization_stage"])
     except (KeyError, TypeError, IndexError):
-        gen_stage = 0
+        gen_stage = None
     return {
         "id": f"sch_{int(row['id'])}",
         "schema_id": int(row["id"]),
@@ -1064,9 +1075,11 @@ def _db_health(db_path: str) -> dict[str, Any]:
                 pragmas[name] = row[0] if row is not None else None
             except sqlite3.Error as e:
                 pragmas[name] = f"error: {e}"
+        integrity_error = None
         try:
             integrity = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
         except sqlite3.Error as e:
+            integrity_error = str(e)
             integrity = [f"error: {e}"]
         try:
             fk = [dict(r) for r in conn.execute("PRAGMA foreign_key_check").fetchall()]
@@ -1120,7 +1133,12 @@ def _db_health(db_path: str) -> dict[str, Any]:
             },
             "object_counts": object_counts,
             "integrity_check": integrity,
-            "integrity_status": "ok" if integrity == ["ok"] else "needs_attention",
+            "integrity_status": (
+                "unavailable"
+                if integrity_error
+                else "ok" if integrity == ["ok"] else "needs_attention"
+            ),
+            "integrity_error": integrity_error,
             "foreign_key_check": fk,
             "tables": tables,
         }
@@ -1167,7 +1185,7 @@ _SCHEMA_SORT_COLS: dict[str, str] = {
     "evidence": "evidence_count",
     "exposed": "times_exposed",
     "used": "times_used",
-    "use_rate": "CASE WHEN times_exposed > 0 THEN CAST(times_used AS REAL) / times_exposed ELSE -1 END",
+    "use_rate": "CASE WHEN times_assessed > 0 THEN CAST(times_used AS REAL) / times_assessed ELSE -1 END",
     "irrelevant": "times_irrelevant",
     "stale": "times_stale",
     "wrong": "times_wrong",
@@ -1240,42 +1258,51 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         else:
             where += " AND lower(content_text) LIKE ?"
             args.append(f"%{q}%")
-    changed_from = _qs_int(qs, "from", 0)
-    changed_to = _qs_int(qs, "to", 0)
-    if changed_from:
-        where += " AND last_updated_ts >= ?"
-        args.append(changed_from)
-    if changed_to:
-        where += " AND last_updated_ts <= ?"
-        args.append(changed_to)
+    saved_from = _qs_int(qs, "saved_from", 0)
+    saved_to = _qs_int(qs, "saved_to", 0)
+    if saved_from:
+        where += " AND first_formed_ts >= ?"
+        args.append(saved_from)
+    if saved_to:
+        where += " AND first_formed_ts <= ?"
+        args.append(saved_to)
+    # Reuse the same latest, delivered-only feedback population for every
+    # table value and sort expression, before applying pagination.
+    feedback_population = (
+        "FROM feedback_events fe "
+        "JOIN context_recall_events request ON request.context_id = fe.retrieval_id "
+        "WHERE fe.target_kind = 'memory' AND fe.target_id = 'sch_' || schemas.id "
+        f"AND {_latest_accepted_feedback_sql('fe')} "
+        f"AND EXISTS (SELECT 1 FROM ({delivered_sql()}) delivered "
+        "WHERE delivered.context_id = fe.retrieval_id "
+        "AND delivered.target_kind = fe.target_kind AND delivered.target_id = fe.target_id)"
+    )
+    supported_assessments = ",".join(f"'{item}'" for item in sorted(MEMORY_ASSESSMENTS))
     sql = (
         "SELECT schemas.*, (SELECT COUNT(*) FROM schema_evidence se "
         "WHERE se.schema_id = schemas.id) AS evidence_count, "
-        "(SELECT COUNT(*) FROM context_recall_items cri "
-        "  WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 "
-        "  AND cri.memory_type IN ('schema','related')) AS times_exposed, "
-        "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
-        "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'used' "
-        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_used, "
-        "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
-        "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'irrelevant' "
-        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_irrelevant, "
-        "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
-        "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'stale' "
-        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_stale, "
-        "(SELECT COUNT(DISTINCT fe.retrieval_id) FROM feedback_events fe "
-        "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'wrong' "
-        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS times_wrong, "
-        "(SELECT COUNT(*) FROM schema_relations sr WHERE sr.src_schema_id = schemas.id OR sr.dst_schema_id = schemas.id) AS related_count, "
+        "(SELECT COUNT(DISTINCT cri.context_id) FROM context_recall_items cri "
+        "WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 "
+        "AND cri.memory_type IN ('schema','related')) AS times_exposed, "
+        f"(SELECT COUNT(*) {feedback_population} "
+        f"AND fe.assessment IN ({supported_assessments})) AS times_assessed, "
+        f"(SELECT COUNT(*) {feedback_population} AND fe.assessment = 'used') AS times_used, "
+        f"(SELECT COUNT(*) {feedback_population} AND fe.assessment = 'irrelevant') AS times_irrelevant, "
+        f"(SELECT COUNT(*) {feedback_population} AND fe.assessment = 'stale') AS times_stale, "
+        f"(SELECT COUNT(*) {feedback_population} AND fe.assessment = 'wrong') AS times_wrong, "
+        "(SELECT COUNT(*) FROM schema_relations sr "
+        "WHERE sr.src_schema_id = schemas.id OR sr.dst_schema_id = schemas.id) AS related_count, "
         "(SELECT COUNT(DISTINCT COALESCE(re.session_id, et.session_id)) FROM schema_evidence se "
-        "  LEFT JOIN raw_events re ON re.id = se.raw_event_id LEFT JOIN episode_text et ON et.episode_id = se.episode_id "
-        "  WHERE se.schema_id = schemas.id AND COALESCE(re.session_id, et.session_id) IS NOT NULL) AS source_activity_count, "
-        "(SELECT MAX(cre.created_at) FROM context_recall_items cri JOIN context_recall_events cre ON cre.context_id = cri.context_id "
-        "  WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 AND cri.memory_type IN ('schema','related')) AS last_retrieved_ts, "
-        "(SELECT MAX(fe.created_at) FROM feedback_events fe "
-        "  WHERE fe.target_kind = 'memory' AND fe.assessment = 'used' "
-        f"  AND {_latest_accepted_feedback_sql('fe')} AND fe.target_id = 'sch_' || schemas.id) AS last_used_ts "
-        "FROM schemas" + where
+        "LEFT JOIN raw_events re ON re.id = se.raw_event_id "
+        "LEFT JOIN episode_text et ON et.episode_id = se.episode_id "
+        "WHERE se.schema_id = schemas.id "
+        "AND COALESCE(re.session_id, et.session_id) IS NOT NULL) AS source_activity_count, "
+        "(SELECT MAX(cre.created_at) FROM context_recall_items cri "
+        "JOIN context_recall_events cre ON cre.context_id = cri.context_id "
+        "WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 "
+        "AND cri.memory_type IN ('schema','related')) AS last_retrieved_ts, "
+        f"(SELECT MAX(request.created_at) {feedback_population} "
+        "AND fe.assessment = 'used') AS last_used_ts FROM schemas" + where
     )
     # Server-side ordering so the displayed page ranks across the full result set.
     sort_col = (qs.get("sort") or [""])[0]
@@ -1299,6 +1326,7 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             item["evidence_count"] = int(row["evidence_count"] or 0)
             item["times_exposed"] = int(row["times_exposed"] or 0)
             item["times_used"] = int(row["times_used"] or 0)
+            item["times_assessed"] = int(row["times_assessed"] or 0)
             item["times_irrelevant"] = int(row["times_irrelevant"] or 0)
             item["times_stale"] = int(row["times_stale"] or 0)
             item["times_wrong"] = int(row["times_wrong"] or 0)
@@ -1316,68 +1344,7 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             + " GROUP BY status",
             [scope] if scope else [],
         ).fetchall()
-        summary_scope = " AND scope_id = ?" if scope else ""
-        summary_args: list[Any] = [scope] if scope else []
-        active_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schemas WHERE status = 'active'" + summary_scope,
-            summary_args,
-        ).fetchone()
-        review_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schemas WHERE status = 'needs_review'" + summary_scope,
-            summary_args,
-        ).fetchone()
-        stale_row = conn.execute(
-            "SELECT COUNT(*) AS n FROM schemas WHERE status = 'stale'" + summary_scope,
-            summary_args,
-        ).fetchone()
-        retrieval_conditions = [
-            "cri.admitted = 1",
-            "cri.memory_id LIKE 'sch_%'",
-            "s.status = 'active'",
-        ]
-        retrieval_args: list[Any] = []
-        if scope:
-            retrieval_conditions.append("s.scope_id = ?")
-            retrieval_args.append(scope)
-        if changed_from:
-            retrieval_conditions.append("cre.created_at >= ?")
-            retrieval_args.append(changed_from)
-        if changed_to:
-            retrieval_conditions.append("cre.created_at <= ?")
-            retrieval_args.append(changed_to)
-        retrieved_sql = (
-            "FROM context_recall_items cri JOIN context_recall_events cre "
-            "ON cre.context_id = cri.context_id JOIN schemas s "
-            "ON cri.memory_id = 'sch_' || s.id WHERE " + " AND ".join(retrieval_conditions)
-        )
-        retrieved_row = conn.execute(
-            "SELECT COUNT(DISTINCT cri.memory_id) AS n " + retrieved_sql,
-            retrieval_args,
-        ).fetchone()
-        used_conditions = [
-            _latest_accepted_feedback_sql(),
-            "f.target_kind = 'memory'",
-            "f.assessment = 'used'",
-            "f.target_id = cri.memory_id",
-            "s.status = 'active'",
-        ]
-        used_args: list[Any] = []
-        if scope:
-            used_conditions.append("s.scope_id = ?")
-            used_args.append(scope)
-        if changed_from:
-            used_conditions.append("r.created_at >= ?")
-            used_args.append(changed_from)
-        if changed_to:
-            used_conditions.append("r.created_at <= ?")
-            used_args.append(changed_to)
-        used_row = conn.execute(
-            "SELECT COUNT(DISTINCT f.target_id) AS n FROM feedback_events f "
-            "JOIN context_recall_events r ON r.context_id = f.retrieval_id "
-            "JOIN context_recall_items cri ON cri.context_id = r.context_id "
-            "JOIN schemas s ON f.target_id = 'sch_' || s.id WHERE " + " AND ".join(used_conditions),
-            used_args,
-        ).fetchone()
+        metrics = _effectiveness_payload(db_path, {**qs, "library": ["memory"]})
         return {
             "schemas": items,
             "pagination": {
@@ -1386,12 +1353,12 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                 "total": int(total_row["n"] if total_row else 0),
             },
             "status_counts": {str(r["status"]): int(r["n"]) for r in status_rows},
+            "metrics": metrics,
             "summary": {
-                "active": int(active_row["n"] if active_row else 0),
-                "needs_review": int(review_row["n"] if review_row else 0),
-                "stale": int(stale_row["n"] if stale_row else 0),
-                "retrieved_active": int(retrieved_row["n"] if retrieved_row else 0),
-                "used_active": int(used_row["n"] if used_row else 0),
+                "active": metrics.get("memory_total"),
+                "retrieved_active": metrics.get("memory_exposed"),
+                "used_active": metrics.get("memory_used"),
+                "assessed_active": metrics.get("memory_assessed"),
             },
         }
     finally:
@@ -1700,6 +1667,10 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             ]
         except sqlite3.Error:
             pass
+        try:
+            schema["use_history_totals"] = history(occasions(conn), "memory", f"sch_{schema_id}")
+        except sqlite3.Error as exc:
+            schema["use_history_totals"] = {"available": False, "unavailable_reason": str(exc)}
         return {
             "schema": schema,
             "evidence": evidence,
@@ -2280,6 +2251,10 @@ def _worker_runs_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, An
         else:
             recent_duration_ms = None
             recent_duration_stat = "median"
+        finished = conn.execute(
+            "SELECT duration_ms, error_text, ended_ts FROM worker_runs WHERE ended_ts IS NOT NULL"
+        ).fetchall()
+        durations = [float(r["duration_ms"]) for r in finished if r["duration_ms"] is not None]
         trigger_counts = {
             str(r["triggered_by"]): int(r["count"])
             for r in conn.execute(
@@ -2298,12 +2273,20 @@ def _worker_runs_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, An
             "sort_direction": direction,
             "chart": _worker_chart_buckets(conn, range_key, now),
             "worker": {
+                "observed_at": now,
                 "running": bool(worker_processes),
                 "process_count": len(worker_processes),
                 "processes": worker_processes,
             },
             "trigger_counts": trigger_counts,
             "summary": {
+                "finished": len(finished),
+                "finished_without_error": sum(not r["error_text"] for r in finished),
+                "median_duration_ms": statistics.median(durations) if durations else None,
+                "duration_samples": len(durations),
+                "missing_durations": len(finished) - len(durations),
+                "zero_durations": sum(d == 0 for d in durations),
+                "last_completed_ts": max((r["ended_ts"] for r in finished), default=None),
                 "total_passes": int(status_row["total_passes"] or 0) if status_row else 0,
                 "successful_passes": (
                     int(status_row["successful_passes"] or 0) if status_row else 0
@@ -2502,24 +2485,6 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                 )
         except sqlite3.Error:
             pass
-        try:
-            review = conn.execute(
-                "SELECT COUNT(*) AS n, MAX(last_updated_ts) AS ts FROM schemas "
-                "WHERE status IN ('needs_review','stale') AND last_updated_ts >= ?" + scope_sql,
-                [since, *scope_args],
-            ).fetchone()
-            if review and int(review["n"] or 0):
-                attention.append(
-                    {
-                        "kind": "memory",
-                        "title": f"{int(review['n'])} memories need review or are out of date",
-                        "observed_at": review["ts"],
-                        "rule": "Counts current memory rows explicitly marked needs_review or stale during this period.",
-                        "href": "/memory?states=needs_review,stale",
-                    }
-                )
-        except sqlite3.Error:
-            pass
         changes: list[dict[str, Any]] = []
         try:
             rows = conn.execute(
@@ -2618,32 +2583,6 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             )
         except (sqlite3.Error, ValueError):
             pass
-        try:
-            current = conn.execute(
-                "SELECT COUNT(*) AS n FROM schemas WHERE status IN ('active','needs_review')"
-                + scope_sql,
-                scope_args,
-            ).fetchone()
-            changed = conn.execute(
-                "SELECT COUNT(*) AS n FROM schemas WHERE last_updated_ts >= ?" + scope_sql,
-                [since, *scope_args],
-            ).fetchone()
-            scopes = conn.execute(
-                "SELECT COUNT(DISTINCT scope_id) AS n FROM sessions WHERE scope_id IS NOT NULL"
-            ).fetchone()
-            procedures = conn.execute(
-                "SELECT COUNT(*) AS n FROM procedure_search_documents"
-                + (" WHERE scope_id = ?" if scope else ""),
-                scope_args,
-            ).fetchone()
-            base["at_a_glance"] = {
-                "current_memories": int(current["n"] if current else 0),
-                "changed_memories": int(changed["n"] if changed else 0),
-                "active_scopes": int(scopes["n"] if scopes else 0),
-                "current_procedures": int(procedures["n"] if procedures else 0),
-            }
-        except sqlite3.Error:
-            pass
         base["attention"] = attention
         base["recent_changes"] = sorted(
             changes, key=lambda item: int(item.get("observed_at") or 0), reverse=True
@@ -2653,7 +2592,14 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         effectiveness_qs["hours"] = ["all" if all_time else str(hours)]
         effectiveness_qs["from"] = [str(since)]
         effectiveness_qs["to"] = [str(now)]
-        base["effectiveness"] = _effectiveness_payload(db_path, effectiveness_qs)
+        metrics = _effectiveness_payload(db_path, effectiveness_qs)
+        base["effectiveness"] = metrics
+        base["activity"] = metrics.get("chart", {})
+        base["at_a_glance"] = {
+            "current_memories": metrics.get("memory_total"),
+            "current_procedures": metrics.get("procedure_total"),
+            "active_scopes": metrics.get("active_scopes"),
+        }
         return base
     finally:
         conn.close()
@@ -2682,201 +2628,13 @@ def _scopes_payload(db_path: str) -> dict[str, Any]:
 
 
 def _effectiveness_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
-    """Compute cohort-correct memory-effectiveness metrics for the Home surface.
-
-    Defaults to the feedback-enforced population: retrievals recorded under the
-    lifecycle v9 contract (introduced 2026-08-17) and later, which carries the
-    target-specific, client-authoritative feedback model. Pre-v9 and NULL
-    lifecycle records are excluded by default so mixed-history counts cannot
-    mislead; ``cohort=all`` opts back in to every readable record.
-
-    Every rate is expressed as (numerator, denominator) so the UI can render
-    honest ``X of Y`` statements rather than a bare percentage. Numerators and
-    denominators share the same unit: both count distinct targets (a memory or
-    procedure), so a memory exposed once but used across several retrievals
-    still counts once in each bucket and ``used`` can never exceed ``exposed``.
-    Memory exposure is restricted to admitted schema targets (``sch_*``) and,
-    when Home supplies a window, to retrievals recorded in that window.
-    """
-    cohort = (qs.get("cohort") or ["v9"])[0].strip()
-    if cohort not in {"v9", "all"}:
-        cohort = "v9"
-    scope = (qs.get("scope") or [""])[0].strip()
-    window_from = _qs_int(qs, "from", 0)
-    window_to = _qs_int(qs, "to", 0)
-    window_hours = _qs_int(qs, "hours", 0)
-    window_sql = ""
-    if window_from:
-        window_sql += " AND r.created_at >= ?"
-    if window_to:
-        window_sql += " AND r.created_at <= ?"
-    retrieval_args: list[Any] = [scope] if scope else []
-    if window_from:
-        retrieval_args.append(window_from)
-    if window_to:
-        retrieval_args.append(window_to)
-
-    base: dict[str, Any] = {
-        "cohort": cohort,
-        "annotation": (
-            "Since lifecycle v9 · August 17"
-            if cohort == "v9"
-            else "All readable records, including legacy"
-        ),
-        "scope": scope or None,
-        "available_scopes": [],
-        "window_hours": window_hours or None,
-        "memory_exposed": 0,
-        "memory_total": 0,
-        "memory_used": 0,
-        "memory_assessed": 0,
-        "memory_irrelevant": 0,
-        "memory_stale": 0,
-        "memory_wrong": 0,
-        "procedure_exposed": 0,
-        "procedure_used": 0,
-        "procedure_not_used": 0,
-        "procedure_helped": 0,
-        "procedure_no_effect": 0,
-        "procedure_harmed": 0,
-        "retrievals_total": 0,
-        "retrievals_no_match": 0,
-        "retrievals_feedback_complete": 0,
-    }
     if not os.path.exists(db_path):
-        return base
-
-    # Numeric comparison: 'v10' would sort before 'v9' under a naive string
-    # comparison, so strip the leading 'v' and compare as integers. This keeps
-    # v9, v10, and any future v11+ in the feedback-enforced cohort while
-    # excluding pre-v9 (v8 and earlier) and NULL legacy records.
-    cohort_sql = "CAST(substr(r.lifecycle_version, 2) AS INTEGER) >= 9" if cohort == "v9" else "1=1"
-    scope_sql = " AND r.scope_id = ?" if scope else ""
-
+        return {"available": False}
     conn = _connect(db_path)
     try:
-        try:
-            base["available_scopes"] = [
-                str(r["scope_id"])
-                for r in conn.execute(
-                    "SELECT scope_id FROM context_recall_events "
-                    "WHERE scope_id IS NOT NULL AND scope_id <> '' "
-                    "UNION SELECT scope_id FROM sessions "
-                    "WHERE scope_id IS NOT NULL AND scope_id <> '' "
-                    "ORDER BY scope_id"
-                ).fetchall()
-            ]
-        except sqlite3.Error:
-            pass
-
-        try:
-            schema_scope_sql = " AND s.scope_id = ?" if scope else ""
-            schema_row = conn.execute(
-                "SELECT COUNT(*) AS n FROM schemas s "
-                "WHERE s.status = 'active'" + schema_scope_sql,
-                [scope] if scope else [],
-            ).fetchone()
-            base["memory_total"] = int(schema_row["n"] if schema_row else 0)
-        except sqlite3.Error:
-            pass
-
-        try:
-            total_row = conn.execute(
-                f"SELECT COUNT(*) AS total, "
-                f"SUM(CASE WHEN r.count_n = 0 THEN 1 ELSE 0 END) AS no_match, "
-                f"SUM(CASE WHEN EXISTS (SELECT 1 FROM feedback_events f "
-                f"  WHERE f.retrieval_id = r.context_id AND f.status = 'accepted' "
-                f"  AND f.coverage = 'complete') THEN 1 ELSE 0 END) AS feedback_complete "
-                f"FROM context_recall_events r WHERE {cohort_sql}{scope_sql}{window_sql}",
-                retrieval_args,
-            ).fetchone()
-            if total_row:
-                base["retrievals_total"] = int(total_row["total"] or 0)
-                base["retrievals_no_match"] = int(total_row["no_match"] or 0)
-                base["retrievals_feedback_complete"] = int(total_row["feedback_complete"] or 0)
-        except sqlite3.Error:
-            pass
-
-        try:
-            exposure_row = conn.execute(
-                f"SELECT COUNT(DISTINCT i.memory_id) AS n "
-                f"FROM context_recall_items i "
-                f"JOIN context_recall_events r ON r.context_id = i.context_id "
-                f"WHERE i.admitted = 1 AND i.memory_type IN ('schema', 'related') "
-                f"AND i.memory_id LIKE 'sch_%' AND {cohort_sql}{scope_sql}{window_sql}",
-                retrieval_args,
-            ).fetchone()
-            if exposure_row:
-                base["memory_exposed"] = int(exposure_row["n"] or 0)
-
-            procedure_row = conn.execute(
-                f"SELECT COUNT(DISTINCT i.memory_id) AS n "
-                f"FROM context_recall_items i "
-                f"JOIN context_recall_events r ON r.context_id = i.context_id "
-                f"WHERE i.admitted = 1 AND i.memory_type IN ('procedural_memory', 'procedure') "
-                f"AND {cohort_sql}{scope_sql}{window_sql}",
-                retrieval_args,
-            ).fetchone()
-            if procedure_row:
-                base["procedure_exposed"] = int(procedure_row["n"] or 0)
-        except sqlite3.Error:
-            pass
-
-        try:
-            assessed_row = conn.execute(
-                f"SELECT COUNT(DISTINCT f.target_id) AS n FROM feedback_events f "
-                f"JOIN context_recall_events r ON r.context_id = f.retrieval_id "
-                f"JOIN context_recall_items i ON i.context_id = r.context_id AND i.memory_id = f.target_id AND i.admitted = 1 "
-                f"JOIN schemas s ON f.target_id = 'sch_' || s.id "
-                f"WHERE {_latest_accepted_feedback_sql()} AND f.target_kind = 'memory' AND s.status = 'active' "
-                f"AND {cohort_sql}{scope_sql}{window_sql}",
-                retrieval_args,
-            ).fetchone()
-            base["memory_assessed"] = int(assessed_row["n"] or 0) if assessed_row else 0
-        except sqlite3.Error:
-            base["memory_assessed"] = 0
-
-        try:
-            for row in conn.execute(
-                f"WITH winning AS (SELECT f.target_kind, f.target_id, f.assessment, f.effect "
-                f"FROM feedback_events f "
-                f"JOIN context_recall_events r ON r.context_id = f.retrieval_id "
-                f"WHERE {_latest_accepted_feedback_sql()} "
-                f"AND (f.target_kind = 'procedure' OR f.target_id LIKE 'sch_%') "
-                f"AND {cohort_sql}{scope_sql}{window_sql}) "
-                "SELECT target_kind AS kind, assessment, '' AS effect, "
-                "COUNT(DISTINCT target_id) AS n FROM winning GROUP BY target_kind, assessment "
-                "UNION ALL SELECT target_kind AS kind, '' AS assessment, effect, "
-                "COUNT(DISTINCT target_id) AS n FROM winning GROUP BY target_kind, effect",
-                retrieval_args,
-            ).fetchall():
-                kind = str(row["kind"])
-                assessment = str(row["assessment"] or "")
-                effect = str(row["effect"] or "")
-                n = int(row["n"] or 0)
-                if kind == "memory":
-                    if assessment == "used":
-                        base["memory_used"] += n
-                    elif assessment == "irrelevant":
-                        base["memory_irrelevant"] += n
-                    elif assessment == "stale":
-                        base["memory_stale"] += n
-                    elif assessment == "wrong":
-                        base["memory_wrong"] += n
-                elif kind == "procedure":
-                    if assessment == "used":
-                        base["procedure_used"] += n
-                    elif assessment == "not_used":
-                        base["procedure_not_used"] += n
-                    if effect == "helped":
-                        base["procedure_helped"] += n
-                    elif effect == "no_effect":
-                        base["procedure_no_effect"] += n
-                    elif effect == "harmed":
-                        base["procedure_harmed"] += n
-        except sqlite3.Error:
-            pass
-        return base
+        return projection(conn, qs)
+    except sqlite3.Error as exc:
+        return {"available": False, "unavailable_reason": str(exc)}
     finally:
         conn.close()
 
@@ -2899,31 +2657,37 @@ def _retrieval_signal_expression(key: str) -> str:
     observed = (
         "(SELECT COUNT(*) FROM feedback_events f "
         f"WHERE f.retrieval_id = r.context_id AND {_latest_accepted_feedback_sql()} "
-        f"AND (f.assessment = '{key}' OR f.effect = '{key}')"
+        f"AND EXISTS(SELECT 1 FROM ({delivered_sql()}) d WHERE d.context_id=r.context_id AND d.target_id=f.target_id AND d.target_kind=f.target_kind) "
+        f"AND (f.assessment = '{key}' OR (f.target_kind='procedure' AND f.assessment='used' AND f.effect = '{key}'))"
         ")"
     )
     if key != "unknown":
         return observed
     return (
         f"({observed} + CASE WHEN NOT EXISTS ("
-        "SELECT 1 FROM feedback_events f WHERE f.retrieval_id = r.context_id "
-        f"AND {_latest_accepted_feedback_sql()} AND (f.assessment IS NOT NULL OR f.effect IS NOT NULL)"
+        f"SELECT 1 FROM ({delivered_sql()}) d JOIN feedback_events f ON f.retrieval_id=d.context_id "
+        "AND f.target_kind=d.target_kind AND f.target_id=d.target_id "
+        f"WHERE d.context_id=r.context_id AND {_latest_accepted_feedback_sql()} "
+        "AND (f.assessment IS NOT NULL OR f.effect IS NOT NULL)"
         ") THEN 1 ELSE 0 END)"
     )
 
 
 def _retrieval_effect_expression() -> str:
     """Rank the effect badge shown in the retrieval list from unknown to harmful."""
-    return (
-        "CASE "
-        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        f"AND {_latest_accepted_feedback_sql()} AND f.effect='harmed') THEN 3 "
-        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        f"AND {_latest_accepted_feedback_sql()} AND f.effect='no_effect') THEN 2 "
-        "WHEN EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
-        f"AND {_latest_accepted_feedback_sql()} AND f.effect='helped') THEN 1 "
-        "ELSE 0 END"
+    eligible_feedback = (
+        "SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id "
+        f"AND {_latest_accepted_feedback_sql()} "
+        "AND f.assessment='used' AND f.target_kind='procedure' "
+        f"AND EXISTS (SELECT 1 FROM ({delivered_sql()}) d "
+        "WHERE d.context_id=r.context_id AND d.target_id=f.target_id "
+        "AND d.target_kind=f.target_kind)"
     )
+    branches = " ".join(
+        f"WHEN EXISTS ({eligible_feedback} AND f.effect='{effect}') THEN {rank}"
+        for effect, rank in (("harmed", 3), ("no_effect", 2), ("helped", 1))
+    )
+    return f"CASE {branches} ELSE 0 END"
 
 
 def _retrieval_sort(qs: dict[str, list[str]]) -> tuple[str, str]:
@@ -2965,29 +2729,28 @@ def _retrieval_filters(qs: dict[str, list[str]]) -> tuple[str, list[Any]]:
         clauses.append("r.retrieval_type = ?")
         args.append(retrieval_type)
     if feedback == "complete":
-        clauses.append(
-            "EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted' AND f.coverage='complete')"
-        )
+        clauses.append(f"({complete_request_sql()})")
     elif feedback == "incomplete":
-        clauses.append(
-            "NOT EXISTS (SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted' AND f.coverage='complete')"
-        )
+        clauses.append(f"NOT ({complete_request_sql()})")
     if no_match == "true":
-        clauses.append("r.count_n = 0")
-    elif no_match == "false":
-        clauses.append("r.count_n > 0")
-    if contains in {"memory", "procedure"}:
-        kind = "procedure" if contains == "procedure" else "schema"
         clauses.append(
-            "EXISTS (SELECT 1 FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1 AND i.memory_type=?)"
+            f"NOT EXISTS(SELECT 1 FROM ({delivered_sql()}) d WHERE d.context_id=r.context_id)"
+        )
+    elif no_match == "false":
+        clauses.append(
+            f"EXISTS(SELECT 1 FROM ({delivered_sql()}) d WHERE d.context_id=r.context_id)"
+        )
+    if contains in {"memory", "procedure"}:
+        kind = "procedure" if contains == "procedure" else "memory"
+        clauses.append(
+            f"EXISTS (SELECT 1 FROM ({delivered_sql()}) i WHERE i.context_id=r.context_id AND i.target_kind=?)"
         )
         args.append(kind)
-    if (qs.get("include_internal") or ["false"])[0] != "true":
+    if (qs.get("include_internal") or ["true"])[0] != "true":
         clauses.append(
             "lower(COALESCE(r.query,'')) NOT LIKE '%<hook_prompt%' AND lower(COALESCE(r.query,'')) NOT LIKE '%slowave mandatory:%'"
         )
-    from_ts = _qs_int(qs, "from", 0)
-    to_ts = _qs_int(qs, "to", 0)
+    from_ts, to_ts = bounds(qs)
     if from_ts:
         clauses.append("r.created_at >= ?")
         args.append(from_ts)
@@ -3039,7 +2802,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
         "type": "r.retrieval_type",
         "scope": "lower(COALESCE(r.scope_id, ''))",
         "activity": "lower(COALESCE(r.session_id, ''))",
-        "result": "CASE WHEN r.count_n = 0 THEN 0 ELSE 1 END",
+        "result": f"EXISTS(SELECT 1 FROM ({delivered_sql()}) d WHERE d.context_id=r.context_id)",
         "exposed": "exposed_count",
         "memories_retrieved": "memory_count",
         "procedures_retrieved": "procedure_count",
@@ -3057,10 +2820,10 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
         ).fetchone()
         rows = conn.execute(
             "SELECT r.*, "
-            "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1) AS exposed_count, "
-            "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1 AND i.memory_type IN ('schema','related')) AS memory_count, "
-            "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1 AND i.memory_type IN ('procedure','procedural_memory')) AS procedure_count, "
-            "EXISTS(SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted' AND f.coverage='complete') AS feedback_complete, "
+            f"(SELECT COUNT(*) FROM ({delivered_sql()}) i WHERE i.context_id=r.context_id) AS exposed_count, "
+            f"(SELECT COUNT(*) FROM ({delivered_sql()}) i WHERE i.context_id=r.context_id AND i.target_kind='memory') AS memory_count, "
+            f"(SELECT COUNT(*) FROM ({delivered_sql()}) i WHERE i.context_id=r.context_id AND i.target_kind='procedure') AS procedure_count, "
+            f"({complete_request_sql()}) AS feedback_complete, "
             "EXISTS(SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted') AS feedback_observed, "
             f"{_retrieval_effect_expression()} AS effect_rank, "
             f"{signal_select} "
@@ -3068,6 +2831,7 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             f"ORDER BY {sort_columns[sort]} {direction.upper()}, r.created_at DESC, r.context_id DESC LIMIT ? OFFSET ?",
             [*args, per_page, (page - 1) * per_page],
         ).fetchall()
+        delivered = occasions(conn, where, args)
         ids = [str(r["context_id"]) for r in rows]
         feedback_by_id: dict[str, list[dict[str, Any]]] = {item: [] for item in ids}
         if ids:
@@ -3087,13 +2851,25 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             item["feedback"] = feedback_by_id.get(str(item["context_id"]), [])
             signal_counts = {key: 0 for key in _RETRIEVAL_SIGNAL_KEYS}
             observed = False
+            delivered_targets = {
+                (i["target_kind"], i["target_id"])
+                for i in delivered
+                if i["context_id"] == item["context_id"]
+            }
             latest_feedback = {
                 (fb["target_kind"], fb["target_id"]): fb
                 for fb in item["feedback"]
                 if fb.get("status") == "accepted"
+                and (fb["target_kind"], fb["target_id"]) in delivered_targets
             }
             for feedback_item in latest_feedback.values():
-                for field in ("assessment", "effect"):
+                fields = ["assessment"]
+                if (
+                    feedback_item["target_kind"] == "procedure"
+                    and feedback_item["assessment"] == "used"
+                ):
+                    fields.append("effect")
+                for field in fields:
                     value = str(feedback_item.get(field) or "")
                     if not value:
                         continue
@@ -3110,41 +2886,20 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
                 else "incomplete" if item.get("feedback_observed") else "unknown"
             )
             retrievals.append(item)
-        summary = conn.execute(
-            "SELECT COUNT(*) AS retrievals, SUM(CASE WHEN r.count_n=0 THEN 1 ELSE 0 END) AS no_match, "
-            "SUM(CASE WHEN EXISTS(SELECT 1 FROM feedback_events f WHERE f.retrieval_id=r.context_id AND f.status='accepted' AND f.coverage='complete') THEN 1 ELSE 0 END) AS feedback_complete, "
-            "SUM((SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id=r.context_id AND i.admitted=1)) AS exposed "
-            f"FROM context_recall_events r WHERE {where}",
-            args,
-        ).fetchone()
-        assessed = conn.execute(
-            "SELECT COUNT(DISTINCT f.retrieval_id || ':' || f.target_kind || ':' || f.target_id) AS n "
-            "FROM feedback_events f JOIN context_recall_events r ON r.context_id=f.retrieval_id "
-            f"WHERE f.status='accepted' AND f.target_kind IN ('memory','procedure') AND {where}",
-            args,
-        ).fetchone()
-        summary_dict = dict(summary) if summary else {}
-        summary_dict["assessed"] = int(assessed["n"] if assessed else 0)
-        demonstrated = conn.execute(
-            "SELECT COUNT(*) AS n FROM context_recall_events r "
-            "WHERE " + where + " AND EXISTS ("
-            "SELECT 1 FROM feedback_events fc WHERE fc.retrieval_id = r.context_id "
-            "AND fc.status = 'accepted' AND fc.coverage = 'complete'"
-            ") AND EXISTS ("
-            "SELECT 1 FROM feedback_events f JOIN context_recall_items i "
-            "ON i.context_id = r.context_id AND i.memory_id = f.target_id AND i.admitted = 1 "
-            f"WHERE f.retrieval_id = r.context_id AND {_latest_accepted_feedback_sql()} "
-            "AND (f.assessment = 'used' OR f.effect = 'helped')"
-            ")",
-            args,
-        ).fetchone()
-        summary_dict["demonstrated_value"] = int(demonstrated["n"] if demonstrated else 0)
-        summary_dict["unknown"] = max(
-            0, int(summary_dict.get("exposed") or 0) - summary_dict["assessed"]
-        )
+        metrics = projection(conn, qs, request_filter=(where, args))
+        summary_dict = {
+            "retrievals": metrics["retrievals_total"],
+            "no_match": metrics["retrievals_no_match"],
+            "demonstrated_value": metrics["retrievals_used"],
+            "exposed": metrics["deliveries"],
+            "assessed": metrics["feedback_assessed"],
+            "unknown": metrics["feedback_unknown"],
+            "feedback_complete": metrics["retrievals_feedback_complete"],
+        }
         return {
             "retrievals": retrievals,
             "summary": summary_dict,
+            "metrics": metrics,
             "pagination": {
                 "page": page,
                 "per_page": per_page,
@@ -3325,41 +3080,51 @@ def _activity_summary(db_path: str, where: str, args: list[Any]) -> dict[str, in
             return cached[1]
     conn = _connect(db_path)
     try:
-        summary_row = conn.execute(
-            "SELECT COUNT(*) AS eligible, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND s.feedback_status = 'complete' THEN 1 ELSE 0 END) AS complete, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND COALESCE(s.feedback_status, '') = 'incomplete' THEN 1 ELSE 0 END) AS incomplete, "
-            "SUM(CASE WHEN s.ended_ts IS NULL THEN 1 ELSE 0 END) AS pending, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL THEN 1 ELSE 0 END) AS closed, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND s.outcome = 'success' THEN 1 ELSE 0 END) AS successful_closed, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND s.outcome IN ('partial', 'failure') THEN 1 ELSE 0 END) AS partial_failed_closed, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND (s.outcome IS NULL OR s.outcome NOT IN ('success', 'partial', 'failure')) THEN 1 ELSE 0 END) AS unknown_outcome_closed, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND s.outcome IN ('success', 'partial', 'failure') THEN 1 ELSE 0 END) AS known_outcome_closed, "
-            "SUM(CASE WHEN s.feedback_status IN ('complete', 'incomplete') OR s.ended_ts IS NULL THEN 1 ELSE 0 END) AS closure_eligible, "
-            "SUM(CASE WHEN s.ended_ts IS NOT NULL AND (s.feedback_status IS NULL OR s.feedback_status NOT IN ('complete', 'incomplete')) THEN 1 ELSE 0 END) AS closure_unclassified, "
-            "SUM(CASE WHEN s.feedback_status = 'complete' AND EXISTS(SELECT 1 FROM context_recall_events r WHERE r.session_id = s.id) THEN 1 ELSE 0 END) AS context_denominator, "
-            "SUM(CASE WHEN s.feedback_status = 'complete' AND EXISTS(SELECT 1 FROM context_recall_events r WHERE r.session_id = s.id) "
-            f"AND EXISTS(SELECT 1 FROM feedback_events f WHERE f.session_id = s.id AND {_latest_accepted_feedback_sql()} AND (f.assessment = 'used' OR f.effect = 'helped')) THEN 1 ELSE 0 END) AS context_use "
-            f"FROM sessions s WHERE {where}",
+        activities = [
+            dict(row) for row in conn.execute(f"SELECT s.* FROM sessions s WHERE {where}", args)
+        ]
+        ended = [activity for activity in activities if activity["ended_ts"] is not None]
+        tracked = [
+            activity
+            for activity in ended
+            if str(activity.get("lifecycle_version") or "").removeprefix("v").isdigit()
+            and int(str(activity["lifecycle_version"]).removeprefix("v")) >= 9
+        ]
+        by_task: dict[str, list[dict[str, Any]]] = {}
+        for item in occasions(
+            conn,
+            f"EXISTS (SELECT 1 FROM sessions s WHERE s.id=r.session_id AND ({where}))",
             args,
-        ).fetchone()
+        ):
+            by_task.setdefault(item["session_id"], []).append(item)
+        outcomes = {
+            outcome: sum(a["outcome"] == outcome for a in ended)
+            for outcome in ("success", "partial", "failure")
+        }
+        known_outcomes = sum(outcomes.values())
         summary = {
-            key: int(summary_row[key] or 0) if summary_row else 0
-            for key in (
-                "eligible",
-                "complete",
-                "incomplete",
-                "pending",
-                "closed",
-                "successful_closed",
-                "partial_failed_closed",
-                "unknown_outcome_closed",
-                "known_outcome_closed",
-                "closure_eligible",
-                "closure_unclassified",
-                "context_denominator",
-                "context_use",
-            )
+            "eligible": len(activities),
+            "pending": len(activities) - len(ended),
+            "closed": len(ended),
+            "complete": sum(
+                a["feedback_status"] == "complete"
+                and all(assessed(item) for item in by_task.get(a["id"], []))
+                for a in tracked
+            ),
+            "incomplete": sum(a["feedback_status"] == "incomplete" for a in ended),
+            "closure_eligible": len(tracked),
+            "closure_unclassified": len(ended) - len(tracked),
+            "context_denominator": sum(bool(by_task.get(a["id"])) for a in activities),
+            "context_use": sum(
+                any(item["assessment"] == "used" for item in by_task.get(a["id"], []))
+                for a in activities
+            ),
+            "successful_closed": outcomes["success"],
+            "partial_closed": outcomes["partial"],
+            "failure_closed": outcomes["failure"],
+            "partial_failed_closed": outcomes["partial"] + outcomes["failure"],
+            "known_outcome_closed": known_outcomes,
+            "unknown_outcome_closed": len(ended) - known_outcomes,
         }
         with _ACTIVITY_SUMMARY_CACHE_LOCK:
             _ACTIVITY_SUMMARY_CACHE[key] = (now, summary)
@@ -3415,8 +3180,7 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         if value:
             clauses.append(f"{column} = ?")
             args.append(value)
-    from_ts = _qs_int(qs, "from", 0)
-    to_ts = _qs_int(qs, "to", 0)
+    from_ts, to_ts = bounds(qs)
     lane = (qs.get("lane") or [""])[0].strip()
     if from_ts and not lane:
         clauses.append("s.started_ts >= ?")
@@ -3651,8 +3415,8 @@ def _procedure_detail(
                 for r in connection.execute(
                     "SELECT DISTINCT r.context_id AS retrieval_id, r.session_id, r.scope_id, r.created_at, r.retrieval_type "
                     "FROM context_recall_events r LEFT JOIN context_recall_items i ON i.context_id=r.context_id "
-                    "WHERE (i.memory_id=? AND i.admitted=1) OR r.response_json LIKE ? ORDER BY r.created_at DESC LIMIT 100",
-                    (procedure_id, f'%"{procedure_id}"%'),
+                    "WHERE i.memory_id=? AND i.admitted=1 AND i.memory_type IN ('procedure','procedural_memory') ORDER BY r.created_at DESC LIMIT 100",
+                    (procedure_id,),
                 ).fetchall()
             ]
         except sqlite3.Error:
@@ -3664,6 +3428,9 @@ def _procedure_detail(
                 (procedure_id,),
             ).fetchall()
         ]
+        procedure["use_history_totals"] = history(occasions(connection), "procedure", procedure_id)
+        procedure["historical_evidence"] = procedure["evidence"]
+        procedure["evidence"] = procedure["use_history_totals"]
         procedure["retrievals"] = retrievals
         procedure["feedback"] = feedback
         procedure["source_session"] = source_session
@@ -3951,6 +3718,9 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
     try:
         from slowave.symbolic.procedural_memory import load_procedures
 
+        metrics = _effectiveness_payload(
+            db_path, {**qs, "library": ["procedure"], "cohort": [cohort]}
+        )
         precedents = load_procedures(conn, scope=scope_filter or None)
         if cohort != "all":
             cohort_session_ids = {
@@ -4002,7 +3772,13 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         ).fetchall()
         procedure_retrievals: list[dict[str, Any]] = []
         for row in retrieval_rows:
-            procedure_ids = _json_list(_json_dict(row["response_json"]).get("procedure_ids"))
+            procedure_ids = [
+                str(i["memory_id"])
+                for i in conn.execute(
+                    "SELECT DISTINCT memory_id FROM context_recall_items WHERE context_id=? AND admitted=1 AND memory_type IN ('procedure','procedural_memory')",
+                    [row["context_id"]],
+                )
+            ]
             if procedure_ids:
                 procedure_retrievals.append(
                     {
@@ -4233,10 +4009,19 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
                 and str(row["coverage"] or "") == "complete"
             )
 
+        period_from, period_to = bounds(qs)
+        canonical_occasions = occasions(
+            conn, "r.created_at>=? AND r.created_at<=?", [period_from, period_to]
+        )
+        for precedent in precedents:
+            precedent["historical_evidence"] = precedent["evidence"]
+            precedent["evidence"] = history(canonical_occasions, "procedure", precedent["id"])
+            precedent["last_retrieved_ts"] = precedent["evidence"]["last_retrieved"]
+            precedent["last_used_ts"] = precedent["evidence"]["last_used"]
         outcome_filter = (qs.get("outcome") or [""])[0].strip()
         verification_filter = (qs.get("verification") or [""])[0].strip()
         retrieved_filter = (qs.get("retrieved") or [""])[0].strip()
-        from_ts = _qs_int(qs, "from", 0)
+        from_ts = _qs_int(qs, "saved_from", 0)
         if outcome_filter:
             precedents = [item for item in precedents if item.get("outcome") == outcome_filter]
         if verification_filter:
@@ -4265,7 +4050,10 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
                 item = dict(item)
                 item["procedure_assessment"] = v9_latest_assessment.get(
                     (str(item["retrieval_id"]), precedent["id"])
-                ) or procedure_uses_by_session.get(str(item["session_id"]), {}).get(precedent["id"])
+                )
+                item["historical_assessment"] = procedure_uses_by_session.get(
+                    str(item["session_id"]), {}
+                ).get(precedent["id"])
                 precedent_retrievals.append(item)
             precedent["retrievals"] = precedent_retrievals[:20]
         recent_retrievals = []
@@ -4276,23 +4064,6 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
                 *feedback_by_retrieval.get(item["retrieval_id"], []),
             ]
             recent_retrievals.append(item)
-
-        retrieved_procedures = sum(
-            1 for item in precedents if int(item["evidence"].get("retrieved", 0)) > 0
-        )
-        assessed_procedures = sum(
-            1
-            for item in precedents
-            if int(item["evidence"].get("retrieved", 0)) > 0
-            and int(item["evidence"].get("used", 0)) + int(item["evidence"].get("not_used", 0)) > 0
-        )
-        effect_assessed = sum(
-            int(item["evidence"].get(key, 0))
-            for item in precedents
-            for key in ("helped", "no_effect", "harmed")
-        )
-        helpful_assessments = sum(int(item["evidence"].get("helped", 0)) for item in precedents)
-        harmful_assessments = sum(int(item["evidence"].get("harmed", 0)) for item in precedents)
 
         return {
             "status": "dogfooding" if precedents else "awaiting_structured_attempts",
@@ -4331,16 +4102,15 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
                 "legacy": legacy_feedback_counts,
             },
             "recent_retrievals": recent_retrievals,
+            "metrics": metrics,
             "summary": {
-                "current_procedures": len(precedents),
-                "retrieved_procedures": retrieved_procedures,
-                "used_procedures": sum(
-                    int(item["evidence"].get("used", 0)) > 0 for item in precedents
-                ),
-                "assessed_retrieved_procedures": assessed_procedures,
-                "helpful_assessments": helpful_assessments,
-                "effect_assessed": effect_assessed,
-                "harmful_assessments": harmful_assessments,
+                "current_procedures": metrics.get("procedure_total"),
+                "retrieved_procedures": metrics.get("procedure_exposed"),
+                "used_procedures": metrics.get("procedure_used"),
+                "assessed_retrieved_procedures": metrics.get("procedure_assessed"),
+                "helpful_assessments": metrics.get("procedure_helped"),
+                "effect_assessed": metrics.get("effect_known"),
+                "harmful_assessments": metrics.get("procedure_harmed"),
             },
         }
     finally:

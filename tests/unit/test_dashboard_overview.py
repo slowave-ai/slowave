@@ -67,7 +67,7 @@ def test_react_home_separates_service_observations_and_activity_lanes() -> None:
     assert "Episodes" in app
     assert "Memories" in app
     assert 'title="Procedures"' in app
-    assert "current_procedures" in app
+    assert 'title="Overview"' in app
     assert "Since you last looked" not in app
 
 
