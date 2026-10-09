@@ -1,5 +1,8 @@
 # Install & Setup
 
+For the recommended commands and complete workflows, see
+[Install, upgrade, run, and remove Slowave](lifecycle.md).
+
 The complete reference for installing, setting up, and uninstalling Slowave — what `slowave setup` does, what files it touches, and how to undo it.
 
 ## Installation
@@ -25,10 +28,10 @@ slowave setup             # apply: MCP configs, lifecycle instructions, services
 slowave doctor            # verify: daemon health, client detection
 ```
 
-`slowave setup` is idempotent and safe to run multiple times. The HTTP MCP daemon and background consolidation worker start automatically as system services.
+`slowave setup` is safe to repeat; it reapplies and restarts managed services on every run. The HTTP MCP daemon and background consolidation worker start automatically as system services.
 
-To reapply configuration and reinstall configured services even when setup reports
-that everything is already configured, run `slowave setup --force`. Use
+To explicitly reapply client configuration, run `slowave setup --force`.
+Normal setup already reapplies services after an upgrade. Use
 `--force --dry-run` to preview it, or `--client codex` to select one client.
 Force preserves unrelated client settings and runs verification; it does not
 refresh tool definitions cached by an active client conversation.

@@ -71,9 +71,9 @@ def _remove_daemon_service(dry_run: bool) -> int:
                 _ok(f"Would stop and remove: {plist_path}")
                 return 0
             try:
-                subprocess.run(
-                    ["launchctl", "unload", str(plist_path)], check=False, capture_output=True
-                )
+                from slowave.cli.services import control
+
+                control("stop", ("daemon",))
                 plist_path.unlink()
                 _ok(f"Removed launchd daemon service: {plist_path}")
                 return 1
@@ -118,6 +118,9 @@ def _remove_daemon_service(dry_run: bool) -> int:
             _ok("Would remove Task Scheduler task: SlowaveDaemon")
             return 0
         try:
+            from slowave.cli.services import control
+
+            control("stop", ("daemon",))
             subprocess.run(
                 ["schtasks", "/Delete", "/TN", "SlowaveDaemon", "/F"],
                 check=False,
@@ -141,9 +144,9 @@ def _remove_worker_service(dry_run: bool) -> int:
                 _ok(f"Would stop and remove: {plist_path}")
                 return 0
             try:
-                subprocess.run(
-                    ["launchctl", "unload", str(plist_path)], check=False, capture_output=True
-                )
+                from slowave.cli.services import control
+
+                control("stop", ("worker",))
                 plist_path.unlink()
                 _ok(f"Removed launchd service: {plist_path}")
                 return 1
@@ -185,6 +188,9 @@ def _remove_worker_service(dry_run: bool) -> int:
             _ok("Would remove Task Scheduler task: SlowaveWorker")
             return 0
         try:
+            from slowave.cli.services import control
+
+            control("stop", ("worker",))
             subprocess.run(
                 ["schtasks", "/Delete", "/TN", "SlowaveWorker", "/F"],
                 check=False,
@@ -208,9 +214,9 @@ def _remove_backup_service(dry_run: bool) -> int:
                 _ok(f"Would stop and remove: {plist_path}")
                 return 0
             try:
-                subprocess.run(
-                    ["launchctl", "unload", str(plist_path)], check=False, capture_output=True
-                )
+                from slowave.cli.services import control
+
+                control("stop", ("backup",))
                 plist_path.unlink()
                 _ok(f"Removed launchd backup service: {plist_path}")
                 return 1
@@ -261,6 +267,9 @@ def _remove_backup_service(dry_run: bool) -> int:
             _ok("Would remove Task Scheduler task: SlowaveBackup")
             return 0
         try:
+            from slowave.cli.services import control
+
+            control("stop", ("backup",))
             subprocess.run(
                 ["schtasks", "/Delete", "/TN", "SlowaveBackup", "/F"],
                 check=False,

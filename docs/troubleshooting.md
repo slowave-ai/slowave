@@ -1,5 +1,8 @@
 # Troubleshooting
 
+For the recommended commands and complete workflows, see
+[Install, upgrade, run, and remove Slowave](lifecycle.md).
+
 If something isn't working, start with `slowave doctor` — it checks every
 component, detects stale lifecycle blocks, and points you at specific issues:
 
@@ -10,6 +13,19 @@ slowave doctor
 ```bash
 slowave doctor --verbose
 ```
+
+### Still running an old version after an upgrade
+
+Run `slowave setup` to reapply service registrations and restart installed
+services; `--force` is not required for services. Check `slowave status --services`
+for installed and running daemon versions. To restart services without changing
+client configuration, use `slowave restart`.
+
+Stop and relaunch any foreground dashboard separately: Ctrl+C, then
+`slowave dashboard`. Refresh/restart MCP clients to load current tool definitions.
+If the versions still differ, check that the package-manager upgrade and the
+registered executable refer to the same Python environment. See the
+[upgrade workflow](lifecycle.md#upgrade).
 
 The sections below cover common failure modes for each component.
 
@@ -36,12 +52,12 @@ kill <PID>
 ```
 
 ```bash
-slowave serve start
+slowave start
 ```
 
 **Stale PID file.** If the daemon was killed ungracefully, the `daemon.pid`
 file beneath the effective runtime root may prevent it from restarting.
-`slowave serve start` detects and cleans stale entries automatically. Use
+`slowave start` detects and cleans stale entries automatically. Use
 `slowave serve status` to print the exact PID-file path before removing it
 manually.
 
@@ -50,7 +66,7 @@ slowave serve status
 ```
 
 ```bash
-slowave serve start
+slowave start
 ```
 
 **Slow Python import.** On Windows the health check waits up to 45 seconds for
@@ -77,18 +93,18 @@ may be warming up (models load lazily on first tool call).
 
 ### Daemon process is a zombie
 
-If the daemon process exists but doesn't respond, force-kill and restart:
+If the daemon process exists but doesn't respond, stop through the supervisor and restart:
 
 ```bash
-pkill -f 'slowave serve'
+slowave stop
 ```
 
 ```bash
-pkill -f 'slowave.mcp.http_server'
+slowave status --services
 ```
 
 ```bash
-slowave serve start
+slowave start
 ```
 
 ---
@@ -360,7 +376,7 @@ pkill -f slowave
 ```
 
 ```bash
-slowave serve start
+slowave start
 ```
 
 ---

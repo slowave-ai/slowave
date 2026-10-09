@@ -1158,3 +1158,56 @@ def test_force_reregisters_matching_windows_task(monkeypatch):
         == "registered and started"
     )
     assert any("Register-ScheduledTask" in args[-1] for args in calls)
+
+
+def test_windows_replacement_stops_before_registration(monkeypatch):
+    from subprocess import CompletedProcess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
+    assert _setup_mod._register_windows_task("SlowaveWorker", "slowave", "worker", force=True)[0]
+    script = calls[-1][-1]
+    assert script.index("Disable-ScheduledTask") < script.index("Stop-ScheduledTask")
+    assert script.index("Stop-ScheduledTask") < script.index("Register-ScheduledTask")
+    assert script.index("Register-ScheduledTask") < script.index("Start-ScheduledTask")
+    assert "Task did not stop" in script
+
+
+def test_setup_reapplies_services_without_force(fake_home, monkeypatch):
+    from click.testing import CliRunner
+
+    calls = []
+    monkeypatch.setattr(_setup_mod, "SYSTEM", "Linux")
+    monkeypatch.setattr(_setup_mod, "_verify_daemon_health", lambda *a, **kw: True)
+    for kind in ("daemon", "worker", "backup"):
+
+        def install(binary, *, force=False, kind=kind):
+            calls.append((kind, force))
+            return "/fake/service", True
+
+        monkeypatch.setattr(_setup_mod, f"_install_{kind}_linux", install)
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda *a, **kw: None)
+    result = CliRunner().invoke(setup_cmd, ["--client", "codex"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert calls == [("daemon", True), ("worker", True), ("backup", True)]
+
+
+def test_setup_reenables_windows_backup_without_running_it(monkeypatch):
+    from subprocess import CompletedProcess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
+    _setup_mod._install_backup_windows("slowave", force=True)
+    script = calls[-1][-1]
+    assert "Enable-ScheduledTask" in script
+    assert "Start-ScheduledTask" not in script
