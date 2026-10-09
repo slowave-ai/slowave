@@ -4,9 +4,11 @@
 remember / recall / feedback / commit) that clients are told to follow --
 both via the injected block in CLAUDE.md/.clinerules/etc.
 (slowave/cli/setup.py's ``_LIFECYCLE_BLOCK_TEMPLATE``) and via the MCP tool
-docstrings themselves. Bump this constant whenever that contract changes in
-a way rollout telemetry should be able to distinguish (new/renamed verb,
-changed call order, changed required fields).
+docstrings themselves. Bump this constant whenever that contract or its
+behavioral guidance changes in a way rollout telemetry should distinguish
+(new/renamed verb, changed call order or required fields, or a material change
+to when clients should invoke a verb). Use the next available version after
+the PR base and keep it unchanged throughout iterations within that PR.
 
 Two independent things read this constant:
   - slowave/cli/setup.py stamps it into the injected block's HTML markers,
@@ -25,4 +27,4 @@ is re-run) -- `slowave doctor` reports the latter.
 
 from __future__ import annotations
 
-LIFECYCLE_VERSION = "v16"
+LIFECYCLE_VERSION = "v17"

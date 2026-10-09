@@ -379,18 +379,7 @@ configure. Claude Desktop and Cursor require a manual paste because their
 instruction surfaces cannot be changed programmatically; setup prints the
 current text and destination. The generated instructions are the authoritative
 lifecycle guidance; the connected MCP schemas and descriptions define endpoint
-contracts. The lifecycle requires the connected agent to:
-
-1. activate a scoped task session and receive relevant recorded memory;
-2. remember durable claims when appropriate;
-3. recall during a task when the question changes;
-4. assess retrieved memories (`used`, `not_used`, `unassessable`, `irrelevant`, `already_known`, or `stale`)
-   and procedures (`used`, `not_used`, or `unassessable`, with effect), including complete feedback
-   for empty retrievals;
-5. commit an honest outcome and any reusable procedure.
-
-See [architecture.md](architecture.md) for the current tool contracts and
-feedback requirements.
+contracts.
 
 | Client | Location | `agent` value |
 |---|---|---|
