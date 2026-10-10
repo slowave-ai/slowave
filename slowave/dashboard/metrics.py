@@ -236,9 +236,11 @@ def projection(
         (
             r["retrieval_type"],
             int(r["response_chars"]),
-            int(r["estimated_tokens"])
-            if r.get("estimated_tokens") is not None
-            else math.ceil(int(r["response_chars"]) / 4),
+            (
+                int(r["estimated_tokens"])
+                if r.get("estimated_tokens") is not None
+                else math.ceil(int(r["response_chars"]) / 4)
+            ),
         )
         for r in requests
         if r["retrieval_type"] in all_kinds and r.get("response_chars") is not None
