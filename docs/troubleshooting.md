@@ -1,443 +1,278 @@
-# Troubleshooting
+# Troubleshooting Slowave
 
-For the recommended commands and complete workflows, see
-[Install, upgrade, run, and remove Slowave](lifecycle.md).
+For installation, service commands, upgrades, and removal, start with the
+[installation guide](install.md). Run `slowave docs troubleshooting` to open this
+page from your terminal.
 
-If something isn't working, start with `slowave doctor` — it checks every
-component, detects stale lifecycle blocks, and points you at specific issues:
+## Start here
 
-```bash
-slowave doctor
-```
-
-```bash
+```text
+slowave --version
+slowave status --services
 slowave doctor --verbose
 ```
 
-### Still running an old version after an upgrade
+`status --services` reads the OS supervisor and daemon health without opening the
+database. It reports installed/live versions and effective runtime/log paths.
+`doctor` performs deeper checks and may initialize database/model state. Run
+commands as the same user, with the same Python environment and runtime overrides
+used by setup. If one command fails, retain its error and continue with the
+OS-specific checks below; do not treat partial output as a healthy installation.
 
-Run `slowave setup` to reapply service registrations and restart installed
-services; `--force` is not required for services. Check `slowave status --services`
-for installed and running daemon versions. To restart services without changing
-client configuration, use `slowave restart`.
+| Symptom | Next step |
+|---|---|
+| `slowave` command not found | [PATH and Python environment](#command-not-found-or-wrong-python-environment) |
+| Old version after upgrading | [Upgrade checks](#old-version-after-an-upgrade) |
+| Missing, stopped, or repeatedly failing jobs | [Service startup](#services-will-not-start) and [logs](#logs-by-os) |
+| MCP tools missing or stale | [Client integration](#client-integration) |
+| Dashboard old, blank, or occupied port | [Dashboard](#dashboard) |
+| Database locked, migration failure, or corruption | [Database and recovery](#database-and-recovery) |
+| Uninstall/purge failed | [Removal](#removal-problems) |
 
-Stop and relaunch any foreground dashboard separately: Ctrl+C, then
-`slowave dashboard`. Refresh/restart MCP clients to load current tool definitions.
-If the versions still differ, check that the package-manager upgrade and the
-registered executable refer to the same Python environment. See the
-[upgrade workflow](lifecycle.md#upgrade).
+## Command not found or wrong Python environment
 
-The sections below cover common failure modes for each component.
+For pipx, run `pipx list`, then `pipx ensurepath` and reopen the terminal. For a
+virtual environment, use its full `slowave` executable path from the
+[installation examples](install.md#alternative-pip-in-a-dedicated-virtual-environment).
+Do not install a second copy to work around PATH problems.
 
----
+Inspect the executable selected by your shell:
 
-## Daemon (HTTP MCP server)
-
-The daemon is a long-running process that serves MCP tools to clients over HTTP
-or SSE. It runs as a user service.
-
-### Daemon won't start
-
-**Port already in use.** Setup assigns the first available loopback port from
-8766 upward and stores it in the per-user runtime directory as `daemon.port`.
-`slowave doctor` and `slowave serve status` print the effective URL. If an
-explicitly configured port is occupied:
-
-```bash
-lsof -i :8766
-```
+**macOS / Linux:**
 
 ```bash
-kill <PID>
+command -v slowave
 ```
+
+**Windows PowerShell:**
+
+```powershell
+Get-Command slowave | Select-Object Source
+```
+
+Compare it with the service's registered executable/action (see below). Pipx,
+Homebrew, and pip environments can coexist, so upgrading one does not update
+another. Run `setup` from the intended installation to rebind registrations.
+Do not move a virtual environment after setup.
+
+## Old version after an upgrade
+
+Run `slowave setup`, then `slowave status --services`. Normal setup reapplies
+services without requiring `--force`. To restart without changing client
+configuration, run `slowave restart`.
+
+Compare `installed_version` with `daemon_health.version` and check
+`daemon_database_matches`. If either mismatches, inspect
+the registered executable and environment. Check that the package upgrade used
+the same installation and `SLOWAVE_HOME`/`SLOWAVE_DB` settings. Version equality
+alone cannot distinguish two development builds bearing the same version;
+restart after reinstalling either build.
+
+Stop foreground dashboard/worker/server terminals with Ctrl+C and relaunch them.
+Reload MCP clients too: stdio servers and cached tool definitions belong to those
+clients and are not replaced by restarting the HTTP daemon. See the complete
+[upgrade workflow](install.md#upgrade), including older releases without `stop`.
+
+## Services will not start
+
+Use `slowave setup` if registrations are missing or their executable path no
+longer exists. Use `slowave start` when registered services are simply stopped.
+Do not use foreground `serve start` to compete with an installed daemon.
+
+### macOS
+
+Run in the logged-in desktop account. These commands inspect jobs and their
+registered program/environment:
 
 ```bash
-slowave start
+launchctl print gui/$(id -u)/com.slowave.daemon
+launchctl print gui/$(id -u)/com.slowave.worker
+launchctl print gui/$(id -u)/com.slowave.backup
 ```
 
-**Stale PID file.** If the daemon was killed ungracefully, the `daemon.pid`
-file beneath the effective runtime root may prevent it from restarting.
-`slowave start` detects and cleans stale entries automatically. Use
-`slowave serve status` to print the exact PID-file path before removing it
-manually.
+A loaded job is not necessarily a running process. Check its state, PID, and last
+exit status. Backup jobs normally sit idle between scheduled runs. A missing GUI
+user domain in a headless session requires [manual management](install.md#manual-service-management).
+Use `setup` after editing service definitions; simply signaling an old process
+does not reload its registration.
+
+### Linux
 
 ```bash
-slowave serve status
+systemctl --user status slowave-daemon.service slowave-worker.service slowave-backup.timer
+systemctl --user cat slowave-daemon.service slowave-worker.service
+systemctl --user list-timers slowave-backup.timer
 ```
 
-```bash
-slowave start
+If the user bus/systemd user manager is unavailable, check your login/session
+configuration. Containers and non-systemd systems need
+[manual management](install.md#manual-service-management). WSL needs systemd
+support enabled and a working user manager. Do not replace `--user` with sudo:
+that controls a different service scope.
+
+Services normally follow your user session. Running them after logout requires
+an explicit OS policy choice, such as user lingering; setup does not enable it.
+See [systemd's loginctl documentation](https://www.freedesktop.org/software/systemd/man/252/loginctl.html).
+
+### Windows PowerShell
+
+```powershell
+Get-ScheduledTask | Where-Object TaskName -like 'Slowave*' | Select-Object TaskName,TaskPath,State
+Get-ScheduledTask | Where-Object TaskName -like 'Slowave*' | Select-Object TaskName,Actions
+Get-ScheduledTaskInfo -TaskName (Get-ScheduledTask | Where-Object TaskName -like 'SlowaveDaemon-*' | Select-Object -First 1 -ExpandProperty TaskName)
+Get-ScheduledTaskInfo -TaskName (Get-ScheduledTask | Where-Object TaskName -like 'SlowaveWorker-*' | Select-Object -First 1 -ExpandProperty TaskName)
+Get-ScheduledTaskInfo -TaskName (Get-ScheduledTask | Where-Object TaskName -like 'SlowaveBackup-*' | Select-Object -First 1 -ExpandProperty TaskName)
 ```
 
-**Slow Python import.** On Windows the health check waits up to 45 seconds for
-imports to finish. If it still fails, inspect `logs/daemon.err` beneath the
-runtime root shown by `slowave doctor`.
+Inspect Task Scheduler's History tab and last-run results for immediate exits.
+The jobs run as your logged-in user. `stop` disables tasks to prevent recovery
+triggers from relaunching them; `start`/`setup` re-enable them. A backup task
+normally reports Ready between runs. The daemon and worker should remain Running.
+Their five-minute recovery trigger is not the worker's consolidation interval.
 
-**Missing dependencies.** Run `slowave doctor` — it validates that all required
-packages are installed and the embedding model can load.
+Each account's tasks have a SID suffix. Setup and uninstall manage only the
+current account's tasks, plus that account's older root-level tasks during
+migration/removal. A root-level task owned by another account is left alone.
 
-### Daemon running but MCP tools not reachable
+Task registration can be blocked by organizational policy. An access-denied error
+requires correcting that policy/account issue or using manual management; do
+not switch to a different administrator account and create a second installation.
 
-Check that the daemon is listening:
+### Port conflict or stale PID
 
-```bash
-slowave serve status
+Use `slowave serve status` for the daemon URL and PID-file path. Slowave assigns
+loopback ports per user (daemon from 8766, dashboard from 8765); do not assume the
+default port when investigating a conflict.
+
+For an explicit port, inspect its owner before stopping anything:
+
+**macOS / Linux:** `lsof -nP -iTCP:8766 -sTCP:LISTEN` (or Linux `ss -ltnp`).
+
+**Windows PowerShell:**
+
+```powershell
+Get-NetTCPConnection -LocalPort 8766 -State Listen | Select-Object LocalPort,OwningProcess
 ```
 
-```bash
-curl "$(slowave serve status --json | python -c 'import json,sys; print(json.load(sys.stdin)["mcp_url"].replace("/mcp", "/health"))')"
-```
+If it is a registered Slowave job, use `slowave stop`, then `slowave start`. If it
+is a manual foreground Slowave process, stop its own terminal. Resolve a genuine
+third-party port conflict by choosing another explicit port and rerunning setup
+with `SLOWAVE_MCP_HTTP_PORT` set. A stale PID file is normally cleaned on daemon
+startup; remove it manually only after confirming that PID is no longer a live
+Slowave process. Never delete the database or WAL files to repair a PID problem.
 
-A `200 OK` means the daemon is alive. If the health endpoint hangs, the engine
-may be warming up (models load lazily on first tool call).
+## Logs by OS
 
-### Daemon process is a zombie
+Use the `logs_dir` printed by `slowave status --services`. Runtime overrides can
+change these paths; old `/tmp/slowave-*.err` examples do not apply.
 
-If the daemon process exists but doesn't respond, stop through the supervisor and restart:
+| OS | Logs / diagnostics |
+|---|---|
+| macOS | Under `logs_dir`: `daemon.log`, `daemon.err`, `worker.log`, `worker.err`, `backup.log`, `backup.err` |
+| Linux | `journalctl --user -u slowave-daemon -u slowave-worker -u slowave-backup --since today` |
+| Windows | Under `logs_dir`, normally `pythonw-serve.log`, `pythonw-worker.log`, `pythonw-backup.log`; also Task Scheduler history |
 
-```bash
-slowave stop
-```
+To read a file, use `tail -n 100 "/actual/log/path"` on macOS/Linux or
+`Get-Content "C:\actual\log\path" -Tail 100` in PowerShell. A custom Windows
+installation without `pythonw.exe` may need foreground execution to expose
+startup output. Files need not exist before the job's first launch.
 
-```bash
-slowave status --services
-```
+## Worker and backups
 
-```bash
-slowave start
-```
+Check `status --services` and worker logs. Worker process detection in `doctor`
+is best-effort; verify supervisor state and the dashboard's worker run history
+before concluding consolidation is healthy. Stop the managed worker before an
+advanced one-off test (`slowave worker --once`), then restart services when done.
 
----
-
-## Background Worker
-
-The worker consolidates raw events into episodic memories on a 5-minute
-interval. It runs as a user service alongside the daemon.
-
-### Worker is not consolidating
-
-Check whether the worker process is running:
-
-```bash
-slowave status | grep worker
-```
-
-If it's not detected, check the supervisor:
-
-```bash
-launchctl list | grep slowave
-```
-
-```bash
-systemctl --user status slowave-worker
-```
-
-```bash
-Get-ScheduledTask -TaskName SlowaveWorker
-```
-
-Check the worker log for errors:
-
-```bash
-cat /tmp/slowave-worker.err
-```
-
-### Manual test
-
-Run a single consolidation pass to verify the worker logic works:
-
-```bash
-slowave worker --once
-```
-
-### Recent runs
-
-The dashboard shows worker run history, or from the CLI:
-
-```bash
-slowave status --verbose | grep worker
-```
-
-### Worker conflicting with daemon
-
-Worker and daemon share the same SQLite database. WAL mode handles concurrent
-access. If you see `database is locked` errors in the logs, an orphaned worker
-from a prior session may be holding stale WAL state. Restart both:
-
-```bash
-slowave serve restart
-```
-
-```bash
-pkill -f 'slowave worker'
-```
-
----
+For backup failures, run `slowave backup` and inspect its error. The database may
+not exist before the first memory operation. Backups use SQLite's consistent
+online snapshot API, so routine backups can run with services active. The
+command prints its destination; by default the runtime `backups/` directory
+retains seven snapshots. `SLOWAVE_BACKUP_DIR`/`SLOWAVE_BACKUP_KEEP` can override
+manual backup settings. Custom scheduler environments may differ from your shell.
 
 ## Dashboard
 
-The dashboard is a local web UI on `127.0.0.1:8765`.
+`slowave dashboard` prints its actual URL. It runs in the foreground. If a
+previous copy owns the port, stop that copy with Ctrl+C and relaunch; a browser
+refresh alone does not load new Python code. Do not kill processes solely by
+matching the word `slowave`.
 
-### Dashboard won't start
+For a blank page, inspect the browser console and the dashboard terminal output,
+then verify the database/runtime path with `slowave doctor`. Published packages
+should include frontend assets. If a published wheel lacks them, report the
+packaging issue. For a source checkout, use `npm ci` and `npm run build` in
+`slowave/dashboard/ui`, then relaunch the dashboard.
 
-**Port conflict.** The first dashboard run assigns an available port from 8765
-upward and persists it as `dashboard.port` in the per-user runtime directory.
-An explicit `--port` or `SLOWAVE_DASHBOARD_PORT` override still takes precedence.
+The dashboard enables its mutating actions by default. Use
+`slowave dashboard --no-allow-actions` for read-only inspection; use
+`--allow-actions` to explicitly enable actions. Stale memory data may reflect missing client
+writes or worker consolidation, rather than a browser problem.
 
-```bash
-lsof -i :8765
-```
+## Client integration
 
-```bash
-pkill -f 'slowave dashboard'
-```
+Run `slowave doctor` and `slowave setup --client CLIENT`. Open the corresponding
+[client guide](../integrations/README.md) for transport/configuration details.
+Setup skips clients it does not detect; launch/install the client first if its
+configuration directory has not been created. Setup prints required manual
+instruction steps for Cursor and Claude Desktop.
 
-```bash
-slowave dashboard
-```
+After upgrades, reload/restart clients to refresh cached schemas/instructions
+and client-owned stdio processes. HTTP daemon health alone does not verify a
+client's tool connection. Lifecycle validation errors, including outstanding
+feedback targets, should be handled using the connected MCP tool schema and
+error response; reinstalling does not fix missing task feedback.
 
-**Missing static assets.** If installed from source without building the
-frontend, the dashboard serves a broken page. Verify the assets exist:
+## Database and recovery
 
-```bash
-ls slowave/dashboard/static/index.html
-```
+Use `slowave doctor` for effective paths and reported database checks; the
+dashboard's Database Health view also exposes SQLite checks. Keep `SLOWAVE_HOME`
+for a complete runtime root, or legacy `SLOWAVE_DB` for an exact database path;
+do not set both. Plan legacy migration with `slowave migrate-data --dry-run`.
+Migration preserves the source and refuses a non-empty destination.
 
-If missing, build them:
+For database locks, stop foreground processes and run `slowave stop`. If stopping
+fails, resolve it before replacing/deleting any database files. Keep the `-wal`
+and `-shm` sidecars intact: committed data can still be in WAL. Avoid blanket
+`pkill` or deletion of SQLite sidecars as a repair step.
 
-```bash
-cd slowave/dashboard/ui
-```
+For a failed migration or confirmed corruption, preserve the current files and
+use a known good backup. Restore deliberately replaces memories:
 
-```bash
-npm install
-```
-
-```bash
-npm run build
-```
-
-### Dashboard loads but is blank
-
-Open the browser's developer console. API fetch errors indicate the dashboard's
-DB connection may be failing. Check the database path:
-
-```bash
-slowave doctor
-```
-
-```bash
-slowave status
-```
-
-If the database file doesn't exist, start using Slowave with an MCP client
-first — the dashboard reads from the same database.
-
-### Dashboard shows stale data
-
-The dashboard queries the database directly on every request. If data appears
-stale, the consolidation worker may not have run recently, or the daemon has
-not written events yet.
-
-### Delete buttons not available
-
-Start the dashboard with the actions flag:
-
-```bash
-slowave dashboard --allow-actions
-```
-
----
-
-## Client Integration (MCP tools)
-
-If MCP tools (`slowave_activate`, `slowave_remember`, etc.) do not appear in
-your agent, the client configuration is likely wrong or missing.
-
-### MCP tools not appearing
-
-Run the diagnostic:
-
-```bash
-slowave doctor
-```
-
-This checks every supported client's config file and reports which ones are
-correctly configured, misconfigured, or missing.
-
-Common issues per client:
-
-| Client | Most common issue |
-|---|---|
-| Claude Code | Config file at `~/.claude.json` has wrong `mcpServers` key. Re-run `slowave setup` |
-| Claude Desktop | Requires one manual paste of the lifecycle block. Check `claude_desktop_config.json` |
-| Cursor | Its MCP config at `~/.cursor/mcp.json` uses a different key format. Re-run `slowave setup --client cursor` |
-| OpenCode | Uses the `mcp` key, not `mcpServers`. Check `~/.config/opencode/opencode.json` |
-
-### Tools appear but return errors
-
-**Lifecycle version mismatch.** The lifecycle contract (`activate → remember →
-recall → feedback → commit`) evolves between releases. `slowave doctor` reports
-if the version in `CLAUDE.md` or equivalent instruction files doesn't match the
-installed version. Fix by re-running setup:
-
-```bash
-slowave setup
-```
-
-**Feedback completeness enforcement.** `slowave_commit` fails if feedback was
-not provided for every retrieved memory or procedure. This is intentional. The
-error response lists the outstanding targets.
-
-### Scope fragmentation
-
-If memory is split across two similar scopes (e.g., `project:my-repo` and
-`project:my_repo`), the system creates separate memory silos. A cold-start
-warning is logged when a new scope is detected. Use consistent scope names
-across sessions.
-
----
-
-## Database
-
-Slowave uses a local SQLite database beneath the OS user's native application-
-data directory. `slowave doctor` prints the exact path. `SLOWAVE_HOME` moves
-the complete runtime tree; legacy `SLOWAVE_DB` selects an exact database path.
-Do not set both.
-
-### Runtime root or migration issues
-
-Use these commands to inspect the effective paths and safely plan a legacy
-data migration:
-
-```bash
-slowave doctor
-slowave migrate-data --dry-run
-```
-
-`SLOWAVE_HOME` and `SLOWAVE_DB` cannot be set together. Unset one of them, then
-use `SLOWAVE_HOME` for a complete relocated runtime tree or `SLOWAVE_DB` only
-when an integration needs an exact legacy database path. Migration refuses a
-non-empty destination and leaves `~/.slowave` intact for rollback.
-
-### Database integrity
-
-Run the built-in health check:
-
-```bash
-slowave status --verbose
-```
-
-Or use the dashboard at `/diagnostics`.
-
-The dashboard exposes `PRAGMA integrity_check` and `PRAGMA quick_check` results
-under the Database Health section.
-
-### Schema errors on startup
-
-Slowave applies schema migrations automatically (pre-migrations → DDL →
-post-migrations). If migration fails, the database may be left in an
-inconsistent state:
-
-1. Run `slowave doctor` to see which step failed
-2. Restore from your latest backup (see Backup/Restore below)
-3. If no backup exists, file an issue with the error message
-
-### Slow performance
-
-- The `WAL` journal mode keeps write performance consistent. The `-wal` and
-  `-shm` sidecar files are normal and auto-checkpointed.
-- Large databases (thousands of sessions) may slow down schema listing. The
-  dashboard paginates results.
-- The auto-rebuild on logic version bump can take minutes. This is a one-time
-  cost.
-
-### Auto-rebuild is slow
-
-When `current_logic_version` changes, the engine replays all raw events to
-rebuild derived state. This is normal after an upgrade. Progress is logged at
-the INFO level. If the rebuild appears stuck:
-
-1. Check `log_versions` and `replay_checkpoints` table — one process holds a
-   `claimed_ts` lock.
-2. If the lock is stale (older than 180 seconds), wait — the next retry will
-   claim it.
-3. After 5 failed claim attempts the rebuild stops. Restart the daemon to
-   retry.
-
-### Database file locked
-
-SQLite in WAL mode supports concurrent reads and one writer. If you see
-`database is locked` errors, an orphaned process may hold the write lock.
-Kill all slowave processes and retry:
-
-```bash
-pkill -f slowave
-```
-
-```bash
+```text
+slowave backup
+slowave stop
+slowave restore /actual/path/slowave-TIMESTAMP.db.gz
 slowave start
+slowave doctor
 ```
 
----
+Use your real `.db.gz` filename, quoted if its path contains spaces. On Windows,
+use the Windows path to that file. If the current database is unreadable and
+backup fails, preserve its files separately before restoring. Restore refuses to
+overwrite a database it cannot snapshot: after preserving the original database
+and its sidecars, move those original files aside and retry the restore. Do not restart
+until restore succeeds. Restore does not refresh package versions or client
+instructions. An older package may not read a database migrated by a newer one.
 
-## Backup & Restore
+Engine initialization after an upgrade can replay raw events to rebuild derived
+state; inspect logs before interrupting it. Report persistent migration/rebuild
+errors with their exact text rather than repeatedly deleting runtime data.
 
-### Backup fails
+## Removal problems
 
-Backup is a daily scheduled task. If it fails:
+Use `slowave uninstall --dry-run` before removal. Uninstall removes integrations
+and service registrations; it retains memories and the package. `purge` also
+removes local data and setup configuration backups, but retains database archives
+in `backups/`. Review [removal choices](install.md#remove-slowave) before deleting.
+Stop foreground processes first. If a service cannot be stopped or removed,
+resolve that error before removing the package or purging data. Package removal
+comes last, using the original installer.
 
-Check the backup log:
+## Report an issue
 
-```bash
-cat /tmp/slowave-backup.err
-```
-
-Run manually:
-
-```bash
-slowave backup
-```
-
-### Restore doesn't work
-
-`slowave restore` stops the daemon and worker, swaps the database file, and
-deletes stale WAL sidecars. If the restored database triggers an auto-rebuild
-(version mismatch), the engine may be temporarily unavailable. This is normal.
-
-Create a fresh backup first:
-
-```bash
-slowave backup
-```
-
-Then restore:
-
-```bash
-slowave restore /path/to/backup.sqlite.gz
-```
-
----
-
-## General Diagnostics
-
-`slowave doctor` runs all checks in sequence:
-
-| Check | What it validates |
-|---|---|
-| Python version | >= 3.11 |
-| Package version | Installed vs latest |
-| Database | File exists, accessible, integrity |
-| Daemon | PID file, process running, health endpoint |
-| Worker | Process detected |
-| Client configs | MCP config and instructions per client |
-| Lifecycle version | Installed vs instruction files |
-| Feedback health | Feedback events per retrieval ratio |
-| Embedding model | Model loads and encodes |
-
-If none of the above helps, run the verbose diagnostic and include its output
-when filing an issue:
-
-```bash
-slowave doctor --verbose 2>&1 | tee /tmp/slowave-doctor.log
-```
+Include OS/version, installation method, the failing command and exact error,
+`slowave --version`, `slowave status --services`, and relevant log excerpts.
+Include `slowave doctor --verbose` when it can complete. Inspect output before
+sharing: supervisor details and logs may contain private paths or environment
+values. Report issues at [GitHub](https://github.com/mrsalty/slowave/issues).

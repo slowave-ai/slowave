@@ -98,7 +98,7 @@ def cli(ctx: click.Context, db: str, as_json: bool) -> None:
     Install/upgrade with your package manager, then run setup.
     Services: start, stop, restart, status --services. Diagnose: doctor. Remove: uninstall.
     Documentation: docs or docs troubleshooting.
-    Guide: https://github.com/mrsalty/slowave/blob/main/docs/lifecycle.md
+    Guide: https://github.com/mrsalty/slowave/blob/main/docs/install.md
     """
     ctx.ensure_object(dict)
     try:
@@ -113,14 +113,14 @@ def cli(ctx: click.Context, db: str, as_json: bool) -> None:
 @cli.command("docs")
 @click.argument(
     "topic",
-    type=click.Choice(["lifecycle", "troubleshooting", "install", "cli"]),
-    default="lifecycle",
+    type=click.Choice(["install", "troubleshooting", "cli"]),
+    default="install",
 )
 @click.option(
     "--no-open", is_flag=True, help="Print the documentation link without opening a browser."
 )
 def docs_cmd(topic: str, no_open: bool) -> None:
-    """Open the lifecycle guide or troubleshooting documentation."""
+    """Open the installation/upgrade guide or troubleshooting documentation."""
     import webbrowser
 
     url = f"https://github.com/mrsalty/slowave/blob/main/docs/{topic}.md"
@@ -1020,7 +1020,7 @@ def _slowave_processes() -> list[dict[str, Any]]:
 
     try:
         out = subprocess.check_output(
-            ["ps", "-axo", "pid,ppid,stat,rss,command"],
+            ["ps", "-axo", "uid,pid,ppid,stat,rss,command"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -1028,16 +1028,19 @@ def _slowave_processes() -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     for line in out.splitlines()[1:]:
-        parts = line.strip().split(None, 4)
-        if len(parts) < 5:
+        parts = line.strip().split(None, 5)
+        if len(parts) < 6:
             continue
-        pid, ppid, stat, rss, command = parts
+        uid, pid, ppid, stat, rss, command = parts
         if not any(
             token in command
             for token in (
                 "slowave.mcp.http_server",
                 "slowave-mcp-http",
                 "slowave worker",
+                "slowave dashboard",
+                "-m slowave",
+                "slowave-mcp",
                 "slowave.cli.main",
                 "slowave serve",
             )
@@ -1045,6 +1048,7 @@ def _slowave_processes() -> list[dict[str, Any]]:
             continue
         rows.append(
             {
+                "uid": int(uid),
                 "pid": int(pid),
                 "ppid": int(ppid),
                 "stat": stat,
@@ -1063,7 +1067,9 @@ def _slowave_processes_windows() -> list[dict[str, Any]]:
     checks are best-effort only.
     """
     ps_cmd = (
-        "Get-WmiObject Win32_Process -Filter \"Name LIKE '%python%'\" | "
+        "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+        "Get-WmiObject Win32_Process -Filter \"Name LIKE '%python%' OR Name LIKE '%slowave%'\" | "
+        "Where-Object { try { $_.GetOwnerSid().Sid -eq $sid } catch { $false } } | "
         "Select-Object ProcessId,ParentProcessId,WorkingSetSize,CommandLine | "
         "ConvertTo-Json -Compress"
     )
@@ -1087,15 +1093,34 @@ def _slowave_processes_windows() -> list[dict[str, Any]]:
         procs = _json.loads(result.stdout.strip())
         if isinstance(procs, dict):  # single result → normalise to list
             procs = [procs]
+        if not isinstance(procs, list):
+            return []
     except Exception:
         return []
 
     rows: list[dict[str, Any]] = []
     for proc in procs:
         cmd = str(proc.get("CommandLine") or "")
+        # pythonw runs the generated -c bootstrap, whose repr(argv) does not
+        # contain the normal space-separated CLI tokens. Normalize that exact
+        # launcher so worker health and destructive-operation checks see it.
+        if "runpy.run_module('slowave'," in cmd:
+            import ast
+            import re
+
+            argv_match = re.search(r"sys\.argv=(\[[^;]+\]);runpy", cmd)
+            if argv_match:
+                try:
+                    argv = ast.literal_eval(argv_match.group(1))
+                    if isinstance(argv, list) and argv and argv[0] == "slowave":
+                        cmd += " " + " ".join(str(arg) for arg in argv)
+                except (ValueError, SyntaxError):
+                    pass
         if (
             "slowave-mcp" not in cmd
             and "slowave worker" not in cmd
+            and "slowave dashboard" not in cmd
+            and "-m slowave" not in cmd
             and "slowave.mcp.server" not in cmd
             and "slowave.cli.main" not in cmd
         ):
@@ -1581,6 +1606,11 @@ def status_cmd(ctx: click.Context, services: bool = False) -> None:
 )
 @click.option("--refresh-ms", default=2000, show_default=True, help="Overview refresh interval.")
 @click.option("--no-open", is_flag=True, help="Do not open the browser automatically.")
+@click.option(
+    "--allow-actions/--no-allow-actions",
+    default=True,
+    help="Enable or disable dashboard mutations.",
+)
 @click.pass_context
 def dashboard_cmd(
     ctx: click.Context,
@@ -1588,6 +1618,7 @@ def dashboard_cmd(
     port: int | None,
     refresh_ms: int,
     no_open: bool,
+    allow_actions: bool = True,
 ) -> None:
     """Run the local Slowave web dashboard."""
     from slowave.dashboard.app import run_dashboard
@@ -1602,6 +1633,7 @@ def dashboard_cmd(
         port=port,
         refresh_ms=refresh_ms,
         open_browser=not no_open,
+        allow_actions=allow_actions,
     )
 
 

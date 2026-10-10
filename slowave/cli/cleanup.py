@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -62,226 +63,22 @@ def _runtime_cleanup_targets() -> tuple[Path, list[Path], bool]:
     return paths.root, targets, dedicated_root
 
 
+def _remove_service(kind: str, dry_run: bool) -> int:
+    from slowave.cli.services import remove_service
+
+    return remove_service(kind, dry_run=dry_run, system=SYSTEM, home=_home())
+
+
 def _remove_daemon_service(dry_run: bool) -> int:
-    """Remove HTTP MCP daemon service. Returns 1 if removed, 0 otherwise."""
-    if SYSTEM == "Darwin":
-        plist_path = _home() / "Library" / "LaunchAgents" / "com.slowave.daemon.plist"
-        if plist_path.exists():
-            if dry_run:
-                _ok(f"Would stop and remove: {plist_path}")
-                return 0
-            try:
-                from slowave.cli.services import control
-
-                control("stop", ("daemon",))
-                plist_path.unlink()
-                _ok(f"Removed launchd daemon service: {plist_path}")
-                return 1
-            except Exception as e:
-                _warn(f"Could not remove launchd daemon service: {e}")
-        else:
-            _skip("No launchd daemon service found")
-
-    elif SYSTEM == "Linux":
-        import os
-
-        xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
-        service_path = Path(xdg) / "systemd" / "user" / "slowave-daemon.service"
-        if service_path.exists():
-            if dry_run:
-                _ok(f"Would stop and remove: {service_path}")
-                return 0
-            try:
-                subprocess.run(
-                    ["systemctl", "--user", "stop", "slowave-daemon"],
-                    check=False,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["systemctl", "--user", "disable", "slowave-daemon"],
-                    check=False,
-                    capture_output=True,
-                )
-                service_path.unlink()
-                subprocess.run(
-                    ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
-                )
-                _ok(f"Removed systemd daemon service: {service_path}")
-                return 1
-            except Exception as e:
-                _warn(f"Could not remove systemd daemon service: {e}")
-        else:
-            _skip("No systemd daemon service found")
-
-    elif SYSTEM == "Windows":
-        if dry_run:
-            _ok("Would remove Task Scheduler task: SlowaveDaemon")
-            return 0
-        try:
-            from slowave.cli.services import control
-
-            control("stop", ("daemon",))
-            subprocess.run(
-                ["schtasks", "/Delete", "/TN", "SlowaveDaemon", "/F"],
-                check=False,
-                capture_output=True,
-            )
-            _ok("Removed Task Scheduler task: SlowaveDaemon")
-            return 1
-        except Exception as e:
-            _warn(f"Could not remove scheduled task SlowaveDaemon: {e}")
-    else:
-        _skip(f"Unknown platform: {SYSTEM}")
-    return 0
+    return _remove_service("daemon", dry_run)
 
 
 def _remove_worker_service(dry_run: bool) -> int:
-    """Remove background worker service. Returns 1 if removed, 0 otherwise."""
-    if SYSTEM == "Darwin":
-        plist_path = _home() / "Library" / "LaunchAgents" / "com.slowave.worker.plist"
-        if plist_path.exists():
-            if dry_run:
-                _ok(f"Would stop and remove: {plist_path}")
-                return 0
-            try:
-                from slowave.cli.services import control
-
-                control("stop", ("worker",))
-                plist_path.unlink()
-                _ok(f"Removed launchd service: {plist_path}")
-                return 1
-            except Exception as e:
-                _warn(f"Could not remove launchd service: {e}")
-        else:
-            _skip("No launchd service found")
-
-    elif SYSTEM == "Linux":
-        service_path = _home() / ".config" / "systemd" / "user" / "slowave-worker.service"
-        if service_path.exists():
-            if dry_run:
-                _ok(f"Would stop and remove: {service_path}")
-                return 0
-            try:
-                subprocess.run(
-                    ["systemctl", "--user", "stop", "slowave-worker"],
-                    check=False,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["systemctl", "--user", "disable", "slowave-worker"],
-                    check=False,
-                    capture_output=True,
-                )
-                service_path.unlink()
-                subprocess.run(
-                    ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
-                )
-                _ok(f"Removed systemd service: {service_path}")
-                return 1
-            except Exception as e:
-                _warn(f"Could not remove systemd service: {e}")
-        else:
-            _skip("No systemd service found")
-
-    elif SYSTEM == "Windows":
-        if dry_run:
-            _ok("Would remove Task Scheduler task: SlowaveWorker")
-            return 0
-        try:
-            from slowave.cli.services import control
-
-            control("stop", ("worker",))
-            subprocess.run(
-                ["schtasks", "/Delete", "/TN", "SlowaveWorker", "/F"],
-                check=False,
-                capture_output=True,
-            )
-            _ok("Removed Task Scheduler task: SlowaveWorker")
-            return 1
-        except Exception as e:
-            _warn(f"Could not remove scheduled task: {e}")
-    else:
-        _skip(f"Unknown platform: {SYSTEM}")
-    return 0
+    return _remove_service("worker", dry_run)
 
 
 def _remove_backup_service(dry_run: bool) -> int:
-    """Remove daily database backup service. Returns 1 if removed, 0 otherwise."""
-    if SYSTEM == "Darwin":
-        plist_path = _home() / "Library" / "LaunchAgents" / "com.slowave.backup.plist"
-        if plist_path.exists():
-            if dry_run:
-                _ok(f"Would stop and remove: {plist_path}")
-                return 0
-            try:
-                from slowave.cli.services import control
-
-                control("stop", ("backup",))
-                plist_path.unlink()
-                _ok(f"Removed launchd backup service: {plist_path}")
-                return 1
-            except Exception as e:
-                _warn(f"Could not remove launchd backup service: {e}")
-        else:
-            _skip("No launchd backup service found")
-
-    elif SYSTEM == "Linux":
-        svc_dir = _home() / ".config" / "systemd" / "user"
-        timer_path = svc_dir / "slowave-backup.timer"
-        svc_path = svc_dir / "slowave-backup.service"
-        removed = 0
-        for p, name in [(timer_path, "timer"), (svc_path, "service")]:
-            if p.exists():
-                if dry_run:
-                    _ok(f"Would stop and remove: {p}")
-                    continue
-                try:
-                    subprocess.run(
-                        ["systemctl", "--user", "stop", f"slowave-backup.{name}"],
-                        check=False,
-                        capture_output=True,
-                    )
-                    subprocess.run(
-                        ["systemctl", "--user", "disable", f"slowave-backup.{name}"],
-                        check=False,
-                        capture_output=True,
-                    )
-                    p.unlink()
-                    _ok(f"Removed systemd backup {name}: {p}")
-                    removed = 1
-                except Exception as e:
-                    _warn(f"Could not remove systemd backup {name}: {e}")
-        if removed:
-            try:
-                subprocess.run(
-                    ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
-                )
-            except Exception:
-                pass
-        if not timer_path.exists() and not svc_path.exists() and removed == 0:
-            _skip("No systemd backup service found")
-        return removed
-
-    elif SYSTEM == "Windows":
-        if dry_run:
-            _ok("Would remove Task Scheduler task: SlowaveBackup")
-            return 0
-        try:
-            from slowave.cli.services import control
-
-            control("stop", ("backup",))
-            subprocess.run(
-                ["schtasks", "/Delete", "/TN", "SlowaveBackup", "/F"],
-                check=False,
-                capture_output=True,
-            )
-            _ok("Removed Task Scheduler task: SlowaveBackup")
-            return 1
-        except Exception as e:
-            _warn(f"Could not remove scheduled task: {e}")
-    else:
-        _skip(f"Unknown platform: {SYSTEM}")
-    return 0
+    return _remove_service("backup", dry_run)
 
 
 def _remove_lifecycle_blocks(dry_run: bool) -> int:
@@ -577,6 +374,11 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
     _section("3. Daily database backup service")
     removed_count += _remove_backup_service(dry_run)
 
+    if not dry_run:
+        from slowave.cli.services import require_stopped_runtime
+
+        require_stopped_runtime("Purge")
+
     # 4. Remove lifecycle blocks
     _section("4. Lifecycle instruction blocks")
     removed_count += _remove_lifecycle_blocks(dry_run)
@@ -596,16 +398,29 @@ def cleanup_cmd(dry_run: bool, as_json: bool = False, yes: bool = False) -> None
                 _ok(f"Would remove only known Slowave artifacts in: {slowave_dir}")
         else:
             # On Windows the DB may still be held open by a running worker or MCP
-            # process even after the scheduler task was deleted.  Attempt to kill
-            # any lingering slowave processes before removing the directory.
+            # process even after the scheduler task was deleted. require_stopped_runtime()
+            # above is the primary guard; this only force-stops lingering processes
+            # from this exact Python environment (e.g. a pythonw.exe the supervisor
+            # reported stopped but that is still shutting down), never arbitrary
+            # processes that merely have "slowave" somewhere in their path.
             if SYSTEM == "Windows":
                 try:
+                    from pathlib import Path as _Path
+
+                    targets = {_Path(sys.executable).resolve()}
+                    pythonw = _Path(sys.executable).with_name("pythonw.exe")
+                    if pythonw.exists():
+                        targets.add(pythonw.resolve())
+                    target_list = ", ".join(
+                        "'" + str(path).replace("'", "''") + "'" for path in sorted(targets)
+                    )
                     subprocess.run(
                         [
                             "powershell",
                             "-NonInteractive",
                             "-Command",
-                            "Get-Process | Where-Object { $_.Path -like '*slowave*' } "
+                            "$targets=@(" + target_list + ");"
+                            "Get-Process | Where-Object { $_.Path -and ($targets -icontains $_.Path) } "
                             "| Stop-Process -Force -ErrorAction SilentlyContinue",
                         ],
                         capture_output=True,

@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -53,7 +56,7 @@ Edit `~/.claude.json` (create it if it doesn't exist):
 }
 ```
 
-Make sure the daemon is running (`slowave serve status`). Restart Claude Code after editing.
+Make sure the daemon is running (`slowave status --services`). Restart Claude Code after editing.
 
 ---
 
@@ -74,6 +77,6 @@ slowave doctor    # shows client detection and daemon health
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear | Run `slowave serve status`; restart Claude Code |
+| Tools don't appear | Run `slowave status --services`; restart Claude Code |
 | Tools appear but aren't called | The `CLAUDE.md` lifecycle block may be missing or stale — re-run `slowave setup` |
 | Sessions are empty | Check that the lifecycle block is installed and the `slowave_*` tools are available |

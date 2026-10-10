@@ -169,7 +169,7 @@ class TestPatchCodexMcp:
         cfg, changed = _patch_codex_mcp(cfg)
         assert changed is True
         _write_toml(target, cfg)
-        content = target.read_text()
+        content = target.read_text(encoding="utf-8")
         assert "# user comment" in content
         reparsed = _read_toml(target)
         assert reparsed["mcp_servers"]["slowave"]["url"] == HTTP_URL
@@ -260,7 +260,7 @@ class TestReadWriteToml:
         _write_toml(target, cfg)
         backups = list(tmp_path.glob("config.toml.bak.*"))
         assert len(backups) == 1
-        assert "original = true" in backups[0].read_text()
+        assert "original = true" in backups[0].read_text(encoding="utf-8")
 
     def test_preserves_comments_on_write(self, tmp_path):
         target = tmp_path / "config.toml"
@@ -268,7 +268,7 @@ class TestReadWriteToml:
         cfg = _read_toml(target)
         cfg["extra"] = "value"
         _write_toml(target, cfg)
-        assert "# important comment" in target.read_text()
+        assert "# important comment" in target.read_text(encoding="utf-8")
 
 
 # ===========================================================================
@@ -282,7 +282,7 @@ class TestInjectBlock:
         changed = _inject_block(target, _lifecycle_block("claude-code"))
         assert changed is True
         assert target.exists()
-        assert _MARKER_START in target.read_text()
+        assert _MARKER_START in target.read_text(encoding="utf-8")
 
     def test_idempotent_on_second_call(self, tmp_path):
         target = tmp_path / "CLAUDE.md"
@@ -299,7 +299,7 @@ class TestInjectBlock:
         target.write_text(old, encoding="utf-8")
         changed = _inject_block(target, _lifecycle_block("claude-code"))
         assert changed is True
-        content = target.read_text()
+        content = target.read_text(encoding="utf-8")
         assert "old content" not in content
         assert _MARKER_START in content
 
@@ -321,7 +321,7 @@ class TestInjectBlock:
         target = tmp_path / ".clinerules"
         target.write_text("# My existing rules\n", encoding="utf-8")
         _inject_block(target, _lifecycle_block("cline-tui"))
-        content = target.read_text()
+        content = target.read_text(encoding="utf-8")
         assert content.index(_MARKER_START) < content.index("# My existing rules")
 
     def test_creates_parent_dirs(self, tmp_path):
@@ -335,7 +335,7 @@ class TestInjectBlock:
         target = tmp_path / "CLAUDE.md"
         target.write_text(legacy, encoding="utf-8")
         _inject_block(target, _lifecycle_block("claude-code"))
-        content = target.read_text()
+        content = target.read_text(encoding="utf-8")
         assert "some old content" not in content
         assert "## My Notes" in content
         assert "user content" in content
@@ -424,7 +424,7 @@ class TestWriteJsonBackup:
         _write_json(target, {"updated": True})
         backups = list(tmp_path.glob("config.json.bak.*"))
         assert len(backups) == 1
-        assert json.loads(backups[0].read_text()) == {"original": True}
+        assert json.loads(backups[0].read_text(encoding="utf-8")) == {"original": True}
 
     def test_no_backup_when_file_missing(self, tmp_path):
         _write_json(tmp_path / "new.json", {"key": "val"})
@@ -434,14 +434,14 @@ class TestWriteJsonBackup:
         target = tmp_path / "a" / "b" / "cfg.json"
         _write_json(target, {"x": 1})
         assert target.exists()
-        assert json.loads(target.read_text()) == {"x": 1}
+        assert json.loads(target.read_text(encoding="utf-8")) == {"x": 1}
 
     def test_backup_file_direct(self, tmp_path):
         f = tmp_path / "myfile.txt"
         f.write_text("hello", encoding="utf-8")
         bak = _backup_file(f)
         assert bak is not None and bak.exists()
-        assert bak.read_text() == "hello"
+        assert bak.read_text(encoding="utf-8") == "hello"
         assert ".bak." in bak.name
 
     def test_backup_file_returns_none_when_missing(self, tmp_path):
@@ -456,7 +456,7 @@ class TestWriteJsonBackup:
         backups = list(tmp_path.glob("config.json.bak.*"))
         assert len(backups) == 1
         # The surviving backup is from the second write (before v3 was written)
-        assert json.loads(backups[0].read_text()) == {"v": 2}
+        assert json.loads(backups[0].read_text(encoding="utf-8")) == {"v": 2}
 
 
 class TestInjectBlockBackup:
@@ -467,7 +467,7 @@ class TestInjectBlockBackup:
         _inject_block(target, _lifecycle_block("claude-code"))
         backups = list(tmp_path.glob("CLAUDE.md.bak.*"))
         assert len(backups) == 1
-        assert backups[0].read_text() == original
+        assert backups[0].read_text(encoding="utf-8") == original
 
     def test_backup_when_prepending_to_existing(self, tmp_path):
         target = tmp_path / ".clinerules"
@@ -594,7 +594,7 @@ class TestCleanupRemoveLifecycleBlocks:
         count = _cleanup_mod._remove_lifecycle_blocks(dry_run=False)
 
         assert count >= 1
-        remaining = target.read_text()
+        remaining = target.read_text(encoding="utf-8")
         assert _MARKER_START not in remaining
         assert "# My Notes" in remaining
 
@@ -609,7 +609,7 @@ class TestCleanupRemoveLifecycleBlocks:
 
         assert count >= 1
         # File with only the block becomes empty → unlinked
-        assert not target.exists() or _MARKER_START not in target.read_text()
+        assert not target.exists() or _MARKER_START not in target.read_text(encoding="utf-8")
 
     def test_dry_run_does_not_modify_files(self, fake_home):
         target = fake_home / ".cline" / "rules" / "slowave.md"
@@ -620,7 +620,7 @@ class TestCleanupRemoveLifecycleBlocks:
 
         _cleanup_mod._remove_lifecycle_blocks(dry_run=True)
 
-        assert target.read_text() == original
+        assert target.read_text(encoding="utf-8") == original
 
     def test_no_op_on_file_without_slowave_content(self, fake_home):
         target = fake_home / ".cline" / "rules" / "slowave.md"
@@ -630,7 +630,7 @@ class TestCleanupRemoveLifecycleBlocks:
         count = _cleanup_mod._remove_lifecycle_blocks(dry_run=False)
 
         assert count == 0
-        assert target.read_text() == "# Regular rules\n"
+        assert target.read_text(encoding="utf-8") == "# Regular rules\n"
 
 
 class TestCleanupRemoveMcpConfigs:
@@ -653,7 +653,7 @@ class TestCleanupRemoveMcpConfigs:
         count = _cleanup_mod._remove_mcp_configs(dry_run=False)
 
         assert count >= 1
-        remaining = json.loads(cfg_path.read_text())
+        remaining = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "slowave" not in remaining.get("mcpServers", {})
         assert "other" in remaining["mcpServers"]
 
@@ -668,7 +668,7 @@ class TestCleanupRemoveMcpConfigs:
 
         _cleanup_mod._remove_mcp_configs(dry_run=True)
 
-        assert cfg_path.read_text() == original
+        assert cfg_path.read_text(encoding="utf-8") == original
 
     def test_no_op_when_no_mcp_files_exist(self, fake_home):
         count = _cleanup_mod._remove_mcp_configs(dry_run=False)
@@ -753,7 +753,7 @@ class TestCleanupRemoveMcpConfigs:
         count = _cleanup_mod._remove_mcp_configs(dry_run=False)
 
         assert count == 1
-        remaining = json.loads(cfg_path.read_text())
+        remaining = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert remaining["hooks"]["UserPromptSubmit"] == []
         assert remaining["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo keep-me"
 
@@ -766,7 +766,7 @@ class TestCleanupRemoveMcpConfigs:
 
         _cleanup_mod._remove_mcp_configs(dry_run=True)
 
-        assert cfg_path.read_text() == original
+        assert cfg_path.read_text(encoding="utf-8") == original
 
 
 class TestCleanupRemoveSetupBackups:
@@ -1022,14 +1022,15 @@ def test_current_rules_replace_stale_installed_blocks_without_changing_user_rule
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         "# User rules before\n\n<!-- slowave-lifecycle-start v13 -->\nold rules\n"
-        "<!-- slowave-lifecycle-end v13 -->\n\n# User rules after\n"
+        "<!-- slowave-lifecycle-end v13 -->\n\n# User rules after\n",
+        encoding="utf-8",
     )
     summary = _build_summary(client, worker=False, slowave_bin="/fake/slowave")
     update = next(c for c in summary.changes if c.change_type.value == "lifecycle_block")
     assert update.status.value == "update"
     block = _lifecycle_block(spec.lifecycle_agent)
     assert _inject_block(target, block)
-    installed = target.read_text()
+    installed = target.read_text(encoding="utf-8")
     assert _lifecycle_block_up_to_date(installed, block)
     assert installed.startswith("# User rules before\n\n")
     assert installed.endswith("\n# User rules after\n")
@@ -1045,14 +1046,15 @@ def test_upgrading_preserves_user_heading_immediately_after_end_marker(tmp_path)
     target = tmp_path / "AGENTS.md"
     target.write_text(
         "<!-- slowave-lifecycle-start v13 -->\nold\n"
-        "<!-- slowave-lifecycle-end v13 -->\n# User rules\nKeep this.\n"
+        "<!-- slowave-lifecycle-end v13 -->\n# User rules\nKeep this.\n",
+        encoding="utf-8",
     )
     block = _lifecycle_block("codex")
     assert _inject_block(target, block)
     expected = block + "\n# User rules\nKeep this.\n"
-    assert target.read_text() == expected
+    assert target.read_text(encoding="utf-8") == expected
     assert not _inject_block(target, block)
-    assert target.read_text() == expected
+    assert target.read_text(encoding="utf-8") == expected
 
 
 def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkeypatch):
@@ -1065,11 +1067,12 @@ def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkey
     cfg = spec.mcp_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        '[unrelated]\nkeep = "yes"\n[mcp_servers.slowave]\nurl = "http://127.0.0.1:8766/mcp"\n'
+        '[unrelated]\nkeep = "yes"\n[mcp_servers.slowave]\nurl = "http://127.0.0.1:8766/mcp"\n',
+        encoding="utf-8",
     )
     instructions = spec.lifecycle_path()
-    instructions.write_text(_lifecycle_block("codex") + "\n\nUser rules\n")
-    before = instructions.read_text()
+    instructions.write_text(_lifecycle_block("codex") + "\n\nUser rules\n", encoding="utf-8")
+    before = instructions.read_text(encoding="utf-8")
     calls = []
     monkeypatch.setattr(_setup_mod.subprocess, "run", lambda args, **kw: calls.append(args))
     result = CliRunner().invoke(
@@ -1077,7 +1080,7 @@ def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkey
     )
     assert result.exit_code == 0, result.output
     assert "Everything already configured" not in result.output
-    assert instructions.read_text() == before
+    assert instructions.read_text(encoding="utf-8") == before
     assert _read_toml(cfg)["unrelated"]["keep"] == "yes"
     assert list(instructions.parent.glob(instructions.name + ".bak.*"))
     assert any(args[-1] == "doctor" for args in calls)
@@ -1087,7 +1090,7 @@ def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkey
     )
     assert result.exit_code == 0, result.output
     assert "Would inject" in result.output
-    assert instructions.read_text() == before
+    assert instructions.read_text(encoding="utf-8") == before
     assert not calls
 
 
@@ -1111,7 +1114,7 @@ def test_force_reloads_matching_macos_service_preserving_environment(fake_home, 
     assert install("/fake/slowave")[1] is False
     calls.clear()
     assert install("/fake/slowave", force=True)[1] is True
-    assert [c[1] for c in calls] == ["bootout", "bootstrap"]
+    assert [c[1] for c in calls] == ["print", "bootout", "bootstrap"]
     assert (
         plistlib.loads(p.read_bytes())["EnvironmentVariables"]["SLOWAVE_CUSTOM_PIN"] == "preserve"
     )
@@ -1132,7 +1135,7 @@ def test_force_restarts_matching_linux_service(fake_home, monkeypatch, kind):
     target = f"slowave-{kind}" + (".timer" if kind == "backup" else "")
     assert ["systemctl", "--user", "restart", target] in calls
     if kind == "backup":
-        service = _setup_mod.Path(path).with_suffix(".service").read_text()
+        service = _setup_mod.Path(path).with_suffix(".service").read_text(encoding="utf-8")
         assert f'SLOWAVE_HOME={fake_home / "runtime"}' in service
 
 
@@ -1211,3 +1214,62 @@ def test_setup_reenables_windows_backup_without_running_it(monkeypatch):
     script = calls[-1][-1]
     assert "Enable-ScheduledTask" in script
     assert "Start-ScheduledTask" not in script
+
+
+def test_setup_binary_prefers_current_environment_over_path(tmp_path, monkeypatch):
+    import sysconfig
+
+    directory = tmp_path / "current environment" / "Scripts"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(_setup_mod, "SYSTEM", "Windows")
+    binary = directory / "slowave.exe"
+    binary.touch()
+    monkeypatch.setattr(sysconfig, "get_path", lambda *a, **kw: str(directory))
+    monkeypatch.setattr(_setup_mod.shutil, "which", lambda *a: "/wrong/environment/slowave")
+    assert _setup_mod._find_slowave_binary() == str(binary.resolve())
+
+
+def test_linux_service_quotes_executable_path_with_spaces(fake_home, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / "config"))
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda *a, **kw: None)
+    path, _ = _setup_mod._install_daemon_linux("/path with spaces/bin/slowave", force=True)
+    assert 'ExecStart="/path with spaces/bin/slowave" serve start' in _setup_mod.Path(
+        path
+    ).read_text(encoding="utf-8")
+
+
+def test_setup_does_not_claim_success_if_doctor_fails(fake_home, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
+
+    def run(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
+    result = CliRunner().invoke(
+        setup_cmd, ["--client", "codex", "--no-worker", "--force"], input="y\n"
+    )
+    assert result.exit_code != 0
+    assert "verification failed" in result.output
+    assert "Setup complete" not in result.output
+
+
+def test_launchd_reapply_waits_before_bootstrap(monkeypatch, tmp_path):
+    import plistlib
+    from subprocess import CompletedProcess
+
+    from slowave.cli import services
+
+    calls = []
+    monkeypatch.setattr(_setup_mod.os, "getuid", lambda: 501, raising=False)
+
+    def run(args, **kwargs):
+        calls.append(args[1])
+        return CompletedProcess(args, 0, "pid = 12345\n", "")
+
+    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
+    monkeypatch.setattr(services, "wait_for_process_exit", lambda pid: calls.append(pid))
+    content = plistlib.dumps({"Label": "com.slowave.daemon"}).decode()
+    _setup_mod._apply_launchd_service(tmp_path / "daemon.plist", content, force=True)
+    assert calls == ["print", "bootout", 12345, "bootstrap"]

@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -54,7 +57,7 @@ Edit `~/.codeium/windsurf/mcp_config.json` (create it if missing):
 }
 ```
 
-Make sure the daemon is running (`slowave serve status`). Restart Windsurf after editing.
+Make sure the daemon is running (`slowave status --services`). Restart Windsurf after editing.
 
 ---
 
@@ -75,7 +78,7 @@ slowave doctor    # shows client detection and daemon health
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear | Run `slowave serve status`; restart Windsurf |
+| Tools don't appear | Run `slowave status --services`; restart Windsurf |
 | Tools appear but aren't called | `global_rules.md` block missing — re-run `slowave setup` |
 | Sessions are empty | Verify `global_rules.md` has the Slowave lifecycle block — re-run `slowave setup` |
 

@@ -1,11 +1,6 @@
-"""Regression tests for the 2026-07-24 Tier-0 audit finding: `slowave restore`
-overwrote the destination DB file in place (open(dest, "wb") + copyfileobj)
-instead of writing to a temp file and swapping it in atomically, and only
-stopped the MCP daemon -- never the separate `slowave worker` background
-consolidation process. Both are fixed in slowave/cli/backup.py: the
-decompress+copy now targets a temp file in the same directory, swapped in via
-a single os.replace(), and restore_cmd now also detects and SIGTERMs any
-`slowave worker` process before touching the destination file.
+"""Restore atomically swaps a validated snapshot after quiescing supervisors.
+
+Tests never touch host service registrations or live processes.
 """
 
 from __future__ import annotations
@@ -15,9 +10,15 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from slowave.cli.main import cli
+
+
+@pytest.fixture(autouse=True)
+def isolate_services(monkeypatch):
+    monkeypatch.setattr("slowave.cli.services.stop_registered_services", lambda: [])
 
 
 def _make_sqlite_db(path: Path, marker: str) -> None:
@@ -65,7 +66,7 @@ def test_restore_swaps_file_atomically_and_leaves_no_temp_file(tmp_path, monkeyp
     assert leftover_tmp == []
 
 
-def test_restore_stops_detected_worker_process(tmp_path, monkeypatch):
+def test_restore_refuses_running_foreground_worker(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOWAVE_DAEMON_PID", str(tmp_path / "no_daemon.pid"))
 
     fake_pid = 999_999_999  # implausible real PID; only ever touched via the mock below
@@ -87,8 +88,24 @@ def test_restore_stops_detected_worker_process(tmp_path, monkeypatch):
         ["--db", str(db_path), "restore", str(backup_gz), "--yes", "--json"],
     )
 
-    assert result.exit_code == 0, result.output
-    assert killed == [fake_pid]
-    payload = json.loads(result.output)
-    assert payload["worker_pids_stopped"] == [fake_pid]
-    assert _marker_value(db_path) == "new-content"
+    assert result.exit_code != 0
+    assert "still running" in result.output
+    assert killed == []
+    assert _marker_value(db_path) == "old-content"
+    assert not (tmp_path / "slowave.db.bak").exists()
+
+
+def test_restore_aborts_before_touching_database_if_supervisor_stop_fails(tmp_path, monkeypatch):
+    import click
+
+    db_path = tmp_path / "slowave.db"
+    _make_sqlite_db(db_path, "old-content")
+    backup = _make_backup_gz(tmp_path, "new-content")
+
+    def fail():
+        raise click.ClickException("could not stop service")
+
+    monkeypatch.setattr("slowave.cli.services.stop_registered_services", fail)
+    result = CliRunner().invoke(cli, ["--db", str(db_path), "restore", str(backup), "--yes"])
+    assert result.exit_code != 0
+    assert _marker_value(db_path) == "old-content"

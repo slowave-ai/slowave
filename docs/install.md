@@ -1,42 +1,256 @@
-# Install & Setup
+# Install, upgrade, and manage Slowave
 
-For the recommended commands and complete workflows, see
-[Install, upgrade, run, and remove Slowave](lifecycle.md).
+Use **pipx, pip in a dedicated virtual environment, or Homebrew** to manage the
+installed package. Use **Slowave commands** to configure clients and manage its
+user services. Use the same installer, Python environment, OS account, and
+runtime settings throughout. Do not run user-service commands with sudo or from
+a different administrator account.
 
-The complete reference for installing, setting up, and uninstalling Slowave — what `slowave setup` does, what files it touches, and how to undo it.
+- [Install](#installation)
+- [Start, stop, restart, and inspect](#manage-services)
+- [Upgrade and recover from a failed upgrade](#upgrade)
+- [Remove integrations, data, or the package](#remove-slowave)
+- [Troubleshooting and logs](troubleshooting.md)
+- [CLI reference](cli.md)
+
+Run `slowave docs` to open this guide, or `slowave docs troubleshooting` for
+recovery steps. Add `--no-open` to print the link without opening a browser.
 
 ## Installation
 
-### Global setup
+### Requirements by OS
 
-Install Slowave and configure every detected client in one go:
+Python **3.11 or newer** is required. Install [pipx](https://pipx.pypa.io/latest/how-to/install-pipx.html)
+if it is not already available, run `pipx ensurepath`, and reopen your terminal
+before installing Slowave.
+
+| OS | Terminal and service requirements |
+|---|---|
+| macOS | Terminal in your logged-in desktop account; services use launchd's GUI user domain |
+| Linux | Terminal with a working **systemd user manager** (`systemctl --user`); services run in your user session |
+| Windows | **PowerShell** in your logged-in account with Task Scheduler available; tasks use interactive logon and do not run while logged out |
+
+Containers, Linux without systemd, and headless macOS sessions need
+[manual service management](#manual-service-management). WSL follows the Linux
+path and requires a working systemd user manager; it does not use Windows tasks.
+On managed machines, OS policy may restrict service/task registration.
+Windows task names include the logged-in account's SID, so multiple accounts
+can each manage their own service set. Setup also migrates that account's older
+root-level tasks when their recorded owner matches; it leaves other accounts'
+tasks alone.
+On every OS, one managed service set is shared by clients in the selected account;
+multiple Python installations do not create independent managed runtimes.
+
+### Recommended: pipx (macOS, Linux, Windows)
+
+These commands work in a Unix terminal or Windows PowerShell:
+
+```text
+pipx install slowave
+slowave setup --dry-run
+slowave setup
+slowave status --services
+slowave doctor
+```
+
+Setup configures detected clients, restarts daemon/worker, and enables the daily
+backup schedule. Complete the manual instruction paste when prompted for
+Claude Desktop or Cursor, then restart/reload your MCP clients.
+
+If `slowave` is not found, run `pipx ensurepath` and reopen the terminal. Use
+`pipx list` to confirm the installation. Do not install a second copy just to
+solve a PATH problem.
+
+### Alternative: pip in a dedicated virtual environment
+
+Use a permanent directory: registered services refer to this environment by
+absolute path. Moving or deleting it breaks service startup. The following
+examples use Python 3.11 or newer already installed on your system.
+
+**macOS / Linux:**
 
 ```bash
-pipx install slowave
+python3 -m venv "$HOME/.venvs/slowave"
+"$HOME/.venvs/slowave/bin/python" -m pip install slowave
+"$HOME/.venvs/slowave/bin/slowave" setup
+```
 
-# or
+**Windows PowerShell:**
 
+```powershell
+py -m venv "$env:LOCALAPPDATA\slowave-venv"
+& "$env:LOCALAPPDATA\slowave-venv\Scripts\python.exe" -m pip install slowave
+& "$env:LOCALAPPDATA\slowave-venv\Scripts\slowave.exe" setup
+```
+
+For the commands below, activate that environment or substitute the full
+`slowave` executable path shown above. Activation is optional when using full
+paths. Upgrade with the **same environment's Python**, not a different global
+`pip` or `py` installation. Avoid modifying an OS-managed Python installation.
+
+### Alternative: Homebrew (macOS)
+
+```bash
 brew tap mrsalty/slowave https://github.com/mrsalty/slowave
 brew install slowave
+slowave setup
+slowave status --services
+slowave doctor
 ```
 
-Then wire everything up:
+Use Homebrew's upgrade/uninstall commands for this installation. The pipx path
+above is the common documented path across all three operating systems.
 
-```bash
-slowave setup --dry-run   # preview what will change
-slowave setup             # apply: MCP configs, lifecycle instructions, services
-slowave doctor            # verify: daemon health, client detection
+## Manage services
+
+| Command | Purpose |
+|---|---|
+| `slowave setup` | Configure detected clients, install/reapply daemon, worker and backup registrations, restart services, and check the daemon version |
+| `slowave setup --dry-run` | Preview configuration and service work |
+| `slowave start` | Start registered daemon and worker; resume the backup schedule |
+| `slowave stop` | Stop registered services and suspend automatic recovery/backup scheduling |
+| `slowave restart` | Stop and start registered services through their OS supervisor |
+| `slowave status --services` | Inspect supervisor state, installed/live daemon versions, and runtime/log paths without opening the database |
+| `slowave doctor` | Diagnose runtime and client configuration |
+| `slowave dashboard` | Run the dashboard in this terminal; Ctrl+C stops it |
+| `slowave backup` | Create an immediate consistent database snapshot |
+| `slowave restore FILE.db.gz` | Restore a snapshot after stopping services; services stay stopped until `start` |
+| `slowave uninstall` | Remove integrations/services, preserving memories and the installed package |
+| `slowave purge` | Remove integrations/services and local data; retain database archives |
+| `slowave docs [TOPIC]` | Open this guide, troubleshooting, or the CLI reference |
+
+`start` and `restart` need service registrations from `setup`. They do not update
+client configuration. Use `setup` after a package upgrade or when repairing
+client integration. `setup --force` explicitly reapplies client configuration;
+it is **not required to apply upgraded service code**. Every normal setup run
+reapplies/restarts services, even when client configuration is unchanged; expect
+a brief MCP interruption. `--client codex` selects client configuration only:
+it still reapplies the shared services.
+
+`start` and `restart` check the daemon's running package version and database path. They do not
+prove worker consolidation or backup completion; inspect supervisor state and
+run history separately. Reinstalling a development build with the same version
+can change its code: restart services even if the version strings match.
+
+The dashboard, manual workers, and foreground servers are owned by their
+terminal or custom supervisor. Stop those with Ctrl+C before upgrades,
+restores, or removal. Service commands do not kill arbitrary processes by name.
+Refresh the dashboard browser tab after relaunching its Python process.
+
+The daily backup is scheduled, not immediately executed by `start`/`restart`.
+On macOS/Linux, enabled services may start again at your next login. Windows
+`stop` disables tasks until `start` or `setup`. Use `uninstall` for permanent
+removal of registrations. Windows stopping may terminate in-progress work;
+create a backup before upgrading.
+
+### Manual service management
+
+If the OS user-service manager is unavailable, use:
+
+```text
+slowave setup --no-worker
+slowave serve start
 ```
 
-`slowave setup` is safe to repeat; it reapplies and restarts managed services on every run. The HTTP MCP daemon and background consolidation worker start automatically as system services.
+Run `slowave worker --interval 300` in another terminal and `slowave backup`
+manually or with your own scheduler. `--no-worker` skips **daemon, worker, and
+backup registration**, despite the historical option name. Stop/relaunch these
+foreground processes yourself; top-level service commands manage registered
+OS services. `serve start` and `worker` are advanced foreground commands.
+Legacy `serve stop/restart` control only the registered daemon through its
+supervisor; use top-level `stop/restart` for the whole managed runtime.
 
-To explicitly reapply client configuration, run `slowave setup --force`.
-Normal setup already reapplies services after an upgrade. Use
-`--force --dry-run` to preview it, or `--client codex` to select one client.
-Force preserves unrelated client settings and runs verification; it does not
-refresh tool definitions cached by an active client conversation.
+## Upgrade
 
-Claude Desktop and Cursor require one manual paste after setup because their instruction surfaces cannot be modified programmatically. `slowave setup` prints the exact text and path.
+Stop any foreground dashboard, worker, or server with Ctrl+C. Then run:
+
+```text
+slowave backup
+slowave stop
+```
+
+Keep the printed backup path. If there is no database yet, there are no memories
+to back up; continue after confirming that this is expected. If backup or stop
+fails for another reason, resolve that failure before upgrading.
+
+Upgrade using **one** matching installer:
+
+| Installation | Upgrade command |
+|---|---|
+| pipx, all OS | `pipx upgrade slowave` |
+| pip venv, macOS/Linux example above | `"$HOME/.venvs/slowave/bin/python" -m pip install --upgrade slowave` |
+| pip venv, Windows PowerShell example above | `& "$env:LOCALAPPDATA\slowave-venv\Scripts\python.exe" -m pip install --upgrade slowave` |
+| Homebrew, macOS | `brew upgrade slowave` |
+
+Then:
+
+```text
+slowave setup
+slowave status --services
+slowave doctor
+```
+
+Restart/reload connected MCP clients to refresh cached tool definitions and
+instructions. Relaunch `slowave dashboard` if wanted. Confirm installed and
+live daemon versions match and the worker is active. A scheduled backup can be
+idle between runs; a running daemon alone does not prove all services work.
+
+Stopping services before replacing files avoids mixed old/new Python imports
+and Windows file locks. `setup` rebinds service registrations to the current
+installation and refreshes client instructions. Use the same `SLOWAVE_HOME` or
+legacy `SLOWAVE_DB` override used for the original setup, if any.
+
+### Upgrading from a release without `slowave stop`
+
+Stop the old jobs through their OS supervisor first. On macOS, run
+`launchctl bootout gui/$(id -u)/com.slowave.daemon`, then the same command for
+`com.slowave.worker` and `com.slowave.backup`. A not-loaded job needs no stop.
+On Linux, run `systemctl --user stop slowave-daemon.service slowave-worker.service slowave-backup.timer slowave-backup.service`.
+
+On Windows PowerShell, disable recovery triggers before stopping tasks:
+
+```powershell
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$tasks = Get-ScheduledTask | Where-Object {
+    ($_.TaskName -like "Slowave*-$sid") -or
+    (($_.TaskName -in @('SlowaveDaemon', 'SlowaveWorker', 'SlowaveBackup')) -and
+     $_.Principal.UserId -and
+     ([System.Security.Principal.NTAccount]::new($_.Principal.UserId).Translate(
+       [System.Security.Principal.SecurityIdentifier]).Value -eq $sid))
+}
+$tasks | ForEach-Object {
+    Disable-ScheduledTask -InputObject $_ | Out-Null
+    Stop-ScheduledTask -InputObject $_
+}
+```
+
+Confirm those jobs have stopped, upgrade with the original installer, and run
+`slowave setup`. This fallback is for old versions; use `slowave stop` afterward.
+
+### Failed upgrade or wrong running version
+
+If installation fails, services remain stopped. Repair the original environment
+with the same package manager and rerun `setup`. Do not start a partly upgraded
+environment. For a known previous release, pip can install `slowave==VERSION`;
+pipx supports `pipx install --force 'slowave==VERSION'`. Stop services first.
+An older release may not read a newer database. Keep a pre-upgrade snapshot and
+consult release notes before downgrading or restoring.
+
+If you already upgraded while services were running, use `slowave setup`, then
+compare installed/live versions with `slowave status --services`. A CLI version
+or browser refresh alone does not prove running Python processes were replaced.
+See [troubleshooting](troubleshooting.md#old-version-after-an-upgrade) if they
+still differ.
+
+On Windows, setup registers the Worker and HTTP daemon with a logon trigger
+and a five-minute recovery trigger. While a task is running, `IgnoreNew` skips
+the recovery launches; the Worker's `--interval 300` controls consolidation
+inside that process. Setup launches `pythonw.exe` directly when available,
+preserving the configured runtime directory and port without a PowerShell
+action that can briefly open Windows Terminal. Rerun `slowave setup` after
+upgrading to replace older task actions. Custom Python installations without
+`pythonw.exe` retain a PowerShell fallback and may show a console.
+
 ### Local retrieval models
 
 The embedding model and the pinned multilingual applicability model run locally.
@@ -86,7 +300,7 @@ Options:
 
 ```
 slowave setup --client [claude-code|claude-desktop|cline|cursor|opencode|windsurf|codex|all]
-              --no-worker       # skip worker service install
+              --no-worker       # skip daemon, worker, and backup registration
               --dry-run         # preview without writing
 ```
 
@@ -139,8 +353,8 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 | `~/.cline/rules/slowave.md` | Cline instructions | Prepends lifecycle block |
 | `~/.cline/data/settings/cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Adds `mcpServers.slowave` entry |
-| `~/.config/Code/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (VS Code) | Adds `mcpServers.slowave` entry |
-| `~/.config/Cursor/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (Cursor) | Adds `mcpServers.slowave` entry |
+| `~/Library/Application Support/Code/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (VS Code) | Adds `mcpServers.slowave` entry |
+| `~/Library/Application Support/Cursor/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (Cursor) | Adds `mcpServers.slowave` entry |
 | `~/.cursor/mcp.json` | Cursor native MCP config | Adds `mcpServers.slowave` entry |
 | `~/.codeium/windsurf/mcp_config.json` | Windsurf MCP config | Adds `mcpServers.slowave` entry |
 | `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Prepends lifecycle block |
@@ -181,17 +395,17 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 | `%USERPROFILE%\.claude.json` | Claude Code MCP config | Same as macOS |
 | `%USERPROFILE%\.claude\CLAUDE.md` | Claude Code instructions | Same as macOS |
 | `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
-| `%USERPROFILE%\.clinerules` | Cline instructions | Same as macOS |
+| `%USERPROFILE%\.cline\rules\slowave.md` | Cline instructions | Same as macOS |
 | `%USERPROFILE%\.cline\data\settings\cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Same as macOS |
 | `%APPDATA%\Code\User\globalStorage\.../cline_mcp_settings.json` | Cline MCP config | Same as macOS |
-| Task Scheduler | Background worker | Registers `SlowaveWorker` task |
-| Task Scheduler | HTTP MCP daemon | Registers `SlowaveDaemon` task |
-| Task Scheduler | Daily backup | Registers `SlowaveBackup` task |
+| Task Scheduler | Background worker | Registers account-scoped `SlowaveWorker-<SID>` task |
+| Task Scheduler | HTTP MCP daemon | Registers account-scoped `SlowaveDaemon-<SID>` task |
+| Task Scheduler | Daily backup | Registers account-scoped `SlowaveBackup-<SID>` task |
 | `%USERPROFILE%\.config\opencode\opencode.json` | OpenCode MCP + instructions config | Same as macOS |
 | `%USERPROFILE%\.config\opencode\slowave-instructions.md` | OpenCode lifecycle instructions | Same as macOS |
 | `%USERPROFILE%\.cursor\mcp.json` | Cursor native MCP config | Same as macOS |
-| `%APPDATA%\Codeium\windsurf\mcp_config.json` | Windsurf MCP config | Same as macOS |
-| `%APPDATA%\Codeium\windsurf\memories\global_rules.md` | Windsurf global rules | Same as macOS |
+| `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Windsurf MCP config | Same as macOS |
+| `%USERPROFILE%\.codeium\windsurf\memories\global_rules.md` | Windsurf global rules | Same as macOS |
 | `%USERPROFILE%\.codex\config.toml` | Codex MCP config | Same as macOS |
 | `%USERPROFILE%\.codex\AGENTS.md` | Codex instructions | Same as macOS |
 
@@ -201,13 +415,13 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 
 ### HTTP MCP daemon
 
-Serves the `slowave_*` tools at `http://127.0.0.1:8766/mcp`. All clients connect to it.
+Serves HTTP MCP tools on the assigned loopback port (8766 upward). Use `slowave serve status` for the effective URL. HTTP-capable clients connect to this daemon; stdio clients start their own MCP process and must also be restarted after upgrading.
 
 | Platform | Service | Verify |
 |---|---|---|
 | macOS | `~/Library/LaunchAgents/com.slowave.daemon.plist` | `launchctl list \| grep slowave` |
 | Linux | `~/.config/systemd/user/slowave-daemon.service` | `systemctl --user status slowave-daemon` |
-| Windows | Task Scheduler: `SlowaveDaemon` | `Get-ScheduledTask -TaskName SlowaveDaemon` |
+| Windows | Task Scheduler: daemon | `Get-ScheduledTask | Where-Object TaskName -like 'SlowaveDaemon-*'` |
 
 ### Background worker
 
@@ -217,7 +431,7 @@ Runs consolidation offline — transforms raw events into searchable schemas.
 |---|---|---|
 | macOS | `~/Library/LaunchAgents/com.slowave.worker.plist` | `launchctl list \| grep slowave` |
 | Linux | `~/.config/systemd/user/slowave-worker.service` | `systemctl --user status slowave-worker` |
-| Windows | Task Scheduler: `SlowaveWorker` | `Get-ScheduledTask -TaskName SlowaveWorker` |
+| Windows | Task Scheduler: worker | `Get-ScheduledTask | Where-Object TaskName -like 'SlowaveWorker-*'` |
 
 ### Daily backup
 
@@ -228,7 +442,7 @@ runtime root's `backups/` directory.
 |---|---|---|
 | macOS | `~/Library/LaunchAgents/com.slowave.backup.plist` | `launchctl list com.slowave.backup` |
 | Linux | `~/.config/systemd/user/slowave-backup.timer` | `systemctl --user status slowave-backup.timer` |
-| Windows | Task Scheduler: `SlowaveBackup` | `Get-ScheduledTask -TaskName SlowaveBackup` |
+| Windows | Task Scheduler: backup | `Get-ScheduledTask | Where-Object TaskName -like 'SlowaveBackup-*'` |
 
 ### Runtime data location
 
@@ -272,7 +486,10 @@ slowave setup --dry-run # preview without writing
 ## Remove Slowave
 
 Slowave has three distinct removal operations. Choose the smallest one that
-matches your goal. Run the dry run first whenever possible.
+matches your goal. Stop foreground dashboard/worker/server terminals with Ctrl+C.
+Run the dry run first whenever possible. Remove integrations **before** removing
+the package, so the cleanup command remains available. If removal reports an
+error, resolve it and rerun; do not remove the package while jobs remain registered.
 
 ### Stop using Slowave but keep its memories
 
@@ -320,7 +537,9 @@ install it, after `uninstall` or `purge` as appropriate:
 
 ```bash
 pipx uninstall slowave
-# or, if installed with Homebrew:
+# pip venv: use that environment's Python
+python -m pip uninstall slowave
+# Homebrew (macOS)
 brew uninstall slowave
 ```
 
@@ -329,7 +548,7 @@ brew uninstall slowave
 ## Trust & Transparency
 
 - ✅ **Open Source** — [github.com/mrsalty/slowave](https://github.com/mrsalty/slowave)
-- ✅ **Idempotent** — safe to re-run
+- ✅ **Repeatable setup** — preserves unrelated configuration; restarts managed services
 - ✅ **Dry-run mode** — `slowave setup --dry-run`
 - ✅ **Verification** — `slowave doctor` shows state
 - ✅ **Reversible setup removal** — `slowave uninstall` preserves local memories
