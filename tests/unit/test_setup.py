@@ -1200,6 +1200,60 @@ def test_setup_reapplies_services_without_force(fake_home, monkeypatch):
     assert calls == [("daemon", True), ("worker", True), ("backup", True)]
 
 
+@pytest.mark.parametrize("system", ["Windows", "Linux", "Darwin"])
+@pytest.mark.parametrize("healthy", [True, False])
+def test_setup_checks_health_after_all_service_registrations(
+    fake_home, monkeypatch, system, healthy
+):
+    from click.testing import CliRunner
+
+    calls = []
+    monkeypatch.setattr(_setup_mod, "SYSTEM", system)
+    suffix = {"Windows": "windows", "Linux": "linux", "Darwin": "macos"}[system]
+    for kind in ("daemon", "worker", "backup"):
+
+        def install(binary, *, force=False, kind=kind):
+            calls.append(kind)
+            return (True, "registered") if system == "Windows" else ("/fake/service", True)
+
+        monkeypatch.setattr(_setup_mod, f"_install_{kind}_{suffix}", install)
+
+    def health(*args, **kwargs):
+        calls.append("health")
+        return healthy
+
+    monkeypatch.setattr(_setup_mod, "_verify_daemon_health", health)
+    monkeypatch.setattr(
+        _setup_mod.subprocess,
+        "run",
+        lambda args, **kw: _setup_mod.subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    result = CliRunner().invoke(setup_cmd, ["--client", "codex"], input="y\n")
+    assert calls == ["daemon", "worker", "backup", "health"], (result.output, result.exception)
+    if healthy:
+        assert result.exit_code == 0, result.output
+        assert "Setup complete" in result.output
+    else:
+        assert result.exit_code != 0
+        assert "within 120s" in result.output
+        assert "Service registrations were applied" in result.output
+        assert "Setup complete" not in result.output
+
+
+def test_setup_uses_shared_readiness_budget(monkeypatch):
+    from slowave.cli.services import DAEMON_HEALTH_TIMEOUT
+
+    calls = []
+
+    def wait(port, timeout):
+        calls.append((port, timeout))
+        return None
+
+    monkeypatch.setattr(_setup_mod, "wait_for_daemon_health", wait)
+    assert _setup_mod._verify_daemon_health(12345)
+    assert calls == [(12345, DAEMON_HEALTH_TIMEOUT)]
+
+
 def test_setup_reenables_windows_backup_without_running_it(monkeypatch):
     from subprocess import CompletedProcess
 

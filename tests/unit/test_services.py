@@ -9,6 +9,147 @@ from slowave.cli import services
 
 
 @pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
+@pytest.mark.parametrize("healthy_at", [0.0, 60.0, 119.5, None])
+def test_daemon_readiness_allows_slow_startup_with_bounded_deadline(
+    system, healthy_at, monkeypatch, tmp_path
+):
+    import io
+    import json
+    import time
+    import urllib.request
+
+    from slowave import __version__
+    from slowave.core.paths import runtime_paths
+
+    monkeypatch.setattr(services.platform, "system", lambda: system)
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(tmp_path))
+    clock = [0.0]
+    requests = []
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    def request(url, *, timeout):
+        requests.append((clock[0], timeout))
+        if healthy_at is not None and clock[0] + timeout >= healthy_at:
+            clock[0] = max(clock[0], healthy_at)
+            return io.BytesIO(
+                json.dumps({"version": __version__, "db": str(runtime_paths().database)}).encode()
+            )
+        # Account for time spent in the HTTP request, not just poll sleeps.
+        clock[0] += timeout
+        raise TimeoutError("still starting")
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(urllib.request, "urlopen", request)
+    result = services.wait_for_daemon_health(8766)
+    if healthy_at is None:
+        assert result == "still starting"
+        assert clock[0] == 120.0
+    else:
+        assert result is None
+        assert healthy_at <= clock[0] < 120.0
+        if healthy_at == 0:
+            assert len(requests) == 1
+    assert all(start + timeout <= 120.0 for start, timeout in requests)
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (b"not json", "Expecting value"),
+        (b"[]", "expected a JSON object"),
+        (b'{"version": "old"}', "running version old"),
+    ],
+)
+def test_daemon_readiness_retries_invalid_health(body, message, monkeypatch):
+    import io
+    import time
+    import urllib.request
+
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(body))
+    assert message in services.wait_for_daemon_health(8766, timeout=1.25)
+    assert clock[0] == 1.25
+
+
+@pytest.mark.parametrize("db", [None, 123, "", "/wrong/database.db"])
+def test_daemon_readiness_rejects_invalid_database_identity(db, monkeypatch, tmp_path):
+    import io
+    import json
+    import time
+    import urllib.request
+
+    from slowave import __version__
+
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(tmp_path))
+    clock = iter([0.0, 0.0, 120.0, 120.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: io.BytesIO(json.dumps({"version": __version__, "db": db}).encode()),
+    )
+    assert "database" in services.wait_for_daemon_health(8766)
+
+
+def test_daemon_readiness_retries_malformed_http(monkeypatch):
+    import http.client
+    import time
+    import urllib.request
+
+    clock = iter([0.0, 0.0, 120.0, 120.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+
+    def request(*args, **kwargs):
+        raise http.client.BadStatusLine("invalid HTTP status")
+
+    monkeypatch.setattr(urllib.request, "urlopen", request)
+    assert "invalid HTTP status" in services.wait_for_daemon_health(8766)
+
+
+def test_daemon_readiness_recovers_from_http_error_on_real_loopback(monkeypatch, tmp_path):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from slowave import __version__
+    from slowave.core.paths import runtime_paths
+
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(tmp_path))
+    requests = []
+    payload = json.dumps({"version": __version__, "db": str(runtime_paths().database)}).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(503 if len(requests) == 1 else 200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert services.wait_for_daemon_health(server.server_port, timeout=5.0) is None
+        assert requests == ["/health", "/health"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux", "Windows"])
 def test_restart_stops_all_services_before_starting(system, monkeypatch, tmp_path):
     monkeypatch.setattr(services.platform, "system", lambda: system)
     monkeypatch.setattr(services.Path, "home", lambda: tmp_path)
@@ -96,6 +237,8 @@ def test_verification_rejects_old_daemon_version(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: Response())
     monkeypatch.setattr(time, "sleep", lambda *a: None)
+    clock = iter([0.0, 1.0, 121.0, 121.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
     with pytest.raises(click.ClickException, match="running version old-version"):
         services.verify_daemon()
 
@@ -247,6 +390,8 @@ def test_verification_rejects_wrong_runtime_database(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: Response())
     monkeypatch.setattr(time, "sleep", lambda *a: None)
+    clock = iter([0.0, 1.0, 121.0, 121.0])
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
     with pytest.raises(click.ClickException, match="running database"):
         services.verify_daemon()
 

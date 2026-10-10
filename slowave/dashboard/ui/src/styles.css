@@ -2040,7 +2040,6 @@ pre {
 .retrieval-col-feedback { width: 112px; }
 .retrieval-table th, .retrieval-table td { padding: 10px 8px; overflow-wrap: anywhere; }
 .retrieval-table th.numeric { text-align: left; }
-.retrieval-usage-caption { display: block; font-size: 10px; font-weight: 400; text-transform: none; letter-spacing: normal; }
 .retrieval-task-scope { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; }
 .retrieval-table .retrieval-usage-stack { width: 100%; }
 @media (max-width: 1000px) {

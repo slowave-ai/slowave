@@ -2155,7 +2155,6 @@ export function RetrievalPage({ location }: PageProps) {
                     <th className="numeric" key={key} aria-sort={sort === key ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                       <SortButton label={label} active={sort === key} direction={dir} onClick={() => changeSort(key)} />
                       <ColumnHelp id={key} label={label} />
-                      {key === "used" && <small className="retrieval-usage-caption">used / retrieved</small>}
                     </th>
                   ))}
                   {visible("feedback") && <th aria-sort={sort === "feedback" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
