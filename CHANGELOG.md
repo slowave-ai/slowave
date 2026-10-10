@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.10](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.9...slowave-v0.20.10) (2026-10-10)
+
+
+### Bug Fixes
+
+* harden service lifecycle and database restore safety ([059148f](https://github.com/slowave-ai/slowave/commit/059148f1558915e846345c24e2f99fc4859c1035))
+
 ## [0.20.9](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.8...slowave-v0.20.9) (2026-10-09)
 
 
