@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.10...slowave-v0.21.0) (2026-10-10)
+
+
+### Features
+
+* commands lifecycle management redesign ([#177](https://github.com/slowave-ai/slowave/issues/177)) ([a5fd0bc](https://github.com/slowave-ai/slowave/commit/a5fd0bc769b0e2cdb76ad4c8d9c9925602eef74f))
+
 ## [0.20.10](https://github.com/slowave-ai/slowave/compare/slowave-v0.20.9...slowave-v0.20.10) (2026-10-10)
 
 
