@@ -2524,7 +2524,7 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         try:
             rows = conn.execute(
                 "SELECT context_id, retrieval_type, query, goal, scope_id, count_n, created_at "
-                "FROM context_recall_events WHERE created_at >= ?"
+                "FROM context_recall_events WHERE retrieval_type IN ('context','activate','recall') AND created_at >= ?"
                 + scope_sql
                 + " ORDER BY created_at DESC LIMIT 30",
                 [since, *scope_args],
@@ -2722,7 +2722,7 @@ def _retrieval_sort(qs: dict[str, list[str]]) -> tuple[str, str]:
 
 
 def _retrieval_filters(qs: dict[str, list[str]]) -> tuple[str, list[Any]]:
-    clauses = ["1=1"]
+    clauses = ["r.retrieval_type IN ('context', 'activate', 'recall')"]
     args: list[Any] = []
     scope = (qs.get("scope") or [""])[0].strip()
     retrieval_type = (qs.get("type") or [""])[0].strip()
@@ -3294,7 +3294,7 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         rows = conn.execute(
             "WITH retrieval_counts AS ("
             " SELECT session_id, COUNT(*) AS retrieval_count"
-            " FROM context_recall_events GROUP BY session_id"
+            " FROM context_recall_events WHERE retrieval_type IN ('context','activate','recall') GROUP BY session_id"
             "), retrieved_counts AS ("
             " SELECT r.session_id,"
             " COUNT(CASE WHEN i.admitted = 1 AND i.memory_type IN ('schema','related') THEN 1 END) AS retrieved_memory_count,"

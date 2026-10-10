@@ -654,6 +654,18 @@ def test_feedback_schema_and_empty_batch_recovery(tmp_path: Path) -> None:
             assert batch["results"][1]["ok"] is True
             assert batch["results"][1]["data"]["rejected"] == []
             await harness.commit(activation["session_id"], "verify feedback")
+            with sqlite3.connect(tmp_path / "feedback-guidance.db") as conn:
+                rows = conn.execute(
+                    "SELECT retrieval_type, response_chars, estimated_tokens, lifecycle_version "
+                    "FROM context_recall_events WHERE session_id=?",
+                    (activation["session_id"],),
+                ).fetchall()
+            by_kind = {row[0]: row for row in rows}
+            assert {"context", "feedback", "commit"} <= by_kind.keys()
+            for kind in ("feedback", "commit"):
+                _, chars, tokens, version = by_kind[kind]
+                assert chars > 0 and tokens == (chars + 3) // 4
+                assert version is not None
 
     _run(scenario())
 

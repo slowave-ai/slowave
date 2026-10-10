@@ -547,6 +547,83 @@ def _serialized_chars(value: dict[str, Any]) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
 
 
+def _log_tool_response(
+    eng: Any,
+    *,
+    context_id: str,
+    session_id: str,
+    scope: str,
+    retrieval_type: str,
+    response_data: dict[str, Any],
+    response_chars: int | None = None,
+    estimated_tokens: int | None = None,
+) -> None:
+    """Record response size for any MCP tool in context_recall_events."""
+    from slowave.lifecycle import LIFECYCLE_VERSION
+
+    chars = _serialized_chars(response_data) if response_chars is None else response_chars
+    try:
+        conn = eng.db.connect()
+        with conn:
+            conn.execute(
+                """INSERT INTO context_recall_events
+                   (context_id, session_id, scope_id, retrieval_type, continuity_state,
+                    response_chars, estimated_tokens, created_at, lifecycle_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    context_id,
+                    session_id,
+                    scope,
+                    retrieval_type,
+                    "started",
+                    chars,
+                    math.ceil(chars / 4) if estimated_tokens is None else estimated_tokens,
+                    int(time.time()),
+                    LIFECYCLE_VERSION,
+                ),
+            )
+    except Exception:
+        # Observability must not turn a completed mutation into a reported failure.
+        log.warning("Could not record %s response size", retrieval_type, exc_info=True)
+
+
+def _log_feedback_batch(eng: Any, items: Any, results: list[dict[str, Any]]) -> None:
+    """Attribute one batch response across its sessions without duplicating tokens."""
+    groups: dict[tuple[str, str], int] = {}
+    conn = eng.db.connect()
+    for item, result in zip(items, results):
+        row = conn.execute(
+            "SELECT session_id, scope_id FROM context_recall_events WHERE context_id=?",
+            (item.retrieval_id,),
+        ).fetchone()
+        if row is None:
+            continue
+        key = (row[0], row[1])
+        groups[key] = groups.get(key, 0) + _serialized_chars(result)
+    if not groups:
+        return
+    chars = _serialized_chars({"ok": True, "data": {"results": results}})
+    # Allocate envelope overhead as well as item payloads; all shares sum to chars.
+    weight = sum(groups.values())
+    remaining = chars
+    allocated_chars = 0
+    for index, ((session_id, scope), size) in enumerate(groups.items()):
+        share = remaining if index == len(groups) - 1 else chars * size // weight
+        remaining -= share
+        token_share = math.ceil((allocated_chars + share) / 4) - math.ceil(allocated_chars / 4)
+        allocated_chars += share
+        _log_tool_response(
+            eng,
+            context_id="fbk_" + secrets.token_urlsafe(16),
+            session_id=session_id,
+            scope=scope,
+            retrieval_type="feedback",
+            response_data={},
+            response_chars=share,
+            estimated_tokens=token_share,
+        )
+
+
 def _candidate_kind(item: dict[str, Any]) -> str:
     if item["kind"] == "procedure":
         return "procedure"
@@ -1292,8 +1369,8 @@ def _restrict_activation_exposure(
         (
             json.dumps(sorted(exposed)),
             len(exposed),
-            _serialized_chars(data),
-            math.ceil(_serialized_chars(data) / 4),
+            _serialized_chars({"ok": True, "data": data}),
+            math.ceil(_serialized_chars({"ok": True, "data": data}) / 4),
             retrieval_id,
         ),
     )
@@ -1690,15 +1767,21 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             _validate_scope(request.scope)
             eng = build_engine()
             if request.continue_from is not None:
-                return {
-                    "ok": True,
-                    "data": _continuation_page(
-                        eng,
-                        cursor=request.continue_from,
-                        session_id=request.session_id,
-                        scope=request.scope,
-                    ),
-                }
+                data = _continuation_page(
+                    eng,
+                    cursor=request.continue_from,
+                    session_id=request.session_id,
+                    scope=request.scope,
+                )
+                _log_tool_response(
+                    eng,
+                    context_id="page_" + secrets.token_urlsafe(16),
+                    session_id=request.session_id,
+                    scope=request.scope,
+                    retrieval_type="recall_page",
+                    response_data={"ok": True, "data": data},
+                )
+                return {"ok": True, "data": data}
             assert request.query is not None
             result = ops.recall(
                 eng,
@@ -1890,18 +1973,24 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             )
             if not is_batch:
                 item = normalized[0]
-                return {
-                    "ok": True,
-                    "data": ops.remember(
-                        eng,
-                        content=item["content"],
-                        memory_type=item["type"],
-                        scope=request.scope,
-                        session_id=request.session_id,
-                        provenance=provenance,
-                        occurred_at=item["occurred_at"],
-                    ),
-                }
+                result = ops.remember(
+                    eng,
+                    content=item["content"],
+                    memory_type=item["type"],
+                    scope=request.scope,
+                    session_id=request.session_id,
+                    provenance=provenance,
+                    occurred_at=item["occurred_at"],
+                )
+                _log_tool_response(
+                    eng,
+                    context_id="rem_" + secrets.token_urlsafe(16),
+                    session_id=request.session_id,
+                    scope=request.scope,
+                    retrieval_type="remember",
+                    response_data={"ok": True, "data": result},
+                )
+                return {"ok": True, "data": result}
             results: list[dict[str, Any]] = []
             for index, item in enumerate(normalized):
                 try:
@@ -1933,6 +2022,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                             },
                         }
                     )
+            _log_tool_response(
+                eng,
+                context_id="rem_" + secrets.token_urlsafe(16),
+                session_id=request.session_id,
+                scope=request.scope,
+                retrieval_type="remember",
+                response_data={"ok": True, "data": {"results": results}},
+            )
             return {"ok": True, "data": {"results": results}}
         except Exception as e:
             log.error("slowave_remember failed: %s", e, exc_info=True)
@@ -2100,10 +2197,23 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                             },
                         }
                     )
+            try:
+                _log_feedback_batch(eng, request.items, results)
+            except Exception:
+                log.warning("Could not record feedback batch response size", exc_info=True)
             return {"ok": True, "data": {"results": results}}
         try:
             if not request.retrieval_id:
                 raise ValueError("retrieval_id is required")
+            # Get scope and session_id from retrieval_id
+            conn = eng.db.connect()
+            recall_row = conn.execute(
+                "SELECT scope_id, session_id FROM context_recall_events WHERE context_id = ?",
+                (request.retrieval_id,),
+            ).fetchone()
+            scope = recall_row[0] if recall_row else "unknown"
+            session_id = recall_row[1] if recall_row else "unknown"
+
             data = ops.feedback(
                 eng,
                 retrieval_id=request.retrieval_id,
@@ -2120,6 +2230,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 retrieval_quality=request.retrieval_quality,
                 missing=request.missing,
                 coverage=request.coverage,
+            )
+            _log_tool_response(
+                eng,
+                context_id="fbk_" + secrets.token_urlsafe(16),
+                session_id=session_id,
+                scope=scope,
+                retrieval_type="feedback",
+                response_data={"ok": True, "data": data},
             )
             return {"ok": True, "data": data}
         except Exception as e:
@@ -2203,6 +2321,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             # memories from the attempted path; an encoder-free commit would
             # preserve rows for audit but silently exclude them from consolidation.
             eng = build_engine(disable_encoder=False)
+            # Get scope from session
+            conn = eng.db.connect()
+            scope_row = conn.execute(
+                "SELECT scope_id FROM sessions WHERE id = ?",
+                (request.session_id,),
+            ).fetchone()
+            scope = scope_row[0] if scope_row else "unknown"
+
             result = ops.commit(
                 eng,
                 session_id=request.session_id,
@@ -2218,6 +2344,14 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 ),
                 provenance=_integration_provenance(ctx),
                 enforce_feedback=True,
+            )
+            _log_tool_response(
+                eng,
+                context_id="cmt_" + secrets.token_urlsafe(16),
+                session_id=request.session_id,
+                scope=scope,
+                retrieval_type="commit",
+                response_data={"ok": True, "data": result},
             )
             return {"ok": True, "data": result}
         except ops.IncompleteFeedbackError as e:

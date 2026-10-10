@@ -508,7 +508,7 @@ class FeedbackService:
         conn = self.db.connect()
         rows = conn.execute(
             "SELECT context_id, retrieval_policy_version, memory_ids_json, created_at "
-            "FROM context_recall_events r WHERE NOT EXISTS ("
+            "FROM context_recall_events r WHERE r.retrieval_type IN ('context','activate','recall') AND NOT EXISTS ("
             "SELECT 1 FROM retrieval_decisions d WHERE d.retrieval_id = r.context_id"
             ") ORDER BY created_at, context_id LIMIT ?",
             (batch_size,),

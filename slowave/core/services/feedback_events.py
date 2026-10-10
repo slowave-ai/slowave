@@ -410,8 +410,11 @@ class FeedbackEventService:
     def incomplete_for_session(self, session_id: str) -> list[dict[str, Any]]:
         """Return machine-actionable outstanding exposure coverage for a session."""
         conn = self.db.connect()
+        # Only activate/recall/context retrievals expose memories/procedures requiring feedback
         retrievals = conn.execute(
-            "SELECT context_id FROM context_recall_events WHERE session_id = ? ORDER BY created_at",
+            """SELECT context_id FROM context_recall_events
+               WHERE session_id = ? AND retrieval_type IN ('activate', 'recall', 'context')
+               ORDER BY created_at""",
             (session_id,),
         ).fetchall()
         incomplete: list[dict[str, Any]] = []

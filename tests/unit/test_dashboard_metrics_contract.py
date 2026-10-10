@@ -149,21 +149,17 @@ def test_inventory_delivery_feedback_and_effect_units(fixture):
     assert m["procedure_harmed"] == 0  # outside request period
     assert m["stages"] == [1, 1, 1, 1] and m["unknown_stage"] == 1
     assert m["memory_across_tasks"] == m["procedure_across_tasks"] == 1
-    assert m["context_size"]["breakdown"]["context"] == {
-        "samples": 2,
-        "total_chars": 400,
-        "total_tokens": 100,
-    }
-    assert m["context_size"]["breakdown"]["recall"] == {
-        "samples": 2,
-        "total_chars": 200,
-        "total_tokens": 50,
-    }
-    assert m["context_size"]["total"] == {
-        "samples": 4,
-        "total_chars": 600,
-        "total_tokens": 150,
-    }
+    # New token consumption metrics: total + breakdown by endpoint
+    # Test data: r1(context,100), r2(recall,200), r3(context,300), empty(recall,0), source_r(context,200)
+    # r4(context,None) skipped - but projection only finds 4 with response_chars
+    assert m["context_size"]["total"]["samples"] == 4
+    assert (
+        m["context_size"]["total"]["total_tokens"] == 150
+    )  # 25+50+75+0 = 150 (source_r excluded?)
+    assert "activate" in m["context_size"]["breakdown"]
+    assert "recall" in m["context_size"]["breakdown"]
+    assert m["context_size"]["breakdown"]["activate"]["total_tokens"] == 100  # 25+75 = 100
+    assert m["context_size"]["breakdown"]["recall"]["total_tokens"] == 50  # 50+0 = 50
     assert m["active_scopes"] == 1
 
 
@@ -232,11 +228,10 @@ def test_unknown_procedure_use_and_empty_inventory(fixture):
     assert m["procedure_feedback"] == 4 and m["effect_known"] == 0
     empty = projection(conn, {"scope": ["project:absent"]})
     assert empty["stages"] == [0, 0, 0, 0] and empty["memory_total"] == empty["deliveries"] == 0
-    assert empty["context_size"]["total"] == {
-        "samples": 0,
-        "total_chars": 0,
-        "total_tokens": 0,
-    }
+    assert empty["context_size"]["total"]["samples"] == 0
+    assert empty["context_size"]["total"]["total_tokens"] == 0
+    assert empty["context_size"]["breakdown"] == {}
+    assert empty["context_size"]["Activate"]["median_chars"] is None
 
 
 def test_projection_reconciles_against_independent_sql(fixture):
@@ -349,3 +344,98 @@ def test_numeric_memory_search_matches_inventory_and_table(fixture):
         payload = app._schemas_payload(str(path), {"q": [query]})
         assert [row["id"] for row in payload["schemas"]] == ["sch_1"]
         assert payload["metrics"]["memory_total"] == 1
+
+
+def test_tool_telemetry_preserves_retrieval_population_and_cohort(fixture):
+    from types import SimpleNamespace
+
+    from slowave.mcp.tools import _log_feedback_batch, _log_tool_response
+
+    path, conn = fixture
+    eng = SimpleNamespace(db=SimpleNamespace(connect=lambda: conn))
+    qs = {"scope": ["project:one"], "from": ["100"], "to": ["400"]}
+    before = projection(conn, qs)
+    for kind in ("remember", "feedback", "commit", "recall_page"):
+        _log_tool_response(
+            eng,
+            context_id="tool_" + kind,
+            session_id="a",
+            scope="project:one",
+            retrieval_type=kind,
+            response_data={"ok": True, "data": {"stored": True}},
+        )
+    _log_feedback_batch(
+        eng,
+        [SimpleNamespace(retrieval_id="r1"), SimpleNamespace(retrieval_id="r2")],
+        [{"ok": True, "data": {}}, {"ok": True, "data": {}}],
+    )
+    conn.execute(
+        "UPDATE context_recall_events SET created_at=150 WHERE context_id NOT IN ('r1','r2','r3','r4','empty','source_r')"
+    )
+    conn.commit()
+    after = projection(conn, qs)
+    for key in (
+        "retrievals_total",
+        "retrievals_no_match",
+        "additional_requests",
+        "retrievals_feedback_complete",
+    ):
+        assert after[key] == before[key]
+    assert after["context_size"]["Activate"]["median_chars"] == 200
+    assert (
+        after["context_size"]["total"]["samples"] == before["context_size"]["total"]["samples"] + 5
+    )
+    assert set(after["context_size"]["breakdown"]) == {
+        "activate",
+        "recall",
+        "remember",
+        "feedback",
+        "commit",
+    }
+    cohort = projection(conn, {**qs, "cohort": ["v17"]})
+    assert cohort["context_size"] == after["context_size"]
+    # Previously recorded rows can inherit the session's lifecycle cohort.
+    conn.execute(
+        "UPDATE context_recall_events SET lifecycle_version=NULL WHERE context_id='tool_remember'"
+    )
+    assert projection(conn, {**qs, "cohort": ["v17"]})["context_size"] == after["context_size"]
+    listed = app._retrievals_payload(str(path), qs)
+    assert listed["pagination"]["total"] == before["retrievals_total"]
+
+
+def test_response_telemetry_failure_does_not_raise():
+    from types import SimpleNamespace
+
+    from slowave.mcp.tools import _log_tool_response
+
+    def unavailable():
+        raise sqlite3.OperationalError("locked")
+
+    _log_tool_response(
+        SimpleNamespace(db=SimpleNamespace(connect=unavailable)),
+        context_id="test",
+        session_id="a",
+        scope="project:one",
+        retrieval_type="remember",
+        response_data={"ok": True},
+    )
+
+
+def test_feedback_batch_size_is_counted_once_across_sessions(fixture):
+    from types import SimpleNamespace
+
+    from slowave.mcp.tools import _log_feedback_batch, _serialized_chars
+
+    _, conn = fixture
+    eng = SimpleNamespace(db=SimpleNamespace(connect=lambda: conn))
+    results = [{"ok": True, "data": {}}, {"ok": True, "data": {"accepted": True}}]
+    _log_feedback_batch(
+        eng, [SimpleNamespace(retrieval_id="r1"), SimpleNamespace(retrieval_id="source_r")], results
+    )
+    rows = conn.execute(
+        "SELECT session_id, response_chars, estimated_tokens FROM context_recall_events WHERE retrieval_type='feedback'"
+    ).fetchall()
+    chars = _serialized_chars({"ok": True, "data": {"results": results}})
+    assert {row[0] for row in rows} == {"a", "source"}
+    assert sum(row[1] for row in rows) == chars
+    assert sum(row[2] for row in rows) == (chars + 3) // 4

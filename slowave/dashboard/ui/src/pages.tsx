@@ -787,20 +787,47 @@ function TokenConsumptionCards({ data }: { data: Json }) {
   const endpointLabels: Record<string, string> = {
     activate: "Activate",
     recall: "Recall",
-    context: "Context",
     remember: "Remember",
     feedback: "Feedback",
     commit: "Commit",
   };
 
-  const breakdownItems = Object.entries(breakdown)
+  // Professional color palette (OKLCH-based, accessible)
+  const endpointColors: Record<string, string> = {
+    activate: "oklch(0.55 0.18 150)",   // Green
+    recall: "oklch(0.52 0.22 260)",     // Blue
+    remember: "oklch(0.62 0.20 30)",    // Amber
+    feedback: "oklch(0.60 0.22 340)",   // Rose
+    commit: "oklch(0.58 0.18 290)",     // Violet
+  };
+
+  // Merge historical activation records into the current endpoint label.
+  const normalized: Record<string, any> = {};
+  for (const [kind, val] of Object.entries(breakdown) as [string, any][]) {
+    const key = kind === "context" ? "activate" : kind;
+    const previous = normalized[key] || { total_tokens: 0, samples: 0 };
+    normalized[key] = {
+      total_tokens: previous.total_tokens + val.total_tokens,
+      samples: previous.samples + val.samples,
+    };
+  }
+  const rawItems = Object.entries(normalized)
     .map(([key, val]: [string, any]) => ({
+      key,
       label: endpointLabels[key] || key,
       tokens: val.total_tokens,
       samples: val.samples,
-      pct: totalTokens > 0 ? Math.round((val.total_tokens / totalTokens) * 100) : 0,
+      color: endpointColors[key] || "oklch(0.55 0.18 150)",
     }))
+    .filter((d) => d.tokens > 0)
     .sort((a, b) => b.tokens - a.tokens);
+
+  // Keep bar widths proportional without rounding away small endpoints.
+  const visibleTotal = rawItems.reduce((sum, d) => sum + d.tokens, 0);
+  const breakdownItems = rawItems.map((d) => ({
+    ...d,
+    pct: visibleTotal > 0 ? (d.tokens / visibleTotal) * 100 : 0,
+  }));
 
   return (
     <>
@@ -814,17 +841,58 @@ function TokenConsumptionCards({ data }: { data: Json }) {
         }
       />
       <MetricCard
-        title="Endpoint breakdown"
-        value={breakdownItems.length > 0 ? `${breakdownItems.length} endpoints` : "No data"}
+        className="distribution-card token-consumption-breakdown"
+        title="Token consumption breakdown"
         tooltip={
           breakdownItems.length > 0
             ? breakdownItems
                 .map(
                   (d) =>
-                    `${d.label}: ${d.tokens.toLocaleString()} tokens (${d.pct}%) — ${d.samples.toLocaleString()} calls`
+                    `${d.label}: ${formatTokenEstimate(d.tokens)} (${Math.round(d.pct)}%) — ${d.samples.toLocaleString()} calls`
                 )
                 .join("\n")
             : "No endpoint breakdown available."
+        }
+        value={
+          <div className="stage-distribution">
+            <div className="distribution-bar" style={{ width: "100%" }}>
+              {breakdownItems.map((d) => (
+                <span
+                  key={d.key}
+                  style={{
+                    width: `${d.pct}%`,
+                    backgroundColor: d.color,
+                  }}
+                  title={`${d.label}: ${formatTokenEstimate(d.tokens)} (${Math.round(d.pct)}%) — ${d.samples.toLocaleString()} calls`}
+                />
+              ))}
+              {breakdownItems.length === 0 && (
+                <span className="stage-unknown" style={{ width: "100%" }} />
+              )}
+            </div>
+            <div className="distribution-legend stage-legend">
+              {breakdownItems.map((d) => (
+                <span
+                  key={d.key}
+                  style={{ borderLeftColor: d.color }}
+                  title={`${d.label}: ${formatTokenEstimate(d.tokens)} (${Math.round(d.pct)}%) — ${d.samples.toLocaleString()} calls`}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                    <span
+                      style={{
+                        width: "12px",
+                        height: "12px",
+                        borderRadius: "2px",
+                        backgroundColor: d.color,
+                        flexShrink: 0,
+                      }}
+                    />
+                    {d.label}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
         }
       />
     </>
@@ -866,7 +934,7 @@ function MemoryEffectiveness({ data }: { data: Json }) {
           tooltip={glossary.active_scopes}
           href={metricHref("/memory", data)}
         />
-        <ContextVolumeCards data={data} />
+        <TokenConsumptionCards data={data} />
       </div>
     </Section>
   );

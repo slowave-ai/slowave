@@ -94,9 +94,9 @@ def projection(
     args = list(filter_args)  # Caller-owned bindings must not be extended in place.
     cohort = value(qs, "cohort", "all")
     if cohort == "v9":
-        where += " AND CAST(substr(r.lifecycle_version,2) AS INTEGER)>=9"
+        where += " AND CAST(substr(COALESCE(r.lifecycle_version, (SELECT s.lifecycle_version FROM sessions s WHERE s.id=r.session_id)),2) AS INTEGER)>=9"
     elif cohort != "all":
-        where += " AND r.lifecycle_version=?"
+        where += " AND COALESCE(r.lifecycle_version, (SELECT s.lifecycle_version FROM sessions s WHERE s.id=r.session_id))=?"
         args.append(cohort)
     if scope and request_filter is None:
         where += " AND r.scope_id=?"
@@ -105,6 +105,8 @@ def projection(
         dict(r)
         for r in conn.execute(f"SELECT r.* FROM context_recall_events r WHERE {where}", args)
     ]
+    token_requests = requests
+    requests = [r for r in requests if r["retrieval_type"] in {"context", "activate", "recall"}]
     items = occasions(conn, where, args)
     session_starts = {
         row["id"]: int(row["started_ts"])
@@ -231,20 +233,25 @@ def projection(
     )
     result["context_size"] = {}
     # Total tokens across ALL endpoints in time window
-    all_kinds = {"activate", "recall", "context", "remember", "feedback", "commit"}
-    all_samples = [
-        (
-            r["retrieval_type"],
-            int(r["response_chars"]),
-            (
-                int(r["estimated_tokens"])
-                if r.get("estimated_tokens") is not None
-                else math.ceil(int(r["response_chars"]) / 4)
-            ),
-        )
-        for r in requests
-        if r["retrieval_type"] in all_kinds and r.get("response_chars") is not None
-    ]
+    all_kinds = {"activate", "recall", "context", "remember", "feedback", "commit", "recall_page"}
+    all_samples = []
+    for r in token_requests:
+        if r["retrieval_type"] in all_kinds and r.get("response_chars") is not None:
+            chars = int(r["response_chars"])
+            tokens = r.get("estimated_tokens")
+            if tokens is None:
+                tokens = math.ceil(chars / 4)
+            else:
+                tokens = int(tokens)
+            all_samples.append(
+                (
+                    {"context": "activate", "recall_page": "recall"}.get(
+                        r["retrieval_type"], r["retrieval_type"]
+                    ),
+                    chars,
+                    tokens,
+                )
+            )
     total_chars = sum(c for _, c, _ in all_samples)
     total_tokens = sum(t for _, _, t in all_samples)
     result["context_size"]["total"] = {
@@ -254,7 +261,7 @@ def projection(
     }
     # Per-endpoint breakdown
     breakdown: dict[str, dict[str, int]] = {}
-    for kind in ["activate", "recall", "context", "remember", "feedback", "commit"]:
+    for kind in ["activate", "recall", "remember", "feedback", "commit"]:
         kind_samples = [(c, t) for k, c, t in all_samples if k == kind]
         if kind_samples:
             breakdown[kind] = {
@@ -263,6 +270,17 @@ def projection(
                 "total_tokens": sum(t for _, t in kind_samples),
             }
     result["context_size"]["breakdown"] = breakdown
+    for name, kinds in [("Activate", {"context", "activate"}), ("Recall", {"recall"})]:
+        samples = sorted(
+            int(r["response_chars"])
+            for r in requests
+            if r["retrieval_type"] in kinds and r.get("response_chars") is not None
+        )
+        result["context_size"][name] = {
+            "samples": len(samples),
+            "median_chars": statistics.median(samples) if samples else None,
+            "p95_chars": samples[math.ceil(len(samples) * 0.95) - 1] if samples else None,
+        }
     result["unsupported_deliveries"] = int(
         conn.execute(
             f"SELECT COUNT(*) FROM context_recall_items i JOIN context_recall_events r ON r.context_id=i.context_id WHERE i.admitted=1 AND NOT ((i.memory_type IN ('schema','related') AND i.memory_id GLOB 'sch_[0-9]*') OR i.memory_type IN ('procedure','procedural_memory')) AND {where}",
