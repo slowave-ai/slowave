@@ -728,6 +728,15 @@ main {
 .status-retrieval { color: var(--accent-retrieval); border-color: color-mix(in srgb, var(--accent-retrieval) 55%, var(--border)); }
 .status-feedback { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
 .status-memory { color: var(--accent-memory); border-color: color-mix(in srgb, var(--accent-memory) 55%, var(--border)); }
+.retrieval-usage-stack { display: grid; gap: 4px; }
+.retrieval-detail-usage { width: 180px; max-width: 100%; }
+.retrieval-usage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; row-gap: 3px; min-height: 20px; font-size: 12px; white-space: nowrap; }
+.retrieval-usage-memory { color: var(--accent-memory); }
+.retrieval-usage-procedure { color: var(--accent-procedure); }
+.retrieval-usage-label { color: var(--muted); }
+.retrieval-usage-value { text-align: right; font-variant-numeric: tabular-nums; }
+.retrieval-usage-track { grid-column: 1 / -1; grid-row: 2; height: 3px; border-radius: 2px; overflow: hidden; background: var(--border); }
+.retrieval-usage-track > span { display: block; height: 100%; background: currentColor; border-radius: inherit; }
 .status-activity { color: var(--accent-activity); border-color: color-mix(in srgb, var(--accent-activity) 55%, var(--border)); }
 .status-procedure { color: var(--accent-procedure); border-color: color-mix(in srgb, var(--accent-procedure) 55%, var(--border)); }
 .status-needs_review i,
@@ -1142,8 +1151,8 @@ td.primary-cell {
   font-weight: 400;
 }
 .retrieval-table td.retrieval-task-cell {
-  min-width: 200px;
-  max-width: 340px;
+  min-width: 0;
+  max-width: none;
 }
 .long-text-cell {
   font-size: 12px;
@@ -2022,3 +2031,25 @@ pre {
   .filter-bar { flex-wrap: wrap; }
 }
 @media (max-width: 380px) { .distribution-card .distribution-legend { grid-template-columns: 1fr; } }
+
+/* Retrieval columns fit the available pane; narrow panes become compact cards. */
+.retrieval-table { table-layout: fixed; }
+.retrieval-col-when { width: 82px; }
+.retrieval-col-type { width: 104px; }
+.retrieval-col-usage { width: 152px; }
+.retrieval-col-feedback { width: 112px; }
+.retrieval-table th, .retrieval-table td { padding: 10px 8px; overflow-wrap: anywhere; }
+.retrieval-table th.numeric { text-align: left; }
+.retrieval-usage-caption { display: block; font-size: 10px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.retrieval-task-scope { display: block; margin-top: 5px; color: var(--muted); overflow-wrap: anywhere; }
+.retrieval-table .retrieval-usage-stack { width: 100%; }
+@media (max-width: 1000px) {
+  .retrieval-table, .retrieval-table tbody { display: block; }
+  .retrieval-table colgroup, .retrieval-table thead { display: none; }
+  .retrieval-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 10px; gap: 10px 16px; border-bottom: 1px solid var(--border); }
+  .retrieval-table td, .retrieval-table td:first-child { display: block; position: static; border: 0; padding: 0; min-width: 0; text-align: left; }
+  .retrieval-table td::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: 10px; color: var(--muted); }
+  .retrieval-table td.retrieval-task-cell { grid-column: 1 / -1; grid-row: 1; }
+  .retrieval-table td.retrieval-task-cell::before { display: none; }
+  .retrieval-table .retrieval-usage-stack { max-width: 160px; }
+}

@@ -328,6 +328,13 @@ def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> N
     listing = _retrievals_payload(str(path), {"sort": ["used"], "dir": ["desc"]})
     visible = listing["retrievals"][0]
     assert visible["signal_counts"]["used"] == visible["signal_used"] == 2
+    assert visible["usage_by_kind"] == {
+        "memory": {"used": 1, "reported": 2},
+        "procedure": {"used": 1, "reported": 1},
+    }
+    detail = _retrieval_detail(str(path), "ctx_visible")["retrieval"]
+    for key in ("usage_by_kind", "exposed_count", "memory_count", "procedure_count"):
+        assert detail[key] == visible[key]
     assert visible["effect_rank"] == 3
     assert len(visible["feedback"]) == 13  # The audit history remains intact.
 
@@ -341,6 +348,14 @@ def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> N
     listing = _retrievals_payload(str(path), {})
     visible = next(item for item in listing["retrievals"] if item["context_id"] == "ctx_visible")
     assert visible["signal_counts"]["used"] == visible["signal_used"] == 0
+    assert visible["usage_by_kind"] == {
+        "memory": {"used": 0, "reported": 2},
+        "procedure": {"used": 0, "reported": 1},
+    }
+    assert (
+        _retrieval_detail(str(path), "ctx_visible")["retrieval"]["usage_by_kind"]
+        == visible["usage_by_kind"]
+    )
     assert visible["signal_counts"]["irrelevant"] == visible["signal_irrelevant"] == 2
     assert visible["signal_counts"]["not_used"] == 1
     assert visible["signal_counts"]["harmed"] == 0

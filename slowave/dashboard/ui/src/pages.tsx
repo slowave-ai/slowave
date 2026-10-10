@@ -1853,9 +1853,29 @@ function MemoryDetail({ id, onClose, onDeleted }: {
   );
 }
 
+function RetrievalUsage({ row }: { row: any }) {
+  if (!row.exposed_count) return <span className="neutral">-</span>;
+  return <div className="retrieval-usage-stack">{(["memory", "procedure"] as const).map((kind) => {
+    const total = Number(row[kind === "memory" ? "memory_count" : "procedure_count"] || 0);
+    if (!total) return null;
+    const usage = row.usage_by_kind?.[kind];
+    const used = Number(usage?.used || 0);
+    const pending = !usage?.reported;
+    const label = kind === "memory" ? "Memories" : "Procedures";
+    const description = pending
+      ? `${total} retrieved ${kind === "memory" ? "memories" : "procedures"}; usage feedback pending`
+      : `${used} of ${total} retrieved ${kind === "memory" ? "memories" : "procedures"} reported used. Grey means not reported used.`;
+    return <span key={kind} className={`retrieval-usage-row retrieval-usage-${kind}`} title={description} aria-label={description}>
+      <span className="retrieval-usage-label">{label}</span>
+      <span className="retrieval-usage-track" aria-hidden="true"><span style={{ width: `${Math.min(100, used / total * 100)}%` }} /></span>
+      <span className={`retrieval-usage-value${pending ? " neutral" : ""}`}>{pending ? `—/${total}` : `${used}/${total}`}</span>
+    </span>;
+  })}</div>;
+}
+
 export function RetrievalPage({ location }: PageProps) {
   const retrievalSignalColumns = [
-    ["used", "Used"],
+    ["used", "Context used"],
     ["not_used", "Not used"],
     ["irrelevant", "Irrelevant"],
     ["stale", "Stale"],
@@ -1873,12 +1893,11 @@ export function RetrievalPage({ location }: PageProps) {
     retrieved: "Admitted items returned by this retrieval, split into memories and procedures.",
     memories_retrieved: "Number of admitted memory items returned.",
     procedures_retrieved: "Number of admitted procedure items returned.",
-    used: "Count of returned items explicitly assessed as used.",
+    used: "Reported used / retrieved, split into memories and procedures. Bars show the proportion reported used; grey includes items without usage feedback. A dash in the fraction means usage feedback is pending for that category.",
     not_used: "Count of returned procedures explicitly assessed as not used.",
     irrelevant: "Count of returned memories explicitly assessed as irrelevant.",
     stale: "Count of returned memories explicitly assessed as stale.",
     wrong: "Count of returned memories explicitly assessed as wrong.",
-    page_limit: "Maximum number of memories requested for this activation page. The actual returned count can be lower; '-' means the value was not recorded.",
     helped: "Count of returned procedures reported to have helped.",
     no_effect: "Count of returned procedures reported to have had no effect.",
     harmed: "Count of returned procedures reported to have harmed the task.",
@@ -1892,7 +1911,7 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns] = useState<string[]>(["when", "task", "type", "scope", "retrieved", "used", "page_limit", "feedback"]);
+  const [visibleColumns] = useState<string[]>(["when", "task", "type", "used", "feedback"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -2111,6 +2130,7 @@ export function RetrievalPage({ location }: PageProps) {
         <>
           <TableFrame label="Retrieval results">
             <table className="retrieval-table">
+              <colgroup><col className="retrieval-col-when" /><col /><col className="retrieval-col-type" /><col className="retrieval-col-usage" /><col className="retrieval-col-feedback" /></colgroup>
               <thead>
                 <tr>
                   {visible("when") && <th aria-sort={sort === "when" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
@@ -2135,9 +2155,9 @@ export function RetrievalPage({ location }: PageProps) {
                     <th className="numeric" key={key} aria-sort={sort === key ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                       <SortButton label={label} active={sort === key} direction={dir} onClick={() => changeSort(key)} />
                       <ColumnHelp id={key} label={label} />
+                      {key === "used" && <small className="retrieval-usage-caption">used / retrieved</small>}
                     </th>
                   ))}
-                  {visible("page_limit") && <th className="numeric">Page size <ColumnHelp id="page_limit" label="Page size" /></th>}
                   {visible("feedback") && <th aria-sort={sort === "feedback" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Feedback" active={sort === "feedback"} direction={dir} onClick={() => changeSort("feedback")} />
                     <ColumnHelp id="feedback" label="Feedback" />
@@ -2157,13 +2177,14 @@ export function RetrievalPage({ location }: PageProps) {
                         rowKeys(e, () => openDetail(href, location))
                       }
                     >
-                      {visible("when") && <td title={formatDate(row.created_at)}>
+                      {visible("when") && <td data-label="When" title={formatDate(row.created_at)}>
                         {relativeDate(row.created_at)}
                       </td>}
                       {visible("task") && <td className="primary-cell retrieval-task-cell">
                         <ClampedText text={row.task_preview} />
+                        <small className="retrieval-task-scope" title={row.scope_id || undefined}>{row.scope_id || "No scope"}</small>
                       </td>}
-                      {visible("type") && <td><StatusBadge value={row.retrieval_type === "context" ? "Activation" : "Recall"} /></td>}
+                      {visible("type") && <td data-label="Type"><StatusBadge value={row.retrieval_type === "context" ? "Activation" : "Recall"} /></td>}
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
                       </td>}
@@ -2171,12 +2192,11 @@ export function RetrievalPage({ location }: PageProps) {
                       {visible("memories_retrieved") && <td className="numeric">{row.memory_count ?? 0}</td>}
                       {visible("procedures_retrieved") && <td className="numeric">{row.procedure_count ?? 0}</td>}
                       {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key]) => (
-                        <td className="numeric" key={key}>
-                          {Number(row.signal_counts?.[key] || 0).toLocaleString()}
+                        <td data-label={key === "used" ? "Context used · used / retrieved" : key} className={key === "used" ? "retrieval-usage-cell" : "numeric"} key={key}>
+                          {key === "used" ? <RetrievalUsage row={row} /> : Number(row.signal_counts?.[key] || 0).toLocaleString()}
                         </td>
                       ))}
-                      {visible("page_limit") && <td className="numeric">{row.requested_page_size ?? "-"}</td>}
-                      {visible("feedback") && <td><StatusBadge value={row.feedback_state} /></td>}
+                      {visible("feedback") && <td data-label="Feedback"><StatusBadge value={row.feedback_state} /></td>}
                       {visible("session") && <td>{row.session_id ? truncate(row.session_id, 18) : "Standalone"}</td>}
                     </tr>
                   );
@@ -2346,6 +2366,10 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 )}
               </dd>
             </dl>
+            <Section title="Context used">
+              <p className="neutral">Reported used / retrieved. Grey includes items not reported used; a dash means feedback is pending.</p>
+              <div className="retrieval-detail-usage"><RetrievalUsage row={retrieval} /></div>
+            </Section>
             <Section title="Exposed context">
               {Object.entries(grouped).length ? (
                 Object.entries(grouped).map(([group, items]: [string, any]) => (
