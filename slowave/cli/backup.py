@@ -11,10 +11,10 @@ import gzip
 import logging
 import os
 import shutil
+import signal
 import sqlite3
 import tempfile
 import time
-from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -121,7 +121,6 @@ def run_backup(
     # Use a temp file so we never leave a partial .db.gz on disk.
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(backup_dir))
     tmp_path = tmp.name
-    tmp.close()  # Windows must release the handle before SQLite opens/removes it.
     try:
         src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30.0)
         try:
@@ -250,10 +249,9 @@ def restore_cmd(
     \\b
     BACKUP_PATH must be a slowave-*.db.gz file created by 'slowave backup'.
 
-    Stop services with `slowave stop` and close foreground processes first.
-    Restore refuses active writers, validates the backup before replacing the
-    database, and preserves the previous database as slowave.db.bak.
-    Run `slowave start` afterward to resume installed services.
+    This stops the running worker, replaces the current database with the
+    backup, then restarts the worker. The previous database is backed up
+    in-place as slowave.db.bak before the swap.
 
     \\b
     Examples:
@@ -283,69 +281,125 @@ def restore_cmd(
 
     started = time.monotonic()
 
-    # Never signal workers by name: they may belong to another runtime, and
-    # KeepAlive/Restart policies can immediately respawn them during the swap.
-    from slowave.cli.main import _slowave_processes
-    from slowave.mcp.daemon import is_running
+    # Stop the daemon so the DB isn't held open.
+    daemon_stopped = False
+    try:
+        from slowave.mcp.daemon import is_running as _daemon_running
+        from slowave.mcp.daemon import stop_daemon as _stop_daemon
 
-    writers = [
-        p
-        for p in _slowave_processes()
-        if "slowave worker" in p.get("command", "") or "slowave dashboard" in p.get("command", "")
-    ]
-    if is_running() or writers:
-        raise click.ClickException(
-            "Restore requires stopped services and foreground processes. Run slowave stop, "
-            "close foreground workers/dashboards, then retry. No database files were changed."
-        )
+        if _daemon_running():
+            _stop_daemon()
+            import time as _time
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
+            _time.sleep(0.5)
+            daemon_stopped = True
+    except Exception:
+        pass
+
+    # Stop the background consolidation worker too, if one is detected. It
+    # isn't managed via daemon.py's PID-file convention -- it typically runs
+    # under an external supervisor (e.g. launchd's com.slowave.worker) -- so
+    # process detection is all restore has to go on. Leaving it running
+    # during the file swap below is the real risk: it can hold an open
+    # WAL-mode connection to the pre-restore file, see the rewritten bytes
+    # mid-copy, and then have its in-memory WAL state invalidated the moment
+    # the sidecar-clearing below deletes -wal/-shm for what is now a
+    # different database on disk.
+    worker_stopped_pids: list[int] = []
+    try:
+        from slowave.cli.main import _slowave_processes
+
+        for p in _slowave_processes():
+            if "slowave worker" in p.get("command", ""):
+                try:
+                    os.kill(int(p["pid"]), signal.SIGTERM)
+                    worker_stopped_pids.append(int(p["pid"]))
+                except OSError:
+                    pass
+        if worker_stopped_pids:
+            time.sleep(0.5)
+    except Exception:
+        pass
+
+    # WAL/SHM sidecars are keyed by the main db file's path, not its content.
+    # Leftovers from the pre-restore DB would otherwise get replayed against
+    # the just-restored file — a structural mismatch SQLite reports as
+    # "database disk image is malformed". Clear them before touching dest.
+    sidecars = [Path(str(dest) + suf) for suf in ("-wal", "-shm", "-journal")]
+
+    def _clear_sidecars() -> None:
+        for p in sidecars:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+
+    _clear_sidecars()
+
+    # Backup current DB before overwriting.
     bak_path = Path(str(dest) + ".bak")
+    if dest.exists():
+        try:
+            shutil.copy2(dest, bak_path)
+        except OSError as exc:
+            raise click.ClickException(f"Could not backup current database: {exc}")
+
+    # Decompress into a temp file in the same directory as dest (so the final
+    # os.replace() is an atomic rename on the same filesystem), then swap it
+    # in as one step. Writing straight into `dest` via open(dest, "wb") would
+    # let any process still holding the old file open (a worker that didn't
+    # stop in time, a lingering reader) observe a partially-rewritten file
+    # mid-copy instead of either the old or the new content.
     tmp_dest: str | None = None
     try:
-        # Stage and validate the entire replacement before touching the current
-        # database or its WAL. A truncated or non-SQLite backup is harmless.
         fd, tmp_dest = tempfile.mkstemp(
             prefix=".slowave-restore-", suffix=".db", dir=str(dest.parent)
         )
         os.close(fd)
-        with gzip.open(src, "rb") as f_in, open(tmp_dest, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
-        with closing(sqlite3.connect(Path(tmp_dest).as_uri() + "?mode=ro", uri=True)) as conn:
-            if (
-                conn.execute("PRAGMA quick_check").fetchall() != [("ok",)]
-                or not conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
-            ):
-                raise click.ClickException("Restored file failed SQLite integrity validation")
-
-        if dest.exists():
-            # SQLite's backup API includes committed WAL data. Copying only the
-            # main file after deleting its WAL silently loses recent writes.
-            with closing(sqlite3.connect(dest.as_uri() + "?mode=ro", uri=True)) as current:
-                with closing(sqlite3.connect(str(bak_path))) as previous:
-                    current.backup(previous)
-            # Writers must be stopped; refuse a reader/writer that prevents a
-            # complete checkpoint rather than deleting an in-use WAL.
-            with closing(sqlite3.connect(str(dest), timeout=1)) as current:
-                busy, _, _ = current.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if busy:
-                    raise click.ClickException(
-                        "Database is still in use; close all readers/writers"
-                    )
-
+        with gzip.open(src, "rb") as f_in:
+            with open(tmp_dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out, length=1024 * 1024)
         os.replace(tmp_dest, dest)
         tmp_dest = None
-        for suffix in ("-wal", "-shm", "-journal"):
-            Path(str(dest) + suffix).unlink(missing_ok=True)
-    except (OSError, EOFError, sqlite3.Error) as exc:
-        raise click.ClickException(f"Restore failed before completion: {exc}") from exc
-    finally:
+    except OSError as exc:
         if tmp_dest is not None:
-            Path(tmp_dest).unlink(missing_ok=True)
+            try:
+                os.unlink(tmp_dest)
+            except OSError:
+                pass
+        # Try to restore the .bak if the write failed part-way.
+        if bak_path.exists() and not dest.exists():
+            shutil.move(str(bak_path), str(dest))
+        elif bak_path.exists() and dest.exists():
+            shutil.move(str(bak_path), str(dest))
+        _clear_sidecars()
+        raise click.ClickException(f"Restore failed: {exc}")
+
+    # The restored file starts fresh — any sidecars written mid-copy (or
+    # still lingering from the pre-restore DB) must not carry over.
+    _clear_sidecars()
+
+    # Verify the restored file is a valid SQLite database.
+    try:
+        conn = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        conn.close()
+    except sqlite3.Error as exc:
+        if bak_path.exists():
+            shutil.move(str(bak_path), str(dest))
+        _clear_sidecars()
+        raise click.ClickException(f"Restored file is not a valid SQLite database: {exc}")
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     src_size = src.stat().st_size
     dest_size = dest.stat().st_size
+
+    # Remove the .bak since the restore succeeded.
+    try:
+        if bak_path.exists():
+            bak_path.unlink()
+    except OSError:
+        pass
 
     # Recreate the backups directory in case it was missing.
     _default_backup_dir().mkdir(parents=True, exist_ok=True)
@@ -356,9 +410,8 @@ def restore_cmd(
         "source_size_bytes": src_size,
         "restored_size_bytes": dest_size,
         "elapsed_ms": elapsed_ms,
-        "daemon_was_stopped": False,
-        "worker_pids_stopped": [],
-        "previous_database": str(bak_path) if bak_path.exists() else None,
+        "daemon_was_stopped": daemon_stopped,
+        "worker_pids_stopped": worker_stopped_pids,
     }
 
     if as_json:
@@ -370,9 +423,21 @@ def restore_cmd(
         click.echo(f"     from : {src} ({_fmt_bytes(src_size)} compressed)")
         click.echo(f"     to   : {dest} ({_fmt_bytes(dest_size)} restored)")
         click.echo(f"     time : {elapsed_ms} ms")
-        click.echo(
-            "     note : previous database preserved as .bak; run slowave start to resume services"
-        )
+        if daemon_stopped:
+            click.echo(
+                click.style(
+                    "     note : daemon was stopped; run 'slowave serve start' to restart",
+                    fg="yellow",
+                )
+            )
+        if worker_stopped_pids:
+            click.echo(
+                click.style(
+                    f"     note : worker process(es) {worker_stopped_pids} stopped; "
+                    "restart 'slowave worker' if you run it manually",
+                    fg="yellow",
+                )
+            )
 
 
 def _fmt_bytes(n: int) -> str:

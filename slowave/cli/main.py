@@ -1038,7 +1038,6 @@ def _slowave_processes() -> list[dict[str, Any]]:
                 "slowave.mcp.http_server",
                 "slowave-mcp-http",
                 "slowave worker",
-                "slowave dashboard",
                 "slowave.cli.main",
                 "slowave serve",
             )

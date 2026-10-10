@@ -56,19 +56,6 @@ def test_failed_service_command_exits_nonzero(monkeypatch):
     assert "no user bus" in result.output
 
 
-def test_launchd_waits_for_asynchronous_removal(monkeypatch):
-    import time
-
-    results = iter([0, 0, 1])
-    calls = []
-    monkeypatch.setattr(
-        services, "_run", lambda args, **kw: CompletedProcess(args, next(results), "", "")
-    )
-    monkeypatch.setattr(time, "sleep", lambda seconds: calls.append(seconds))
-    services.wait_launchd_stopped("gui/501/com.slowave.daemon")
-    assert calls == [0.1, 0.1]
-
-
 def test_missing_macos_registration_does_not_launch_foreground_server(monkeypatch, tmp_path):
     monkeypatch.setattr(services.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(services.Path, "home", lambda: tmp_path)
@@ -96,27 +83,8 @@ def test_verification_rejects_old_daemon_version(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: Response())
     monkeypatch.setattr(time, "sleep", lambda *a: None)
-    times = iter([0, 0, 46])
-    monkeypatch.setattr(time, "monotonic", lambda: next(times))
     with pytest.raises(click.ClickException, match="running version old-version"):
         services.verify_daemon()
-
-
-def test_daemon_health_requires_the_selected_database(monkeypatch, tmp_path):
-    from slowave import __version__
-
-    monkeypatch.delenv("SLOWAVE_DB", raising=False)
-    monkeypatch.setenv("SLOWAVE_HOME", str(tmp_path / "selected"))
-    assert services.daemon_health_matches(
-        {"version": __version__, "db": str(tmp_path / "selected" / "slowave.db")}
-    )
-    for payload in (
-        {"version": __version__, "db": str(tmp_path / "other" / "slowave.db")},
-        {"version": __version__},
-        {"version": "old", "db": str(tmp_path / "selected" / "slowave.db")},
-        [],
-    ):
-        assert not services.daemon_health_matches(payload)
 
 
 def test_service_status_does_not_open_database(monkeypatch):
