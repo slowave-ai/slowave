@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.1...slowave-v0.21.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* dashboard retrieval design ([#181](https://github.com/slowave-ai/slowave/issues/181)) ([42be133](https://github.com/slowave-ai/slowave/commit/42be13313436ae0a10e4620740d34782a56e0c97))
+
 ## [0.21.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.0...slowave-v0.21.1) (2026-10-10)
 
 
