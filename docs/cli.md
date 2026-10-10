@@ -158,8 +158,10 @@ slowave migrate-data --dry-run
 
 `backup` uses SQLite's online backup API and is safe while Slowave services
 run. It writes gzip-compressed database snapshots, retaining seven by default.
-`restore` stops the worker, replaces the database, preserves the previous
-database as `slowave.db.bak`, then restarts the worker. Review the target
+Run `slowave stop` and close foreground workers and dashboards before restoring.
+`restore` refuses active processes, validates the backup before replacing the
+database, and preserves the previous database including committed WAL writes as
+`slowave.db.bak`. Run `slowave start` afterward. Review the target
 backup carefully; add `--yes` only in an unattended script.
 
 `migrate-data` explicitly moves an older `~/.slowave` installation to the

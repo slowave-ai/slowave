@@ -1156,7 +1156,7 @@ def _preserved_service_environment(plist_path: Path | None) -> dict[str, str]:
     if not isinstance(env, dict):
         return merged
     for key, value in env.items():
-        if not isinstance(key, str) or key in merged:
+        if not isinstance(key, str) or key in merged or key in {"SLOWAVE_HOME", "SLOWAVE_DB"}:
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float, str)):
             continue
@@ -1195,25 +1195,41 @@ def _launchctl_service_commands(plist_path: Path, *, force: bool) -> tuple[list[
 def _systemd_runtime_environment() -> str:
     lines = []
     for key, value in _runtime_service_env().items():
-        escaped = value.replace("%", "%%").replace('"', '\\"')
+        escaped = value.replace("\\", "\\\\").replace("%", "%%").replace('"', '\\"')
         lines.append(f'Environment="{key}={escaped}"')
+    opposite = "SLOWAVE_HOME" if "SLOWAVE_DB" in os.environ else "SLOWAVE_DB"
+    lines.append(f"UnsetEnvironment={opposite}")
     return "\n".join(lines)
+
+
+def _systemd_executable(path: str) -> str:
+    """Quote a literal executable for systemd's ExecStart parser."""
+    # The first token is not subject to environment-variable expansion.
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
 
 
 def _windows_runtime_action(slowave_bin: str, arguments: str) -> tuple[str, str]:
     """Build a hidden PowerShell task action with an explicit runtime root."""
+    import base64
+
     environment = _runtime_service_env()
     pythonw = _find_pythonw()
     program = pythonw or slowave_bin
     command_args = f"-m slowave {arguments}" if pythonw else arguments
+    opposite = "SLOWAVE_HOME" if "SLOWAVE_DB" in environment else "SLOWAVE_DB"
     command = (
-        " ".join(f"$env:{key}='{_ps_squote(value)}';" for key, value in environment.items())
-        + f" & '{_ps_squote(program)}' {command_args}"
+        "$ErrorActionPreference='Stop';"
+        f"Remove-Item Env:{opposite} -ErrorAction SilentlyContinue;"
+        + " ".join(f"$env:{key}='{_ps_squote(value)}';" for key, value in environment.items())
+        + f" $p=Start-Process -FilePath '{_ps_squote(program)}' "
+        f"-ArgumentList '{_ps_squote(command_args)}' -WindowStyle Hidden -Wait -PassThru;"
+        "exit $p.ExitCode"
     )
-    escaped_command = command.replace('"', '`"')
+    encoded = base64.b64encode(command.encode("utf-16le")).decode("ascii")
     return (
         "powershell.exe",
-        f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{escaped_command}"',
+        f"-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {encoded}",
     )
 
 
@@ -1253,7 +1269,7 @@ def _install_worker_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-worker.service"
     content = _SYSTEMD_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1445,7 +1461,7 @@ def _install_daemon_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-daemon.service"
     content = _SYSTEMD_DAEMON_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1502,9 +1518,9 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
-                from slowave import __version__
+                from slowave.cli.services import daemon_health_matches
 
-                if resp.status == 200 and json.loads(resp.read()).get("version") == __version__:
+                if resp.status == 200 and daemon_health_matches(json.loads(resp.read())):
                     return True
         except Exception:
             pass
@@ -2120,19 +2136,10 @@ def _install_backup_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        domain = f"gui/{os.getuid()}"
-        unload = (
-            ["launchctl", "bootout", domain, str(plist_path)]
-            if force
-            else ["launchctl", "unload", str(plist_path)]
-        )
-        load = (
-            ["launchctl", "bootstrap", domain, str(plist_path)]
-            if force
-            else ["launchctl", "load", str(plist_path)]
-        )
-        subprocess.run(unload, capture_output=True, check=False)
-        subprocess.run(load, capture_output=True, check=True)
+        for command in _launchctl_service_commands(plist_path, force=force):
+            subprocess.run(
+                command, capture_output=True, check=command[1] not in ("bootout", "unload")
+            )
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
@@ -2147,7 +2154,7 @@ def _install_backup_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_path = svc_dir / "slowave-backup.service"
     timer_path = svc_dir / "slowave-backup.timer"
     svc_content = _SYSTEMD_BACKUP_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     timer_content = _SYSTEMD_BACKUP_TIMER
     svc_changed = not svc_path.exists() or svc_path.read_text(encoding="utf-8") != svc_content

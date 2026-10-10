@@ -31,6 +31,12 @@ worker, and backup services, for advanced manually managed deployments.
 The daily backup is scheduled, not run immediately by `start` or `restart`.
 Use `slowave backup` for an immediate snapshot.
 
+Before `slowave restore`, run `slowave stop` and close foreground workers and
+dashboards. Restore validates the compressed backup before replacing the database
+and keeps a consistent snapshot of the previous database as `slowave.db.bak`.
+Run `slowave start` afterward. Restore refuses detected active processes rather
+than killing them while their supervisor can restart them.
+
 ## First installation
 
 ```bash

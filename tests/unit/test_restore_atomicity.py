@@ -1,17 +1,8 @@
-"""Regression tests for the 2026-07-24 Tier-0 audit finding: `slowave restore`
-overwrote the destination DB file in place (open(dest, "wb") + copyfileobj)
-instead of writing to a temp file and swapping it in atomically, and only
-stopped the MCP daemon -- never the separate `slowave worker` background
-consolidation process. Both are fixed in slowave/cli/backup.py: the
-decompress+copy now targets a temp file in the same directory, swapped in via
-a single os.replace(), and restore_cmd now also detects and SIGTERMs any
-`slowave worker` process before touching the destination file.
-"""
+"""Restore must preserve current data and refuse active supervised writers."""
 
 from __future__ import annotations
 
 import gzip
-import json
 import sqlite3
 from pathlib import Path
 
@@ -60,12 +51,12 @@ def test_restore_swaps_file_atomically_and_leaves_no_temp_file(tmp_path, monkeyp
 
     assert result.exit_code == 0, result.output
     assert _marker_value(db_path) == "new-content"
-    assert not (tmp_path / "slowave.db.bak").exists()
+    assert _marker_value(tmp_path / "slowave.db.bak") == "old-content"
     leftover_tmp = list(tmp_path.glob(".slowave-restore-*"))
     assert leftover_tmp == []
 
 
-def test_restore_stops_detected_worker_process(tmp_path, monkeypatch):
+def test_restore_refuses_detected_worker_without_signalling_it(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOWAVE_DAEMON_PID", str(tmp_path / "no_daemon.pid"))
 
     fake_pid = 999_999_999  # implausible real PID; only ever touched via the mock below
@@ -87,8 +78,47 @@ def test_restore_stops_detected_worker_process(tmp_path, monkeypatch):
         ["--db", str(db_path), "restore", str(backup_gz), "--yes", "--json"],
     )
 
-    assert result.exit_code == 0, result.output
-    assert killed == [fake_pid]
-    payload = json.loads(result.output)
-    assert payload["worker_pids_stopped"] == [fake_pid]
-    assert _marker_value(db_path) == "new-content"
+    assert result.exit_code != 0, result.output
+    assert killed == []
+    assert "slowave stop" in result.output
+    assert _marker_value(db_path) == "old-content"
+
+
+def test_invalid_restore_preserves_committed_wal_data(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOWAVE_DAEMON_PID", str(tmp_path / "no_daemon.pid"))
+    monkeypatch.setattr("slowave.cli.main._slowave_processes", lambda: [])
+    db_path = tmp_path / "slowave.db"
+    _make_sqlite_db(db_path, "old-content")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("UPDATE marker SET value='latest-wal-content'")
+        conn.commit()
+        backup = tmp_path / "invalid.db.gz"
+        with gzip.open(backup, "wb") as stream:
+            stream.write(b"not a database")
+        result = CliRunner().invoke(cli, ["--db", str(db_path), "restore", str(backup), "--yes"])
+        assert result.exit_code != 0
+        assert _marker_value(db_path) == "latest-wal-content"
+        assert not list(tmp_path.glob(".slowave-restore-*"))
+    finally:
+        conn.close()
+
+
+def test_restore_rollback_snapshot_includes_committed_wal(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOWAVE_DAEMON_PID", str(tmp_path / "no_daemon.pid"))
+    monkeypatch.setattr("slowave.cli.main._slowave_processes", lambda: [])
+    db_path = tmp_path / "slowave.db"
+    _make_sqlite_db(db_path, "old-content")
+    backup = _make_backup_gz(tmp_path, "replacement")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("UPDATE marker SET value='latest-wal-content'")
+        conn.commit()
+        result = CliRunner().invoke(cli, ["--db", str(db_path), "restore", str(backup), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert _marker_value(db_path) == "replacement"
+        assert _marker_value(Path(str(db_path) + ".bak")) == "latest-wal-content"
+    finally:
+        conn.close()

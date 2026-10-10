@@ -401,8 +401,10 @@ slowave backup
 
 ### Restore doesn't work
 
-`slowave restore` stops the daemon and worker, swaps the database file, and
-deletes stale WAL sidecars. If the restored database triggers an auto-rebuild
+Stop installed services with `slowave stop` and close foreground workers and
+dashboards before restoring. `slowave restore` refuses detected active processes,
+validates the replacement, and preserves the previous database as `.bak`, including
+committed WAL writes. If the restored database triggers an auto-rebuild
 (version mismatch), the engine may be temporarily unavailable. This is normal.
 
 Create a fresh backup first:
@@ -415,6 +417,7 @@ Then restore:
 
 ```bash
 slowave restore /path/to/backup.sqlite.gz
+slowave start
 ```
 
 ---

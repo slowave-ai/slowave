@@ -148,15 +148,52 @@ def test_generated_service_preserves_legacy_exact_db_override(monkeypatch, tmp_p
 
 
 def test_windows_task_action_sets_runtime_environment(monkeypatch, tmp_path):
+    import base64
+
     root = tmp_path / "windows data"
     monkeypatch.delenv("SLOWAVE_DB", raising=False)
     monkeypatch.setenv("SLOWAVE_HOME", str(root))
     monkeypatch.setattr(setup, "_find_pythonw", lambda: "C:/Python/pythonw.exe")
     execute, argument = setup._windows_runtime_action("slowave.exe", "serve start")
     assert execute == "powershell.exe"
-    assert f"$env:SLOWAVE_HOME='{root}'" in argument
-    assert "$env:SLOWAVE_MCP_HTTP_PORT='8766'" in argument
-    assert "pythonw.exe' -m slowave serve start" in argument
+    script = base64.b64decode(argument.split("-EncodedCommand ")[1]).decode("utf-16le")
+    assert f"$env:SLOWAVE_HOME='{root}'" in script
+    assert "$env:SLOWAVE_MCP_HTTP_PORT='8766'" in script
+    assert "-FilePath 'C:/Python/pythonw.exe'" in script
+    assert "-ArgumentList '-m slowave serve start'" in script
+    assert "-Wait -PassThru" in script
+    assert "exit $p.ExitCode" in script
+    assert "Remove-Item Env:SLOWAVE_DB" in script
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_preserved_launchd_environment_drops_conflicting_runtime_override(
+    monkeypatch, tmp_path, legacy
+):
+    import plistlib
+
+    selected = "SLOWAVE_DB" if legacy else "SLOWAVE_HOME"
+    opposite = "SLOWAVE_HOME" if legacy else "SLOWAVE_DB"
+    monkeypatch.delenv(opposite, raising=False)
+    monkeypatch.setenv(selected, str(tmp_path / "selected"))
+    existing = tmp_path / "service.plist"
+    existing.write_bytes(
+        plistlib.dumps({"EnvironmentVariables": {opposite: "/old", "CUSTOM_KEY": "keep"}})
+    )
+    env = setup._preserved_service_environment(existing)
+    assert opposite not in env
+    assert env[selected] == str(tmp_path / "selected")
+    assert env["CUSTOM_KEY"] == "keep"
+
+
+def test_systemd_literals_escape_parser_metacharacters(monkeypatch, tmp_path):
+    root = tmp_path / 'data % " \\ $'
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(root))
+    environment = setup._systemd_runtime_environment()
+    assert "UnsetEnvironment=SLOWAVE_DB" in environment
+    assert '%% \\" \\\\ $' in environment
+    assert setup._systemd_executable('/a b/%/"/$/\\/slowave') == '"/a b/%%/\\"/$/\\\\/slowave"'
 
 
 def test_legacy_db_cleanup_never_sweeps_arbitrary_parent(monkeypatch, tmp_path):

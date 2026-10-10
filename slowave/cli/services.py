@@ -27,6 +27,17 @@ def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     return result
 
 
+def wait_launchd_stopped(target: str) -> None:
+    """bootout can return before launchd removes its service record."""
+    import time
+
+    deadline = time.monotonic() + 30
+    while _run(["launchctl", "print", target], check=False).returncode == 0:
+        if time.monotonic() >= deadline:
+            raise click.ClickException(f"Service did not unload: {target}. Run slowave doctor.")
+        time.sleep(0.1)
+
+
 def control(action: str, kinds: tuple[str, ...] = KINDS) -> None:
     """Start/stop registered jobs without bypassing automatic recovery policies."""
     system = platform.system()
@@ -46,6 +57,7 @@ def control(action: str, kinds: tuple[str, ...] = KINDS) -> None:
             loaded = _run(["launchctl", "print", target], check=False).returncode == 0
             if action == "stop" and loaded:
                 _run(["launchctl", "bootout", target])
+                wait_launchd_stopped(target)
             elif action == "start" and not loaded:
                 _run(["launchctl", "bootstrap", domain, str(path)])
         elif system == "Linux":
@@ -81,6 +93,19 @@ def control(action: str, kinds: tuple[str, ...] = KINDS) -> None:
         click.echo(f"{kind}: {action}")
 
 
+def daemon_health_matches(health: object) -> bool:
+    """Require the installed version and the selected database boundary."""
+    from slowave import __version__
+    from slowave.core.paths import runtime_paths
+
+    if not isinstance(health, dict) or health.get("version") != __version__:
+        return False
+    database = health.get("db")
+    if not isinstance(database, str) or not database:
+        return False
+    return Path(database).resolve() == runtime_paths().database
+
+
 def verify_daemon() -> None:
     import json
     import time
@@ -91,14 +116,21 @@ def verify_daemon() -> None:
 
     url = f"http://127.0.0.1:{daemon_port()}/health"
     last = "not responding"
-    for _ in range(90):
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=1) as response:
                 data = json.load(response)
-            if data.get("version") == __version__:
+            if daemon_health_matches(data):
                 click.echo(f"daemon: healthy, version {__version__}")
                 return
-            last = f"running version {data.get('version')}, installed {__version__}"
+            if isinstance(data, dict):
+                last = (
+                    f"running version {data.get('version')}, installed {__version__}; "
+                    f"running database {data.get('db')}; check the selected runtime root"
+                )
+            else:
+                last = "invalid health response"
         except (OSError, ValueError) as exc:
             last = str(exc)
         time.sleep(0.5)
@@ -175,6 +207,7 @@ def service_status() -> dict:
         "installed_version": __version__,
         "daemon_health": health,
         "daemon_version_matches": health.get("version") == __version__,
+        "daemon_runtime_matches": daemon_health_matches(health),
         "services": states,
         "runtime_root": str(runtime_paths().root),
         "dashboard": "Foreground process; stop with Ctrl+C and run slowave dashboard again.",
