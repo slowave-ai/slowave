@@ -149,8 +149,21 @@ def test_inventory_delivery_feedback_and_effect_units(fixture):
     assert m["procedure_harmed"] == 0  # outside request period
     assert m["stages"] == [1, 1, 1, 1] and m["unknown_stage"] == 1
     assert m["memory_across_tasks"] == m["procedure_across_tasks"] == 1
-    assert m["context_size"]["Activate"] == {"samples": 2, "median_chars": 200, "p95_chars": 300}
-    assert m["context_size"]["Recall"]["median_chars"] == 100
+    assert m["context_size"]["breakdown"]["context"] == {
+        "samples": 2,
+        "total_chars": 400,
+        "total_tokens": 100,
+    }
+    assert m["context_size"]["breakdown"]["recall"] == {
+        "samples": 2,
+        "total_chars": 200,
+        "total_tokens": 50,
+    }
+    assert m["context_size"]["total"] == {
+        "samples": 4,
+        "total_chars": 600,
+        "total_tokens": 150,
+    }
     assert m["active_scopes"] == 1
 
 
@@ -219,7 +232,11 @@ def test_unknown_procedure_use_and_empty_inventory(fixture):
     assert m["procedure_feedback"] == 4 and m["effect_known"] == 0
     empty = projection(conn, {"scope": ["project:absent"]})
     assert empty["stages"] == [0, 0, 0, 0] and empty["memory_total"] == empty["deliveries"] == 0
-    assert empty["context_size"]["Activate"]["median_chars"] is None
+    assert empty["context_size"]["total"] == {
+        "samples": 0,
+        "total_chars": 0,
+        "total_tokens": 0,
+    }
 
 
 def test_projection_reconciles_against_independent_sql(fixture):
