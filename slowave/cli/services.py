@@ -11,6 +11,7 @@ from typing import Any
 import click
 
 KINDS = ("daemon", "worker", "backup")
+DAEMON_HEALTH_TIMEOUT = 120.0
 
 
 def _run(
@@ -160,32 +161,58 @@ def control(action: str, kinds: tuple[str, ...] = KINDS) -> None:
         click.echo(f"{kind}: {action}")
 
 
-def verify_daemon() -> None:
+def wait_for_daemon_health(port: int, timeout: float = DAEMON_HEALTH_TIMEOUT) -> str | None:
+    """Return None when the expected daemon is healthy, or the last failure.
+
+    Use one wall-clock budget for setup/start/restart on every OS. Connection
+    failures, malformed responses and an old daemon are retried while the
+    supervisor starts the replacement. No database or model is opened here.
+    """
+    import http.client
     import json
     import time
     import urllib.request
 
     from slowave import __version__
-    from slowave.core.paths import daemon_port, runtime_paths
+    from slowave.core.paths import runtime_paths
 
     expected_db = runtime_paths().database.resolve()
-    url = f"http://127.0.0.1:{daemon_port()}/health"
+    url = f"http://127.0.0.1:{port}/health"
     last = "not responding"
-    for _ in range(90):
+    deadline = time.monotonic() + timeout
+    while (remaining := deadline - time.monotonic()) > 0:
         try:
-            with urllib.request.urlopen(url, timeout=1) as response:
+            with urllib.request.urlopen(url, timeout=min(1.0, remaining)) as response:
                 data = json.load(response)
-            if data.get("version") != __version__:
+            if not isinstance(data, dict):
+                last = "invalid health response: expected a JSON object"
+            elif data.get("version") != __version__:
                 last = f"running version {data.get('version')}, installed {__version__}"
-            elif not data.get("db") or Path(data["db"]).resolve() != expected_db:
+            elif not isinstance(data.get("db"), str) or not data["db"]:
+                last = "health response has no database path"
+            elif Path(data["db"]).resolve() != expected_db:
                 last = f"running database {data.get('db')}, expected {expected_db}"
             else:
-                click.echo(f"daemon: healthy, version {__version__}")
-                return
-        except (OSError, ValueError) as exc:
+                return None
+        except (OSError, ValueError, http.client.HTTPException) as exc:
             last = str(exc)
-        time.sleep(0.5)
-    raise click.ClickException(f"Daemon verification failed: {last}. Run slowave doctor.")
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.5, remaining))
+    return last
+
+
+def verify_daemon() -> None:
+    from slowave import __version__
+    from slowave.core.paths import daemon_port
+
+    failure = wait_for_daemon_health(daemon_port())
+    if failure is not None:
+        raise click.ClickException(
+            f"Daemon verification failed after {DAEMON_HEALTH_TIMEOUT:g}s: {failure}. "
+            "Run slowave status --services and slowave doctor."
+        )
+    click.echo(f"daemon: healthy, version {__version__}")
 
 
 @click.command("start")
