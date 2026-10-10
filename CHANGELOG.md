@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.2...slowave-v0.21.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* install timeout + dashboard design ([#184](https://github.com/slowave-ai/slowave/issues/184)) ([a47779e](https://github.com/slowave-ai/slowave/commit/a47779e87cbad407d5f5eb44ff9f2e11739133d2))
+
 ## [0.21.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.1...slowave-v0.21.2) (2026-10-10)
 
 
