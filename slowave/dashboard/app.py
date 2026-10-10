@@ -2862,6 +2862,17 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
                 if fb.get("status") == "accepted"
                 and (fb["target_kind"], fb["target_id"]) in delivered_targets
             }
+            item["usage_by_kind"] = {
+                kind: {
+                    "used": sum(
+                        fb["assessment"] == "used"
+                        for fb in latest_feedback.values()
+                        if fb["target_kind"] == kind
+                    ),
+                    "reported": sum(fb["target_kind"] == kind for fb in latest_feedback.values()),
+                }
+                for kind in ("memory", "procedure")
+            }
             for feedback_item in latest_feedback.values():
                 fields = ["assessment"]
                 if (
@@ -2934,6 +2945,16 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         retrieval["topics"] = _json_list(retrieval.pop("topics_json", "[]"))
         retrieval["entities"] = _json_list(retrieval.pop("entities_json", "[]"))
         retrieval["is_internal"] = _is_lifecycle_hook_query(retrieval.get("query"))
+        delivered = occasions(conn, "r.context_id = ?", [retrieval_id])
+        retrieval["exposed_count"] = len(delivered)
+        retrieval["usage_by_kind"] = {}
+        for kind in ("memory", "procedure"):
+            category = [item for item in delivered if item["target_kind"] == kind]
+            retrieval[f"{kind}_count"] = len(category)
+            retrieval["usage_by_kind"][kind] = {
+                "used": sum(item["assessment"] == "used" for item in category),
+                "reported": sum(item["assessment"] is not None for item in category),
+            }
         items = [
             dict(item)
             for item in conn.execute(
