@@ -258,7 +258,7 @@ def test_legacy_context_retrievals_use_shared_default_page_size(tmp_path: Path) 
     assert detail["retrieval"]["requested_page_size"] == DEFAULT_MEMORY_PAGE_SIZE
 
 
-def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Path) -> None:
+def test_retrieval_detail_preserves_delivered_snapshot_when_schema_changes(tmp_path: Path) -> None:
     path = tmp_path / "detail_current_schema.sqlite3"
     connection = _seed(path)
     connection.execute(
@@ -271,8 +271,37 @@ def test_retrieval_detail_resolves_current_schema_content_and_state(tmp_path: Pa
     detail = _retrieval_detail(str(path), "ctx_visible")
     item = next(item for item in detail["items"] if item["memory_id"] == "sch_1")
 
+    assert item["content_text"] == "memory 1"
+    assert item["status"] == "needs_review"
+    assert item["content_source"] == "stored snapshot"
+    assert item["status_source"] == "current library fallback"
+    assert item["current_content_text"] == "Current schema text"
+    assert item["current_status"] == "needs_review"
+
+
+def test_retrieval_detail_falls_back_to_current_schema_when_snapshot_is_missing(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "detail_schema_fallback.sqlite3"
+    connection = _seed(path)
+    connection.execute(
+        "UPDATE context_recall_items SET content_text = NULL, status = NULL "
+        "WHERE context_id = 'ctx_visible' AND memory_id = 'sch_1'"
+    )
+    connection.execute(
+        "UPDATE schemas SET content_text = ?, status = ? WHERE id = 1",
+        ("Current schema text", "needs_review"),
+    )
+    connection.commit()
+    connection.close()
+
+    detail = _retrieval_detail(str(path), "ctx_visible")
+    item = next(item for item in detail["items"] if item["memory_id"] == "sch_1")
+
     assert item["content_text"] == "Current schema text"
     assert item["status"] == "needs_review"
+    assert item["content_source"] == "current library fallback"
+    assert item["status_source"] == "current library fallback"
 
 
 def test_retrieval_detail_recovers_page_size_from_activation_cursor(tmp_path: Path) -> None:

@@ -230,17 +230,31 @@ def projection(
         procedure_harmed=effects["harmed"],
     )
     result["context_size"] = {}
-    for name, kinds in [("Activate", {"context", "activate"}), ("Recall", {"recall"})]:
-        samples = sorted(
-            int(r["response_chars"])
-            for r in requests
-            if r["retrieval_type"] in kinds and r.get("response_chars") is not None
-        )
-        result["context_size"][name] = {
-            "samples": len(samples),
-            "median_chars": statistics.median(samples) if samples else None,
-            "p95_chars": samples[math.ceil(len(samples) * 0.95) - 1] if samples else None,
-        }
+    # Total tokens across ALL endpoints in time window
+    all_kinds = {"activate", "recall", "context", "remember", "feedback", "commit"}
+    all_samples = [
+        (r["retrieval_type"], int(r["response_chars"]), int(r["estimated_tokens"]))
+        for r in requests
+        if r["retrieval_type"] in all_kinds and r.get("response_chars") is not None
+    ]
+    total_chars = sum(c for _, c, _ in all_samples)
+    total_tokens = sum(t for _, _, t in all_samples)
+    result["context_size"]["total"] = {
+        "samples": len(all_samples),
+        "total_chars": total_chars,
+        "total_tokens": total_tokens,
+    }
+    # Per-endpoint breakdown
+    breakdown: dict[str, dict[str, int]] = {}
+    for kind in ["activate", "recall", "context", "remember", "feedback", "commit"]:
+        kind_samples = [(c, t) for k, c, t in all_samples if k == kind]
+        if kind_samples:
+            breakdown[kind] = {
+                "samples": len(kind_samples),
+                "total_chars": sum(c for c, _ in kind_samples),
+                "total_tokens": sum(t for _, t in kind_samples),
+            }
+    result["context_size"]["breakdown"] = breakdown
     result["unsupported_deliveries"] = int(
         conn.execute(
             f"SELECT COUNT(*) FROM context_recall_items i JOIN context_recall_events r ON r.context_id=i.context_id WHERE i.admitted=1 AND NOT ((i.memory_type IN ('schema','related') AND i.memory_id GLOB 'sch_[0-9]*') OR i.memory_type IN ('procedure','procedural_memory')) AND {where}",

@@ -28,6 +28,7 @@ import {
   formatDate,
   formatDuration,
   formatRate,
+  formatRatePercent,
   getRatePercent,
   glossary,
   Icon,
@@ -90,14 +91,55 @@ function updateParams(
   navigate(`${path}${query.size ? `?${query}` : ""}`);
 }
 function openDetail(to: string, location: LocationState) {
+  const entityId = decodeURIComponent(to.match(/^\/(?:memory|retrieval|procedures|activity)\/([^/?]+)/)?.[1] || "");
   navigate(to, {
     state: {
       listUrl: `${location.path}${location.search.size ? `?${location.search}` : ""}`,
+      listScrollY: window.scrollY,
+      returnFocusId: entityId,
     },
   });
 }
 function closeDetail(parent: string, location: LocationState) {
-  navigate(location.state?.listUrl || parent);
+  const returningToInspector = Boolean(location.state?.returnUrl);
+  const returnScroll = returningToInspector
+    ? Number(location.state?.returnScrollTop || 0)
+    : Number(location.state?.listScrollY || 0);
+  navigate(location.state?.returnUrl || location.state?.listUrl || parent, {
+    state: location.state?.returnState || null,
+    preserveScroll: true,
+  });
+  let attempts = 0;
+  const restoreOrigin = () => {
+    attempts += 1;
+    if (returningToInspector) {
+      const content = document.querySelector<HTMLElement>(".inspector-content");
+      const focusHref = location.state?.returnFocusHref;
+      const target = focusHref && Array.from(document.querySelectorAll<HTMLAnchorElement>(".inspector a[href]")).find(
+          (link) => link.getAttribute("href") === focusHref,
+        );
+      if (content && target) {
+        content.scrollTop = returnScroll;
+        target.focus();
+        return;
+      }
+    } else {
+      const focusHref = location.state?.returnFocusHref;
+      const focusId = location.state?.returnFocusId;
+      const target = focusHref
+        ? Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]")).find((link) => link.getAttribute("href") === focusHref)
+        : focusId
+          ? Array.from(document.querySelectorAll<HTMLElement>("[data-detail-id]")).find((row) => row.dataset.detailId === focusId)
+          : null;
+      if (target) {
+        window.scrollTo({ top: returnScroll, behavior: "auto" });
+        target.focus();
+        return;
+      }
+    }
+    if (attempts < 40) window.setTimeout(restoreOrigin, 50);
+  };
+  window.requestAnimationFrame(() => window.requestAnimationFrame(restoreOrigin));
 }
 function rowKeys(event: KeyboardEvent, action: () => void) {
   if (event.key === "Enter" || event.key === " ") {
@@ -736,45 +778,53 @@ function formatTokenEstimate(tokens: number | null): string {
   return `~${tokens < 0 ? "-" : ""}${formatted}${unit.suffix} tokens`;
 }
 
-function ContextVolumeCards({ data }: { data: Json }) {
-  const estimate = (kind: "Activate" | "Recall") => {
-    const sample = data.context_size?.[kind];
-    const medianTokens = estimateResponseTokens(sample?.median_chars);
-    const samples = Number(sample?.samples);
-    if (medianTokens == null || !Number.isFinite(samples) || samples <= 0)
-      return null;
-    return { samples, medianTokens, total: medianTokens * samples };
+function TokenConsumptionCards({ data }: { data: Json }) {
+  const total = data.context_size?.total;
+  const breakdown = data.context_size?.breakdown || {};
+  const totalTokens = total?.total_tokens ?? 0;
+  const totalSamples = total?.samples ?? 0;
+
+  const endpointLabels: Record<string, string> = {
+    activate: "Activate",
+    recall: "Recall",
+    context: "Context",
+    remember: "Remember",
+    feedback: "Feedback",
+    commit: "Commit",
   };
-  const activate = estimate("Activate");
-  const recall = estimate("Recall");
-  const combined = activate && recall ? activate.total + recall.total : null;
+
+  const breakdownItems = Object.entries(breakdown)
+    .map(([key, val]: [string, any]) => ({
+      label: endpointLabels[key] || key,
+      tokens: val.total_tokens,
+      samples: val.samples,
+      pct: totalTokens > 0 ? Math.round((val.total_tokens / totalTokens) * 100) : 0,
+    }))
+    .sort((a, b) => b.tokens - a.tokens);
+
   return (
     <>
       <MetricCard
-        title="Activate volume estimate"
-        value={formatTokenEstimate(activate?.total ?? null)}
+        title="Token consumption (all endpoints)"
+        value={formatTokenEstimate(totalTokens)}
         tooltip={
-          activate
-            ? `Median-based proxy: ~${activate.medianTokens.toLocaleString()} tokens × ${activate.samples.toLocaleString()} Activate responses. This is not the sum of actual per-response tokens or billed model usage.`
-            : "No Activate context-size samples are available."
+          totalSamples > 0
+            ? `Sum of response tokens across all ${totalSamples} MCP calls in the selected window. Estimate uses ceil(chars/4).`
+            : "No token data available for the selected window."
         }
       />
       <MetricCard
-        title="Recall volume estimate"
-        value={formatTokenEstimate(recall?.total ?? null)}
+        title="Endpoint breakdown"
+        value={breakdownItems.length > 0 ? `${breakdownItems.length} endpoints` : "No data"}
         tooltip={
-          recall
-            ? `Median-based proxy: ~${recall.medianTokens.toLocaleString()} tokens × ${recall.samples.toLocaleString()} Recall responses. This is not the sum of actual per-response tokens or billed model usage.`
-            : "No Recall context-size samples are available."
-        }
-      />
-      <MetricCard
-        title="Combined volume estimate"
-        value={formatTokenEstimate(combined)}
-        tooltip={
-          activate && recall
-            ? `Sum of the Activate and Recall median-based proxies (${activate.total.toLocaleString()} + ${recall.total.toLocaleString()} estimated tokens). This is not the sum of actual per-response tokens or billed model usage.`
-            : "Both Activate and Recall context-size samples are needed for this estimate."
+          breakdownItems.length > 0
+            ? breakdownItems
+                .map(
+                  (d) =>
+                    `${d.label}: ${d.tokens.toLocaleString()} tokens (${d.pct}%) — ${d.samples.toLocaleString()} calls`
+                )
+                .join("\n")
+            : "No endpoint breakdown available."
         }
       />
     </>
@@ -1502,6 +1552,7 @@ export function MemoryPage({ location }: PageProps) {
                     <tr
                       tabIndex={0}
                       key={memory.id}
+                      data-detail-id={memory.id}
                       onClick={() => openDetail(href, location)}
                       onKeyDown={(e) =>
                         rowKeys(e, () => openDetail(href, location))
@@ -1625,7 +1676,7 @@ function MemoryDetail({ id, onClose, onDeleted }: {
   onClose: () => void;
   onDeleted?: () => Promise<void>;
 }) {
-  const request = useApi<Json>(`/api/schemas/${encodeURIComponent(id)}`);
+  const request = useApi<Json>(`/api/schemas/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const [confirm, setConfirm] = useState(false);
   const [actionError, setActionError] = useState("");
   const data = request.data;
@@ -1646,7 +1697,15 @@ function MemoryDetail({ id, onClose, onDeleted }: {
     <Inspector
       title="Memory"
       id={id}
+      label={memory ? truncate(memory.content, 96) : undefined}
       state={memory && <StatusBadge value={memory.status} />}
+      sections={[
+        { id: "memory-detail", label: "Memory" },
+        { id: "memory-history", label: "Use history" },
+        { id: "memory-sources", label: "Sources" },
+        { id: "memory-connections", label: "Connections" },
+        { id: "memory-technical", label: "Technical details" },
+      ]}
       onClose={onClose}
     >
       <InlineError
@@ -1660,17 +1719,9 @@ function MemoryDetail({ id, onClose, onDeleted }: {
         <ErrorState title="Memory details unavailable" error={request.error} retry={request.reload} />
       ) : memory ? (
           <>
-            <h2 className="detail-title">{memory.content}</h2>
-            <dl className="key-values">
-              <dt>Saved</dt>
-              <dd>{formatDate(memory.first_formed_ts)}</dd>
-              <dt>Source event</dt>
-              <dd>{formatDate(data.evidence?.[0]?.event_occurred_at || data.evidence?.[0]?.event_ts)}</dd>
-              <dt>Last updated</dt>
-              <dd>{formatDate(memory.last_updated_ts)}</dd>
-            </dl>
             <Section
-              title="Summary"
+              title="Memory"
+              id="memory-detail"
               actions={
                 allowActions ? (
                   <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button>
@@ -1681,43 +1732,60 @@ function MemoryDetail({ id, onClose, onDeleted }: {
                 )
               }
             >
+            <h2 className="detail-title">{memory.content}</h2>
             <dl className="key-values">
-              <dt>Effect on retrieval</dt>
+              <dt>Availability</dt>
               <dd>
                 {memory.status === "stale"
                     ? "Retained as historical context but not treated as current."
                     : "Eligible for future retrieval when scope and relevance rules admit it."}
               </dd>
-              <dt>State reason</dt>
-              <dd>
-                {memory.stale_reason || "No specific state reason recorded"}
-              </dd>
+              <dt>Saved</dt>
+              <dd>{formatDate(memory.first_formed_ts)}</dd>
+              <dt>Updated</dt>
+              <dd>{formatDate(memory.last_updated_ts)}</dd>
               <dt>Scope</dt>
               <dd>{memory.scope || "No scope recorded"}</dd>
+              {memory.stale_reason && <><dt>State reason</dt>
+              <dd>
+                {memory.stale_reason}
+              </dd></>}
             </dl>
             </Section>
-            <Section title="Value signals">
+            <Section title="Use history" id="memory-history">
               {(() => {
                 const totals = memory.use_history_totals || {};
                 const count = (assessment: string) => Number(totals[assessment] || 0);
                 const retrieved = Number(totals.retrieved || 0);
                 const used = count("used");
-                return <dl className="key-values wide"><dt>Retrieved</dt><dd>{retrieved}</dd><dt>Used</dt><dd>{used}</dd><dt>Use rate</dt><dd>{formatRate(used, memory.use_history_totals?.assessed)}</dd><dt>Irrelevant / stale / wrong</dt><dd>{count("irrelevant")} / {count("stale")} / {count("wrong")}</dd><dt>Last retrieved</dt><dd>{formatDate(memory.use_history_totals?.last_retrieved)}</dd></dl>;
+                const assessed = Number(totals.assessed || 0);
+                const unassessed = Number(totals.unknown || 0);
+                return <><p className="neutral">All recorded retrieval occasions. Use and effect are agent-reported feedback.</p><dl className="key-values wide"><dt>Retrieved</dt><dd>{retrieved} retrievals</dd><dt>Assessed</dt><dd>{assessed} of {retrieved} retrieved · {unassessed} unassessed</dd><dt>Reported used</dt><dd>{assessed ? `${used} of ${assessed} assessed retrievals (${formatRatePercent(used, assessed)})` : `${used} reported used · no assessed retrievals`}</dd><dt>Irrelevant / stale / wrong</dt><dd>{count("irrelevant")} irrelevant · {count("stale")} stale · {count("wrong")} wrong</dd></dl></>;
               })()}
+              {data.retrievals?.length ? <div className="detail-list evidence-list">
+                {data.retrievals.map((item: any) => (
+                  <Link key={item.retrieval_id} to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>
+                    <div><strong>{truncate(item.task_preview, 130)}</strong><small>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"} · {item.pathway || "pathway unavailable"}</small></div>
+                    <div className="history-signals"><StatusBadge value={item.feedback?.assessment || "unknown"} />{item.feedback?.effect && <StatusBadge value={item.feedback.effect} />}</div>
+                  </Link>
+                ))}
+              </div> : <p className="neutral">Not exposed in a recorded retrieval yet.</p>}
+              {data.retrievals?.length >= 50 && <p className="neutral">Showing the latest 50 retrieval occasions.</p>}
             </Section>
-            <Section title="Related records">
+            <Section title="Sources" id="memory-sources">
               {data.evidence?.length ? (
                 <div className="detail-list">
                   {data.evidence.map((item: any, index: number) => (
                     <div key={index}>
                       <div>
-                        <span>Episode {item.episode_id || "—"}</span>
+                        <strong>Source evidence</strong>
                         <span>
                           {item.event_ts || item.occurred_at || item.recorded_at || item.created_at
                             ? formatDate(item.event_ts || item.occurred_at || item.recorded_at || item.created_at)
                             : "Time unavailable"}
                         </span>
                       </div>
+                      <small>Recorded {formatDate(item.event_ts)}{item.event_occurred_at && item.event_occurred_at !== item.event_ts ? ` · source event ${formatDate(item.event_occurred_at)}` : ""}</small>
                       <p>
                         {item.quote ||
                           item.event_content ||
@@ -1739,64 +1807,9 @@ function MemoryDetail({ id, onClose, onDeleted }: {
                 </EmptyState>
               )}
             </Section>
-            <Section title="Related retrievals">
-              {data.retrievals?.length ? (
-                <div className="detail-list compact">
-                  {data.retrievals.map((item: any) => (
-                    <Link
-                      key={item.retrieval_id}
-                      to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}
-                    >
-                      <span>
-                        {formatDate(item.created_at)} ·{" "}
-                        {item.pathway || "unknown pathway"}
-                      </span>
-                      <Icon name="chevron" size={14} />
-                    </Link>
-                  ))}
-                </div>
-              ) : (
-                <p className="neutral">
-                  Not exposed in a recorded retrieval yet.
-                </p>
-              )}
-            </Section>
-            <Section title="Lifecycle and feedback">
-              {data.feedback?.length ? (
-                <div className="activity-stream">
-                  {[
-                    ...(data.feedback || []).map((item: any) => ({
-                      ...item,
-                      ts: item.created_at,
-                      label: `Feedback: ${item.assessment || item.status}`,
-                    })),
-                  ]
-                    .sort((a, b) => b.ts - a.ts)
-                    .map((item: any, index: number) => (
-                      <div key={index}>
-                        <time>{formatDate(item.ts)}</time>
-                        <strong>{item.label}</strong>
-                        <p>
-                          {item.reason ||
-                            item.stale_reason ||
-                            "No reason recorded"}
-                        </p>
-                        {item.replacement_target_id && (
-                          <Link to={`/memory/${item.replacement_target_id}`}>
-                            Replacement {item.replacement_target_id}
-                          </Link>
-                        )}
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <p className="neutral">
-                  No recorded feedback entries.
-                </p>
-              )}
-            </Section>
-            <Section title="Related memories">
-              {data.outgoing?.length || data.incoming?.length ? (
+            <Section title="Connections" id="memory-connections">
+              <p className="neutral">Connections describe stored relationships or memories retrieved together. They do not establish agreement or correctness.</p>
+              {data.outgoing?.length || data.incoming?.length || data.coact_outgoing?.length || data.coact_incoming?.length ? (
                 <div className="detail-list compact">
                   {(data.outgoing || []).map((relation: any) => (
                     <Link
@@ -1822,13 +1835,17 @@ function MemoryDetail({ id, onClose, onDeleted }: {
                       <Icon name="chevron" size={14} />
                     </Link>
                   ))}
+                  {[...(data.coact_outgoing || []), ...(data.coact_incoming || [])].map((relation: any) => {
+                    const other = relation.src_schema_id === memory.schema_id ? relation.dst_schema_id : relation.src_schema_id;
+                    return <Link key={`coact-${relation.src_schema_id}-${relation.dst_schema_id}`} to={`/memory/sch_${other}`}><span>Retrieved together · sch_{other}</span><Icon name="chevron" size={14} /></Link>;
+                  })}
                 </div>
               ) : (
-                <p className="neutral">No recorded content relations.</p>
+                <p className="neutral">No recorded connections.</p>
               )}
             </Section>
-            <details className="advanced" open>
-              <summary>Advanced</summary>
+            <details className="advanced" id="memory-technical">
+              <summary>Technical details</summary>
               <dl className="key-values">
                 <dt>Importance (salience)</dt>
                 <dd>{memory.salience == null ? "—" : Number(memory.salience).toFixed(1)}</dd>
@@ -2171,6 +2188,7 @@ export function RetrievalPage({ location }: PageProps) {
                     <tr
                       tabIndex={0}
                       key={row.context_id}
+                      data-detail-id={row.context_id}
                       onClick={() => openDetail(href, location)}
                       onKeyDown={(e) =>
                         rowKeys(e, () => openDetail(href, location))
@@ -2248,7 +2266,7 @@ export function RetrievalPage({ location }: PageProps) {
 }
 
 function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const request = useApi<Json>(`/api/retrievals/${encodeURIComponent(id)}`);
+  const request = useApi<Json>(`/api/retrievals/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const data = request.data;
   const retrieval = data?.retrieval;
   const grouped = useMemo(
@@ -2263,20 +2281,24 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
     <Inspector
       title="Retrieval"
       id={id}
+      label={retrieval ? truncate(retrieval.query || retrieval.goal || "Context exposure", 96) : undefined}
       state={
         retrieval && (
           <StatusBadge
             value={
-              data.feedback?.some(
-                (item: any) =>
-                  item.status === "accepted" && item.coverage === "complete",
-              )
-                ? "complete"
-                : "unknown"
+              retrieval.feedback_complete
+                ? "Feedback complete"
+                : retrieval.feedback_observed ? "Feedback incomplete" : "Feedback unknown"
             }
           />
         )
       }
+      sections={[
+        { id: "retrieval-request", label: "Request" },
+        { id: "retrieval-context", label: "Returned context" },
+        { id: "retrieval-feedback", label: "Feedback" },
+        { id: "retrieval-technical", label: "Technical details" },
+      ]}
       onClose={onClose}
     >
       <InlineError
@@ -2290,19 +2312,8 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <ErrorState title="Retrieval details unavailable" error={request.error} retry={request.reload} />
       ) : retrieval ? (
           <>
-            <h2 className="detail-title">
-              {truncate(
-                retrieval.query || retrieval.goal || "Context exposure",
-                220,
-              )}
-            </h2>
-            <div className="private-notice">
-              <Icon name="info" />
-              <span>
-                Local private content. Additional stored context is collapsed by
-                default.
-              </span>
-            </div>
+            <Section title="Request" id="retrieval-request">
+            <h2 className="detail-title">{retrieval.query || retrieval.goal || "Context exposure"}</h2>
             <dl className="key-values">
               <dt>Source</dt>
               <dd>
@@ -2320,23 +2331,6 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   ? `${retrieval.response_chars} characters`
                   : "Not recorded"}
               </dd>
-              {retrieval.retrieval_type === "context" && (
-                <>
-                  <dt>
-                    Memory page limit{" "}
-                    <DefinitionTooltip label="Memory page limit definition">
-                      Maximum number of memories requested for each activation page. The
-                      actual returned count can be lower when fewer memories qualify or
-                      the response payload limit is reached.
-                    </DefinitionTooltip>
-                  </dt>
-                  <dd>
-                    {retrieval.requested_page_size == null
-                      ? "Not recorded"
-                      : `${retrieval.requested_page_size} memories`}
-                  </dd>
-                </>
-              )}
               <dt>Activity</dt>
               <dd>
                 {retrieval.session_id ? (
@@ -2365,11 +2359,11 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 )}
               </dd>
             </dl>
-            <Section title="Context used">
-              <p className="neutral">Reported used / retrieved. Grey includes items not reported used; a dash means feedback is pending.</p>
-              <div className="retrieval-detail-usage"><RetrievalUsage row={retrieval} /></div>
+            <div className="retrieval-detail-usage"><RetrievalUsage row={retrieval} /></div>
+            <p className="neutral">Reported used / returned. Grey includes items without a reported use; a dash means feedback is pending.</p>
             </Section>
-            <Section title="Exposed context">
+            <Section title="Returned context" id="retrieval-context">
+              <p className="neutral">Items are shown in the recorded order. “Stored snapshot” is the content delivered at the time; a fallback means only current library content remains available.</p>
               {Object.entries(grouped).length ? (
                 Object.entries(grouped).map(([group, items]: [string, any]) => (
                   <div className="exposure-group" key={group}>
@@ -2388,6 +2382,8 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             {item.status || "State not recorded"}
                           </span>
                           <small>{item.pathway_explanation}</small>
+                          <small>{item.content_source === "stored snapshot" ? "Stored snapshot" : "Current library fallback"}{item.status_source !== item.content_source ? ` · state from ${item.status_source}` : ""}{item.phase ? ` · ${item.phase}` : ""}</small>
+                          {item.current_status && item.current_status !== item.status && <small>Current library state: {item.current_status}</small>}
                           <span className="assessment-line">
                             Assessment:{" "}
                             <StatusBadge value={item.assessment || "unknown"} />
@@ -2431,10 +2427,11 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 </EmptyState>
               )}
             </Section>
-            <Section title="Observed feedback">
+            <Section title="Feedback" id="retrieval-feedback">
+              <p className="neutral">Effective feedback is shown beside each returned item. This audit retains accepted and rejected submissions separately.</p>
               {data.feedback?.length ? (
                 <div className="detail-list">
-                  {data.feedback.map((item: any) => (
+                  {data.feedback.filter((item: any) => item.status === "accepted").map((item: any) => (
                     <div key={item.event_id}>
                       <div>
                         <strong>
@@ -2462,12 +2459,21 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 </p>
               )}
             </Section>
-            <details className="advanced" open>
-              <summary>Advanced diagnostics</summary>
+            {data.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced">
+              <summary>Submission audit ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary>
+              <div className="detail-list">
+                {data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.target_kind} · {item.target_id}</strong><StatusBadge value={item.status} /><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p><small>{formatDate(item.created_at)}</small></div>)}
+              </div>
+            </details>}
+            <details className="advanced" id="retrieval-technical">
+              <summary>Technical details</summary>
               <p className="private-notice">
                 Stored context below may contain local/private task information.
               </p>
               <dl className="key-values wide">
+                {retrieval.retrieval_type === "context" && <><dt>Memory page limit <DefinitionTooltip label="Memory page limit definition">Maximum number of memories requested for each activation page. The actual returned count can be lower when fewer memories qualify or the response payload limit is reached.</DefinitionTooltip></dt><dd>{retrieval.requested_page_size == null ? "Not recorded" : `${retrieval.requested_page_size} memories`}</dd></>}
+                <dt>Policy version</dt><dd>{retrieval.retrieval_policy_version || "Not recorded"}</dd>
+                <dt>Lifecycle version</dt><dd>{retrieval.lifecycle_version || "Not recorded"}</dd>
                 <dt>Situation</dt>
                 <dd>
                   {retrieval.situation &&
@@ -2784,6 +2790,7 @@ export function ProceduresPage({ location }: PageProps) {
                     <tr
                       key={row.id}
                       tabIndex={0}
+                      data-detail-id={row.id}
                       onClick={() => openDetail(href, location)}
                       onKeyDown={(e) =>
                         rowKeys(e, () => openDetail(href, location))
@@ -2868,11 +2875,17 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
   onClose: () => void;
   onDeleted?: () => Promise<void>;
 }) {
-  const request = useApi<Json>(`/api/procedures/${encodeURIComponent(id)}`);
+  const request = useApi<Json>(`/api/procedures/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const [confirm, setConfirm] = useState(false);
   const [actionError, setActionError] = useState("");
   const p = request.data?.procedure;
   const source = p?.source_session;
+  const feedbackByRetrieval = new Map<string, any>();
+  for (const item of p?.feedback || []) {
+    if (item.status === "accepted" && !feedbackByRetrieval.has(item.retrieval_id)) {
+      feedbackByRetrieval.set(item.retrieval_id, item);
+    }
+  }
   const remove = async () => {
     if (!p) return;
     setActionError("");
@@ -2889,7 +2902,14 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
     <Inspector
       title="Procedure"
       id={id}
+      label={p ? truncate(p.summary, 96) : undefined}
       state={p && <StatusBadge value={p.outcome} />}
+      sections={[
+        { id: "procedure-method", label: "Method" },
+        { id: "procedure-history", label: "Use history" },
+        { id: "procedure-source", label: "Source task" },
+        { id: "procedure-technical", label: "Technical details" },
+      ]}
       onClose={onClose}
     >
       <InlineError
@@ -2903,161 +2923,75 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
         <ErrorState title="Procedure details unavailable" error={request.error} retry={request.reload} />
       ) : p ? (
           <>
-            <h2 className="detail-title">{p.summary}</h2>
-            <p className="neutral">
-              Created from execution evidence; not an automatically validated
-              general playbook.
-            </p>
-            {allowActions ? (
-              <div className="detail-actions"><button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button></div>
-            ) : <p className="notice compact">This dashboard was launched read-only. Delete is unavailable.</p>}
-            <dl className="key-values">
-              <dt>Created</dt>
-              <dd>{formatDate(p.created_at)}</dd>
-              <dt>Verification</dt>
-              <dd>
-                <StatusBadge
-                  value={source?.verification?.status || "unknown"}
-                />{" "}
-                {source?.verification?.summary ||
-                  "No verification summary recorded"}
-              </dd>
-              <dt>Outcome</dt>
-              <dd>
-                <StatusBadge value={p.outcome} />{" "}
-                {p.outcome_summary || "No outcome summary recorded"}
-              </dd>
-              <dt>Scope</dt>
-              <dd>{p.scope_id || "No scope"}</dd>
-              <dt>Source activity</dt>
-              <dd>
-                {source?.id ? (
-                  <Link to={`/activity/${encodeURIComponent(source.id)}`}>
-                    {source.id}
-                  </Link>
+            <Section
+              title="Method"
+              id="procedure-method"
+              actions={
+                allowActions ? (
+                  <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button>
                 ) : (
-                  "Unavailable"
-                )}
-              </dd>
-            </dl>
-            <Section title="Value signals">
+                  <p className="notice compact">
+                    This dashboard was launched read-only. Delete is unavailable.
+                  </p>
+                )
+              }
+            >
+              <h2 className="detail-title">{p.summary}</h2>
+              <p className="neutral">{p.outcome === "failure" ? "Source task reported failure. Review caveats before applying these steps." : p.outcome === "partial" ? "Source task reported a partial outcome. Check applicability before applying these steps." : "Captured from one completed task. Later retrieval and feedback show whether it helped; creation alone does not prove it is a general playbook."}</p>
+              <dl className="key-values">
+                <dt>Scope</dt><dd>{p.scope_id || "No scope recorded"}</dd>
+                <dt>Source outcome</dt><dd><StatusBadge value={p.outcome} /> Reported for the source task</dd>
+                <dt>Source verification</dt><dd><StatusBadge value={source?.verification?.status || "unknown"} /></dd>
+              </dl>
+              <h3>Applicability</h3>
+              {Object.keys(p.context || {}).length ? <dl className="key-values wide procedure-context">
+                {Object.entries(p.context).map(([key, value]) => <Fragment key={key}>
+                  <dt>{key.replaceAll("_", " ")}</dt>
+                  <dd>{Array.isArray(value) ? value.join(", ") : value !== null && typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
+                </Fragment>)}
+              </dl> : <p className="neutral">No applicability context recorded.</p>}
+              <h3>Steps</h3>
+              {p.steps?.length ? <ol className="procedure-steps">{p.steps.map((step: any, index: number) => <li key={index}>{typeof step === "string" ? step : step.summary || JSON.stringify(step)}</li>)}</ol> : <p className="neutral">No steps recorded.</p>}
+              <h3>Caveats</h3>
+              {p.caveats?.length ? <ul>{p.caveats.map((item: string) => <li key={item}>{item}</li>)}</ul> : <p className="neutral">No caveats were recorded with this procedure.</p>}
+            </Section>
+            <Section title="Use history" id="procedure-history">
               {(() => {
                 const evidence = p.evidence || {};
                 const retrieved = Number(p.use_history_totals?.retrieved || 0);
                 const used = Number(p.use_history_totals?.used || 0);
+                const assessed = Number(p.use_history_totals?.assessed || 0);
+                const unassessed = Number(p.use_history_totals?.unknown || 0);
                 return (
-                  <dl className="key-values wide">
-                    <dt>Retrieved</dt><dd>{retrieved}</dd>
-                    <dt>Used</dt><dd>{used}</dd>
-                    <dt>Use rate among assessed</dt><dd>{formatRate(used, p.use_history_totals?.assessed)}</dd>
-                    <dt>Effect</dt>
-                    <dd className="badge-stack">
+                  <><p className="neutral">Lifetime use and effect are agent-reported feedback.</p><dl className="key-values wide">
+                    <dt>Retrieved</dt><dd>{retrieved} retrievals</dd>
+                    <dt>Assessed</dt><dd>{assessed} of {retrieved} retrieved · {unassessed} unassessed</dd>
+                    <dt>Reported used</dt><dd>{assessed ? `${used} of ${assessed} assessed retrievals (${formatRatePercent(used, assessed)})` : `${used} reported used · no assessed retrievals`}</dd>
+                    <dt>Reported effect among uses</dt><dd className="badge-stack">
                       <StatusBadge value="helped" count={Number(evidence.helped || 0)} />
                       <StatusBadge value="no effect" count={Number(evidence.no_effect || 0)} />
                       <StatusBadge value="harmed" count={Number(evidence.harmed || 0)} />
                       <StatusBadge value="unknown" count={Number(evidence.unknown_effect || 0)} />
                     </dd>
                     <dt>Last retrieved</dt><dd>{formatDate(p.use_history_totals?.last_retrieved)}</dd>
-                    <dt>Last used</dt><dd>{formatDate(p.use_history_totals?.last_used)}</dd>
-                  </dl>
+                  </dl></>
                 );
               })()}
+              {p.retrievals?.length ? <div className="detail-list evidence-list">{p.retrievals.map((item: any) => {
+                const feedback = feedbackByRetrieval.get(item.retrieval_id);
+                return <Link key={item.retrieval_id} to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}><div><strong>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"}</strong><small>{item.scope_id || "Scope not recorded"}</small></div><div className="history-signals"><StatusBadge value={feedback?.assessment || "unknown"} />{feedback?.effect && <StatusBadge value={feedback.effect} />}</div></Link>;
+              })}</div> : <p className="neutral">Not retrieved yet. This is neutral; it is not evidence against the procedure.</p>}
+              {p.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Submission audit ({p.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{p.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.assessment || "Submission"} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></div>)}</div></details>}
             </Section>
-            <Section title="Applicability and context">
-              {Object.keys(p.context || {}).length ? (
-                <dl className="key-values">
-                  {Object.entries(p.context).map(([key, value]) => (
-                    <Fragment key={key}>
-                      <dt>{key.replaceAll("_", " ")}</dt>
-                      <dd>{String(value)}</dd>
-                    </Fragment>
-                  ))}
-                </dl>
-              ) : (
-                <p className="neutral">No applicability context recorded.</p>
-              )}
+            <Section title="Source task" id="procedure-source">
+              <dl className="key-values"><dt>Goal</dt><dd>{p.goal || "No goal recorded"}</dd><dt>Created</dt><dd>{formatDate(p.created_at)}</dd><dt>Source activity</dt><dd>{source?.id ? <Link to={`/activity/${encodeURIComponent(source.id)}`}>{source.id}</Link> : "Unavailable"}</dd></dl>
+              {p.outcome_summary && <details><summary>Outcome summary</summary><p>{p.outcome_summary}</p></details>}
+              {source?.verification?.summary && <details><summary>Verification summary</summary><p>{source.verification.summary}</p></details>}
             </Section>
-            <Section title="Goal">
-              <p>{p.goal || "No goal recorded"}</p>
-            </Section>
-            <Section title="Steps">
-              {p.steps?.length ? (
-                <ol className="procedure-steps">
-                  {p.steps.map((step: any, index: number) => (
-                    <li key={index}>{step.summary || step}</li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="neutral">No steps recorded.</p>
-              )}
-            </Section>
-            <Section title="Caveats">
-              {p.caveats?.length ? (
-                <ul>
-                  {p.caveats.map((item: string) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="neutral">No caveats recorded.</p>
-              )}
-            </Section>
-            <Section title="Retrieval exposures">
-              {p.retrievals?.length ? (
-                <div className="detail-list compact">
-                  {p.retrievals.map((item: any) => (
-                    <Link
-                      key={item.retrieval_id}
-                      to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}
-                    >
-                      <span>
-                        {formatDate(item.created_at)} · {item.retrieval_type}
-                      </span>
-                      <Icon name="chevron" size={14} />
-                    </Link>
-                  ))}
-                </div>
-              ) : (
-                <p className="neutral">
-                  Not retrieved yet. This is neutral; it is not evidence against
-                  the procedure.
-                </p>
-              )}
-            </Section>
-            <Section title="Explicit use and effect feedback">
-              {p.feedback?.length ? (
-                <div className="detail-list">
-                  {p.feedback.map((item: any) => (
-                    <div key={item.event_id}>
-                      <div>
-                        <strong>
-                          {item.assessment || "Assessment unavailable"} ·{" "}
-                          {item.effect || "unknown effect"}
-                        </strong>
-                        <StatusBadge value={item.status} />
-                      </div>
-                      <p>
-                        {item.contribution ||
-                          item.reason ||
-                          "No contribution note recorded"}
-                      </p>
-                      <Link
-                        to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}
-                      >
-                        Open retrieval
-                      </Link>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="neutral">
-                  No explicit transfer feedback recorded.
-                </p>
-              )}
-            </Section>
-            <details className="advanced" open>
-              <summary>Advanced</summary>
-              <dl className="key-values wide">{Object.entries(p.evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value)}</dd></Fragment>)}</dl>
+            <details className="advanced" id="procedure-technical">
+              <summary>Technical details</summary>
+              <dl className="key-values wide">{Object.entries(p.historical_evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd></Fragment>)}</dl>
+              <dl className="key-values"><dt>Procedure ID</dt><dd>{p.id}</dd><dt>Lifecycle version</dt><dd>{source?.lifecycle_version || "Not recorded"}</dd></dl>
             </details>
             {confirm && <DeleteConfirmation previewUrl={`/api/procedures/${encodeURIComponent(p.id)}/delete-preview`} onCancel={() => setConfirm(false)} onConfirm={remove} />}
           </>
@@ -3302,6 +3236,7 @@ export function ActivityPage({ location }: PageProps) {
                     <tr
                       key={row.id}
                       tabIndex={0}
+                      data-detail-id={row.id}
                       onClick={() => openDetail(href, location)}
                       onKeyDown={(e) =>
                         rowKeys(e, () => openDetail(href, location))
@@ -3376,9 +3311,15 @@ export function ActivityPage({ location }: PageProps) {
 }
 
 function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const request = useApi<Json>(`/api/activity/${encodeURIComponent(id)}`);
+  const request = useApi<Json>(`/api/activity/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const data = request.data;
   const session = data?.session;
+  const feedbackByRetrieval = new Map<string, any[]>();
+  for (const item of data?.feedback || []) {
+    const existing = feedbackByRetrieval.get(item.retrieval_id) || [];
+    existing.push(item);
+    feedbackByRetrieval.set(item.retrieval_id, existing);
+  }
   const stream = useMemo(() => {
     if (!data) return [];
     return [
@@ -3419,7 +3360,14 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
     <Inspector
       title="Activity"
       id={id}
+      label={session ? truncate(session.final_goal || session.initial_goal || session.goal || "Untitled activity", 96) : undefined}
       state={session && <StatusBadge value={session.outcome} />}
+      sections={[
+        { id: "activity-task", label: "Task" },
+        { id: "activity-loop", label: "Memory loop" },
+        { id: "activity-linked", label: "Linked records" },
+        { id: "activity-technical", label: "Technical details" },
+      ]}
       onClose={onClose}
     >
       <InlineError
@@ -3433,6 +3381,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <ErrorState title="Activity details unavailable" error={request.error} retry={request.reload} />
       ) : session ? (
           <>
+            <Section title="Task" id="activity-task">
             <h2 className="detail-title">
               {session.final_goal ||
                 session.initial_goal ||
@@ -3440,10 +3389,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 "Untitled activity"}
             </h2>
             <dl className="key-values">
-              <dt>Initial goal</dt>
-              <dd>{session.initial_goal || session.goal || "Not recorded"}</dd>
-              <dt>Final goal</dt>
-              <dd>{session.final_goal || "Not recorded"}</dd>
+              {session.initial_goal && session.final_goal && session.initial_goal !== session.final_goal && <><dt>Initial goal</dt><dd>{session.initial_goal}</dd></>}
               <dt>Scope</dt>
               <dd>{session.scope_id || "No scope"}</dd>
               <dt>Agent / integration</dt>
@@ -3451,19 +3397,22 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <dt>Outcome</dt>
               <dd>
                 <StatusBadge value={session.outcome} />{" "}
-                {session.outcome_summary || "No outcome summary"}
+                {session.outcome_summary ? <details><summary>Outcome summary</summary><p>{session.outcome_summary}</p></details> : "No outcome summary recorded"}
               </dd>
               <dt>Verification</dt>
               <dd>
                 <StatusBadge
                   value={session.verification?.status || "unknown"}
                 />{" "}
-                {session.verification?.summary || "No verification summary"}
+                {session.verification?.summary ? <details><summary>Verification summary</summary><p>{session.verification.summary}</p></details> : "No verification summary recorded"}
               </dd>
               <dt>Feedback closure</dt>
               <dd>
                 <StatusBadge value={session.feedback_status} />
               </dd>
+              <dt>Started</dt><dd>{formatDate(session.started_ts)}</dd>
+              <dt>Ended</dt><dd>{session.ended_ts ? formatDate(session.ended_ts) : "Open · end time not recorded"}</dd>
+              <dt>Duration</dt><dd>{session.ended_ts && session.started_ts ? formatDuration(session.ended_ts - session.started_ts) : "Not available"}</dd>
             </dl>
             {session.continuity_id && (
               <div className="notice info">
@@ -3477,27 +3426,32 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 </div>
               </div>
             )}
-            <Section title="Chronological record">
+            </Section>
+            <Section title="Memory loop" id="activity-loop">
+              <p className="neutral">Recorded retrievals and their effective accepted feedback. Optional actions may be absent.</p>
+              {data.retrievals?.length ? <div className="detail-list evidence-list">{data.retrievals.map((item: any) => {
+                const effective = new Map<string, any>();
+                for (const feedback of feedbackByRetrieval.get(item.context_id) || []) if (feedback.status === "accepted" && feedback.target_kind !== "retrieval") effective.set(`${feedback.target_kind}:${feedback.target_id}`, feedback);
+                const signals = [...effective.entries()];
+                return <Link key={item.context_id} to={`/retrieval/${encodeURIComponent(item.context_id)}`}><div><strong>{truncate(item.query || item.goal || "Context exposure", 150)}</strong><small>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"} · {item.count_n} items returned</small><small>{signals.length ? signals.map(([, signal]) => `${signal.target_kind}: ${signal.assessment}${signal.effect ? ` · ${signal.effect}` : ""}`).join("; ") : "Feedback pending or none accepted"}</small></div><Icon name="chevron" size={14} /></Link>;
+              })}</div> : <p className="neutral">No retrievals were recorded for this activity.</p>}
+              {data.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Rejected submissions ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.target_kind} · {item.target_id} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p></div>)}</div></details>}
+            </Section>
+            <Section title="Linked records" id="activity-linked">
+              {data.memories?.length ? <><p className="neutral">These memories have source evidence linked to this activity; their presence does not always mean they were created during it.</p><div className="detail-list">{data.memories.map((item: any) => <Link key={item.schema_id} to={`/memory/sch_${item.schema_id}`}><div><strong>{truncate(item.content_text, 160)}</strong><small>Linked through source evidence · {item.status || "state not recorded"} · first formed {formatDate(item.first_formed_ts)}</small></div><Icon name="chevron" size={14} /></Link>)}</div></> : <p className="neutral">No memories are linked through source evidence.</p>}
+              {data.procedure && <div className="detail-list compact"><Link to={`/procedures/${encodeURIComponent(data.procedure.id)}`}><span>Procedure from this activity · {data.procedure.summary}</span><Icon name="chevron" size={14} /></Link></div>}
+              {data.related_sessions?.length > 1 && <><h3>Related sessions</h3><p className="neutral">Grouped by continuity ID; this is a correlation, not a verified work chain.</p><div className="detail-list compact">{data.related_sessions.map((item: any) => <Link key={item.id} to={`/activity/${encodeURIComponent(item.id)}`}><span>{formatDate(item.started_ts)} · {truncate(item.goal, 100)}</span><Icon name="chevron" size={14} /></Link>)}</div></>}
+            </Section>
+            <details className="advanced" id="activity-technical">
+              <summary>Technical details · raw events and episodes</summary>
               <div className="activity-stream">
-                {stream.map((item: any, index: number) => (
+                {stream.filter((item: any) => item.kind === "Event" || item.kind === "Episode").map((item: any, index: number) => (
                   <div
                     key={`${item.kind}-${item.id || item.context_id || item.event_id || index}`}
                   >
                     <time>{formatDate(item.ts)}</time>
                     <StatusBadge value={item.kind.toLowerCase()} />
                     <p>{truncate(item.summary, 260)}</p>
-                    {item.kind === "Retrieval" && (
-                      <Link
-                        to={`/retrieval/${encodeURIComponent(item.context_id)}`}
-                      >
-                        Open retrieval
-                      </Link>
-                    )}
-                    {item.kind === "Memory" && (
-                      <Link to={`/memory/sch_${item.schema_id}`}>
-                        Open memory
-                      </Link>
-                    )}
                     {item.private && (
                       <details>
                         <summary>Local/private event prose</summary>
@@ -3507,36 +3461,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   </div>
                 ))}
               </div>
-            </Section>
-            {data.procedure && (
-              <Section title="Created procedure">
-                <Link
-                  to={`/procedures/${encodeURIComponent(data.procedure.id)}`}
-                >
-                  {data.procedure.summary}
-                </Link>
-              </Section>
-            )}
-            {data.related_sessions?.length > 1 && (
-              <Section title="Related sessions">
-                <div className="detail-list compact">
-                  {data.related_sessions.map((item: any) => (
-                    <Link
-                      key={item.id}
-                      to={`/activity/${encodeURIComponent(item.id)}`}
-                    >
-                      <span>
-                        {formatDate(item.started_ts)} ·{" "}
-                        {truncate(item.goal, 100)}
-                      </span>
-                      <Icon name="chevron" size={14} />
-                    </Link>
-                  ))}
-                </div>
-              </Section>
-            )}
-            <details className="advanced" open>
-              <summary>Advanced context</summary>
+              <h3>Structured task context</h3>
               <dl className="key-values wide">{Object.entries(session.task_context || {}).map(([key, value]) => <><dt key={`${key}-label`}>{key.replaceAll("_", " ")}</dt><dd key={key}>{typeof value === "object" ? Array.isArray(value) ? value.join(", ") : Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}: ${String(v)}`).join(" · ") : String(value)}</dd></>)}</dl>
             </details>
           </>
@@ -3546,21 +3471,21 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-export function DiagnosticsPage({}: PageProps) {
+export function DiagnosticsPage({ location }: PageProps) {
   const daemon = useApi<Json>("/api/daemon", { pollMs: refreshMs });
   const database = useApi<Json>("/api/db/health", { pollMs: refreshMs });
   const [runSort, setRunSort] = useState("started");
   const [runDir, setRunDir] = useState<"asc" | "desc">("desc");
-  const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+  const selectedRunId = Number(param(location, "run")) || null;
   const [maintenanceExpanded, setMaintenanceExpanded] = useState(false);
   const runColumns = [
     { id: "started", label: "Started" }, { id: "duration", label: "Duration" }, { id: "result", label: "Result" },
     { id: "episodes", label: "Episodes processed" }, { id: "formed", label: "Formed" }, { id: "reinforced", label: "Reinforced" },
-    { id: "retired", label: "Retired" }, { id: "errors", label: "Errors" },
+    { id: "priority_decay", label: "Priority decay" }, { id: "errors", label: "Errors" },
     { id: "skipped", label: "Skipped" }, { id: "pass", label: "Pass number" }, { id: "error_category", label: "Error category" },
   ];
   const [visibleRunColumns, setVisibleRunColumns] = useState<string[]>([
-    "started", "duration", "result", "episodes", "formed", "reinforced", "retired", "errors",
+    "started", "duration", "result", "episodes", "formed", "reinforced", "priority_decay", "errors",
   ]);
   const runVisible = (id: string) => visibleRunColumns.includes(id);
   const workers = useApi<Json>(`/api/worker/runs?limit=${maintenanceExpanded ? 50 : 10}&range=1m&sort=${runSort}&dir=${runDir}`, {
@@ -3579,6 +3504,7 @@ export function DiagnosticsPage({}: PageProps) {
   };
   const runs = workers.data?.runs || [];
   const selectedRun = runs.find((run: any) => run.id === selectedRunId) || null;
+  const selectRun = (runId?: number) => updateParams("/diagnostics", location, { run: runId });
   const changeRunSort = (column: string) => {
     if (runSort === column) {
       setRunDir((d) => (d === "desc" ? "asc" : "desc"));
@@ -3672,7 +3598,7 @@ export function DiagnosticsPage({}: PageProps) {
         <p className="neutral">Recent maintenance behavior helps explain whether the local pipeline is keeping up. These are operational signals, not memory-value scores.</p>
         {!workers.data ? workers.error ? <ErrorState title="Pipeline behavior unavailable" error={workers.error} retry={workers.reload} /> : <MetricCardsSkeleton count={3} /> : <div className="metric-card-grid pipeline-metric-grid">
           <RateMetricCard title="Run reliability" numerator={workers.data.summary?.finished_without_error} denominator={workers.data.summary?.finished} secondary={`${workers.data.summary?.incomplete_passes || 0} running / interrupted excluded`} tooltip="Finished runs without recorded error divided by finished runs." />
-          <MetricCard title="Median run duration" value={workers.data.summary?.median_duration_ms == null ? "No data" : `${Number(workers.data.summary.median_duration_ms).toLocaleString()} ms`} secondary={`${workers.data.summary?.duration_samples || 0} samples · ${workers.data.summary?.missing_durations || 0} missing · ${workers.data.summary?.zero_durations || 0} recorded zero`} tooltip="Median of finished runs with recorded duration, including failures. Durations use whole-second timestamps × 1000: recorded zero does not establish zero-time execution." />
+          <MetricCard title="Median run duration" value={workers.data.summary?.median_duration_ms == null ? "No data" : Number(workers.data.summary.median_duration_ms) === 0 ? "Under 1 second" : formatDuration(Number(workers.data.summary.median_duration_ms) / 1000)} secondary={`${workers.data.summary?.duration_samples || 0} samples · ${workers.data.summary?.missing_durations || 0} missing · ${workers.data.summary?.zero_durations || 0} under 1 second`} tooltip="Median duration for finished runs with recorded timing, including failures. Times come from whole-second timestamps, so values under one second are grouped as under one second." />
         </div>}
         <details className="advanced diagnostics-inventory">
           <summary>Operational inventory</summary><p className="neutral">Worker process: {workers.data?.worker?.running ? "Running" : "Not observed"} · observed {formatDate(workers.data?.worker?.observed_at)}. Process presence does not establish successful processing.</p>
@@ -3707,7 +3633,7 @@ export function DiagnosticsPage({}: PageProps) {
                   {runVisible("episodes") && <th className="numeric"><SortButton label="Episodes processed" active={runSort === "episodes"} direction={runDir} onClick={() => changeRunSort("episodes")} /></th>}
                   {runVisible("formed") && <th className="numeric"><SortButton label="Formed" active={runSort === "formed"} direction={runDir} onClick={() => changeRunSort("formed")} /></th>}
                   {runVisible("reinforced") && <th className="numeric"><SortButton label="Reinforced" active={runSort === "reinforced"} direction={runDir} onClick={() => changeRunSort("reinforced")} /></th>}
-                  {runVisible("retired") && <th className="numeric"><SortButton label="Retired" active={runSort === "retired"} direction={runDir} onClick={() => changeRunSort("retired")} /></th>}
+                  {runVisible("priority_decay") && <th className="numeric"><SortButton label="Priority decay" active={runSort === "decayed"} direction={runDir} onClick={() => changeRunSort("decayed")} /><DefinitionTooltip label="Priority decay definition">Count of memories whose retrieval priority was reduced during this pass. This does not mean the memory was retired or removed.</DefinitionTooltip></th>}
                   {runVisible("errors") && <th className="numeric"><SortButton label="Errors" active={runSort === "errors"} direction={runDir} onClick={() => changeRunSort("errors")} /></th>}
                   {runVisible("skipped") && <th className="numeric"><SortButton label="Skipped" active={runSort === "skipped"} direction={runDir} onClick={() => changeRunSort("skipped")} /></th>}
                   {runVisible("pass") && <th className="numeric"><SortButton label="Pass number" active={runSort === "pass"} direction={runDir} onClick={() => changeRunSort("pass")} /></th>}
@@ -3719,16 +3645,16 @@ export function DiagnosticsPage({}: PageProps) {
                   <tr
                     key={run.id}
                     tabIndex={0}
-                    onClick={() => setSelectedRunId(run.id)}
-                    onKeyDown={(e) => rowKeys(e, () => setSelectedRunId(run.id))}
+                    onClick={() => selectRun(run.id)}
+                    onKeyDown={(e) => rowKeys(e, () => selectRun(run.id))}
                   >
                     {runVisible("started") && <td title={formatDate(run.started_ts)}>{relativeDate(run.started_ts)}</td>}
-                    {runVisible("duration") && <td className="numeric">{run.duration_ms != null ? formatDuration(run.duration_ms / 1000) : "—"}</td>}
+                    {runVisible("duration") && <td className="numeric">{run.duration_ms != null ? Number(run.duration_ms) === 0 ? "Under 1 second" : formatDuration(run.duration_ms / 1000) : "—"}</td>}
                     {runVisible("result") && <td><StatusBadge value={run.error_text ? "failure" : run.ended_ts ? "success" : "incomplete"} /></td>}
                     {runVisible("episodes") && <td className="numeric">{run.episodes_processed || 0}</td>}
                     {runVisible("formed") && <td className="numeric">{run.schemas_created || 0}</td>}
                     {runVisible("reinforced") && <td className="numeric">{run.schemas_reinforced || 0}</td>}
-                    {runVisible("retired") && <td className="numeric">{run.schemas_decayed || 0}</td>}
+                    {runVisible("priority_decay") && <td className="numeric">{run.schemas_decayed || 0}</td>}
                     {runVisible("errors") && <td className="numeric">{run.error_text ? 1 : 0}</td>}
                     {runVisible("skipped") && <td className="numeric">{run.schemas_skipped || 0}</td>}
                     {runVisible("pass") && <td className="numeric">{run.id}</td>}
@@ -3770,7 +3696,7 @@ export function DiagnosticsPage({}: PageProps) {
         </dl>
       </Section>
       {selectedRun && (
-        <WorkerRunDetail run={selectedRun} onClose={() => setSelectedRunId(null)} />
+        <WorkerRunDetail run={selectedRun} onClose={() => selectRun()} />
       )}
     </div>
   );
@@ -3785,10 +3711,16 @@ function WorkerRunDetail({ run, onClose }: { run: any; onClose: () => void }) {
     <Inspector
       title="Consolidation run"
       id={`run-${run.id}`}
+      label={`Maintenance pass ${run.id}`}
       state={<StatusBadge value={result} />}
+      sections={[
+        { id: "run-summary", label: "Run" },
+        { id: "run-processing", label: "Processing summary" },
+        { id: "run-diagnostics", label: "Diagnostics" },
+      ]}
       onClose={onClose}
     >
-      <Section title="Summary">
+      <Section title="Run" id="run-summary">
         <dl className="key-values">
           <dt>Result</dt>
           <dd>
@@ -3803,52 +3735,48 @@ function WorkerRunDetail({ run, onClose }: { run: any; onClose: () => void }) {
           <dt>Ended</dt>
           <dd>{run.ended_ts ? formatDate(run.ended_ts) : "—"}</dd>
           <dt>Duration</dt>
-          <dd>{run.duration_ms != null ? formatDuration(run.duration_ms / 1000) : "—"}</dd>
+          <dd>{run.duration_ms == null ? "Not recorded" : Number(run.duration_ms) === 0 ? "Under 1 second (timestamp precision)" : formatDuration(run.duration_ms / 1000)}</dd>
         </dl>
       </Section>
-      <Section title="Item counts">
+      <Section title="Processing summary" id="run-processing">
+        <p className="neutral">Aggregate work recorded for this pass. A successful maintenance pass does not establish memory quality.</p>
         <dl className="key-values wide">
           <dt>Prototypes processed</dt><dd>{run.prototypes_processed || 0}</dd>
           <dt>Episodes processed</dt><dd>{run.episodes_processed || 0}</dd>
           <dt>Memories formed</dt><dd>{run.schemas_created || 0}</dd>
           <dt>Memories reinforced</dt><dd>{run.schemas_reinforced || 0}</dd>
           <dt>Memories skipped</dt><dd>{run.schemas_skipped || 0}</dd>
-          <dt>Memories retired</dt><dd>{run.schemas_decayed || 0}</dd>
-          <dt>Procedures promoted</dt><dd>{run.procedures_promoted || 0}</dd>
-          <dt>Procedures generalized</dt><dd>{run.procedures_generalized || 0}</dd>
+          <dt>Memory priority reductions</dt><dd>{run.schemas_decayed || 0}</dd>
         </dl>
+        <p className="neutral">Priority reduction changes retrieval strength; it does not retire or remove a memory.</p>
       </Section>
-      {run.error_text && (
-        <Section title="Errors">
-          <pre className="detail-pre">{run.error_text}</pre>
-        </Section>
-      )}
-      <Section title="Configuration">
+      <Section title="Diagnostics" id="run-diagnostics">
+        {run.error_text ? <><h3>Recorded error</h3><pre className="detail-pre">{run.error_text}</pre></> : <p className="neutral">No error was recorded for this pass.</p>}
         <dl className="key-values wide">
           <dt>Trigger</dt>
           <dd>{String(run.triggered_by || "worker").replaceAll("_", " ")}</dd>
           <dt>Pass number</dt>
           <dd>{run.id}</dd>
         </dl>
+        <p className="neutral">Affected memory records are not retained per run; these are aggregate counts only.</p>
       </Section>
-      <p className="neutral">
-        Affected memory records are not retained per run; this summary reports
-        aggregate counts only.
-      </p>
     </Inspector>
   );
 }
-export function GraphPage() {
-  const [selectedSchema, setSelectedSchema] = useState("");
-  const [graphScope, setGraphScope] = useState("");
-  const [graphStatuses, setGraphStatuses] = useState(
-    "active,needs_review,stale",
-  );
-  const [graphRelations, setGraphRelations] = useState("relates_to,coactivated_with");
+export function GraphPage({ location }: PageProps) {
+  const selectedSchema = param(location, "memory");
+  const setSelectedSchema = (id: string) => updateParams("/graph", location, { memory: id || undefined });
+  const [nodeSearch, setNodeSearch] = useState("");
+  const graphScope = param(location, "scope");
+  const graphStatuses = param(location, "statuses", "active,needs_review,stale");
+  const graphRelations = param(location, "relations", "relates_to,coactivated_with");
+  const setGraphFilter = (key: string, value: string) => updateParams("/graph", location, { [key]: value });
   const graph = useApi<Json>(
     `/api/graph/schemas?limit=all&relations=${encodeURIComponent(graphRelations)}&scope=${encodeURIComponent(graphScope)}&statuses=${encodeURIComponent(graphStatuses)}`,
   );
   const graphData = graph.data;
+  const graphNodes = graphData?.nodes || [];
+  const matchingGraphNodes = graphNodes.filter((node: any) => `${node.id} ${node.content || node.label}`.toLowerCase().includes(nodeSearch.toLowerCase()));
   return (
     <div className="page">
       <PageHeader
@@ -3866,12 +3794,13 @@ export function GraphPage() {
       <Section title="Explore your memory network">
           <p className="neutral">Each dot is a memory. Vertex color shows lifecycle state (green active, yellow review, red stale); blue connections are related memories and violet connections are co-activations. Select a dot to inspect it.</p>
           <div className="filter-bar graph-controls">
-            <label>Scope<select value={graphScope} onChange={(event) => setGraphScope(event.target.value)}><option value="">All scopes</option>{[...new Set((graphData?.nodes || []).map((node: any) => node.scope).filter(Boolean))].map((scope: any) => <option key={scope} value={scope}>{scope}</option>)}</select></label>
-            <div className="toggle-group" role="group" aria-label="Memory states"><span className="toggle-label">States</span>{[["active","Active"],["needs_review","Review"],["stale","Stale"]].map(([value,label]) => <button type="button" key={value} className={`toggle-badge toggle-state-${value} ${graphStatuses.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphStatuses.split(",").includes(value)} onClick={() => setGraphStatuses((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
-            <div className="toggle-group" role="group" aria-label="Edge types"><span className="toggle-label">Edges</span>{[["relates_to","Related to","related"],["coactivated_with","Co-activated","coactivated"]].map(([value,label,kind]) => <button type="button" key={value} className={`toggle-badge toggle-${kind} ${graphRelations.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphRelations.split(",").includes(value)} onClick={() => setGraphRelations((old) => { const values = old.split(",").filter(Boolean); const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value]; return next.join(","); })}>{label}</button>)}</div>
+            <label>Scope<select value={graphScope} onChange={(event) => setGraphFilter("scope", event.target.value)}><option value="">All scopes</option>{[...new Set((graphData?.nodes || []).map((node: any) => node.scope).filter(Boolean))].map((scope: any) => <option key={scope} value={scope}>{scope}</option>)}</select></label>
+            <div className="toggle-group" role="group" aria-label="Memory states"><span className="toggle-label">States</span>{[["active","Active"],["needs_review","Review"],["stale","Stale"]].map(([value,label]) => <button type="button" key={value} className={`toggle-badge toggle-state-${value} ${graphStatuses.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphStatuses.split(",").includes(value)} onClick={() => { const values = graphStatuses.split(",").filter(Boolean); setGraphFilter("statuses", values.includes(value) ? values.filter((item) => item !== value).join(",") : [...values, value].join(",")); }}>{label}</button>)}</div>
+            <div className="toggle-group" role="group" aria-label="Edge types"><span className="toggle-label">Edges</span>{[["relates_to","Related to","related"],["coactivated_with","Co-activated","coactivated"]].map(([value,label,kind]) => <button type="button" key={value} className={`toggle-badge toggle-${kind} ${graphRelations.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphRelations.split(",").includes(value)} onClick={() => { const values = graphRelations.split(",").filter(Boolean); setGraphFilter("relations", values.includes(value) ? values.filter((item) => item !== value).join(",") : [...values, value].join(",")); }}>{label}</button>)}</div>
           </div>
           {graphData && Number(graphData.nodes?.length || 0) >= Number(graphData.limit || 0) && <p className="neutral">Display limit reached ({graphData.limit}); additional memories may be omitted.</p>}
           {graph.loading && !graphData ? <LoadingRows /> : graph.error && !graphData ? <ErrorState title="Graph unavailable" error={graph.error} retry={graph.reload} /> : graphData?.nodes?.length ? <Suspense fallback={<LoadingRows rows={3} />}><GraphExplorer data={graphData} onSelect={setSelectedSchema} /></Suspense> : <EmptyState title="No connected memories">At least two related memories are needed to draw a network.</EmptyState>}
+          {graphNodes.length > 0 && <Section title="Find a memory" id="graph-memory-list"><p className="neutral">The list provides keyboard access and exact text lookup. Layout distance does not measure semantic similarity.</p><input aria-label="Search graph memories" placeholder="Search memory text or ID" value={nodeSearch} onChange={(event) => setNodeSearch(event.target.value)} /><div className="detail-list graph-memory-list">{matchingGraphNodes.slice(0, 100).map((node: any) => <button key={node.id} className="graph-memory-option" onClick={() => setSelectedSchema(node.id)}><span><strong>{truncate(node.content || node.label, 150)}</strong><small>{node.id} · {node.scope || "No scope"} · {node.status || "state not recorded"}</small></span><Icon name="chevron" size={14} /></button>)}</div>{matchingGraphNodes.length > 100 && <p className="neutral">Showing first 100 matches. Refine the search to see more.</p>}</Section>}
       </Section>
       {selectedSchema && <MemoryDetail id={selectedSchema} onClose={() => setSelectedSchema("")} />}
     </div>

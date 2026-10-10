@@ -23,7 +23,7 @@ export default function App() {
     page = <ProceduresPage location={location} />;
   else if (path === "/activity" || path.startsWith("/activity/"))
     page = <ActivityPage location={location} />;
-  else if (path === "/graph") page = <GraphPage />;
+  else if (path === "/graph") page = <GraphPage location={location} />;
   else if (path === "/docs") page = <div className="page"><header className="page-header"><div><h1>Docs</h1><p>Documentation is coming soon.</p></div></header></div>;
   else page = <DiagnosticsPage location={location} />;
   return <AppShell path={path}>{page}</AppShell>;

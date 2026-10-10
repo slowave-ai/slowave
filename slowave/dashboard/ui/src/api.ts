@@ -19,7 +19,7 @@ export async function api<T = Json>(
 
 export function useApi<T = Json>(
   url: string | null,
-  options: { pollMs?: number } = {},
+  options: { pollMs?: number; clearOnUrlChange?: boolean } = {},
 ) {
   const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(Boolean(url));
@@ -57,12 +57,18 @@ export function useApi<T = Json>(
   }, [url]);
 
   useEffect(() => {
+    if (options.clearOnUrlChange) {
+      dataRef.current = undefined;
+      setData(undefined);
+      setError(undefined);
+      setLoading(Boolean(url));
+    }
     void reload();
     return () => {
       controller.current?.abort();
       controller.current = undefined;
     };
-  }, [url]); // reload intentionally omitted: data retention must not trigger a refetch loop
+  }, [url, options.clearOnUrlChange]); // reload intentionally omitted: data retention must not trigger a refetch loop
 
   useEffect(() => {
     if (!url || !options.pollMs) return;
@@ -102,12 +108,12 @@ export function useLocation() {
 
 export function navigate(
   to: string,
-  options: { replace?: boolean; state?: any } = {},
+  options: { replace?: boolean; state?: any; preserveScroll?: boolean } = {},
 ) {
   const method = options.replace ? "replaceState" : "pushState";
-  window.history[method](options.state || null, "", to);
+  window.history[method](options.state ?? window.history.state ?? null, "", to);
   window.dispatchEvent(new Event("slowave:navigate"));
-  window.scrollTo({ top: 0, behavior: "auto" });
+  if (!options.preserveScroll) window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 export function structuralUrl(

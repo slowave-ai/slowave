@@ -188,7 +188,27 @@ export function Link({
       onClick={(event) => {
         if (!event.metaKey && !event.ctrlKey && event.button === 0) {
           event.preventDefault();
-          navigate(to, { state });
+          const current = window.location.pathname + window.location.search;
+          const routeState = window.history.state;
+          const fromInspector = /^\/(memory|retrieval|procedures|activity)\/[^/]+/.test(window.location.pathname);
+          const toInspector = /^\/(memory|retrieval|procedures|activity)\/[^/]+/.test(to);
+          const inspectorContent = document.querySelector<HTMLElement>(".inspector-content");
+          navigate(to, {
+            state: state ?? (fromInspector
+              ? {
+                  listUrl: routeState?.listUrl,
+                  returnUrl: current,
+                  returnState: routeState,
+                  returnScrollTop: inspectorContent?.scrollTop || 0,
+                  returnFocusHref: (event.currentTarget as HTMLAnchorElement).getAttribute("href"),
+                }
+              : toInspector ? {
+                  listUrl: current,
+                  listScrollY: window.scrollY,
+                  returnFocusHref: (event.currentTarget as HTMLAnchorElement).getAttribute("href"),
+                } : null),
+            preserveScroll: fromInspector,
+          });
         }
       }}
     >
@@ -547,24 +567,7 @@ export function ScopeSelect({
   );
 }
 export function ClampedText({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <button
-      type="button"
-      className="clamp-toggle"
-      aria-expanded={expanded}
-      onClick={(event) => {
-        event.stopPropagation();
-        setExpanded(!expanded);
-      }}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <span className={expanded ? "clamp-text expanded" : "clamp-text"}>
-        {text}
-      </span>
-      <Icon name="chevron" size={12} />
-    </button>
-  );
+  return <span className="clamp-text">{text}</span>;
 }
 
 
@@ -805,25 +808,91 @@ export function Pagination({
 export function Inspector({
   title,
   id,
+  label,
   state,
+  sections = [],
   onClose,
   children,
 }: {
   title: string;
   id: string;
+  label?: string;
   state?: ReactNode;
+  sections?: Array<{ id: string; label: string }>;
   onClose: () => void;
   children: ReactNode;
 }) {
-  return (
+  const dialogRef = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const [activeSection, setActiveSection] = useState(sections[0]?.id || "");
+  const sectionIds = sections.map((section) => section.id).join("|");
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const appRoot = document.getElementById("root");
+    const wasInert = appRoot?.inert ?? false;
+    const wasHidden = appRoot?.getAttribute("aria-hidden");
+    const priorFocus = document.activeElement as HTMLElement | null;
+    if (appRoot) {
+      appRoot.inert = true;
+      appRoot.setAttribute("aria-hidden", "true");
+    }
+    dialogRef.current?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+      } else if (event.key === "Tab" && dialogRef.current) {
+        const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ));
+        if (!focusable.length) {
+          event.preventDefault();
+          dialogRef.current.focus();
+        } else if (event.shiftKey && document.activeElement === focusable[0]) {
+          event.preventDefault();
+          focusable.at(-1)?.focus();
+        } else if (!event.shiftKey && document.activeElement === focusable.at(-1)) {
+          event.preventDefault();
+          focusable[0].focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      if (appRoot) {
+        appRoot.inert = wasInert;
+        if (wasHidden == null) appRoot.removeAttribute("aria-hidden");
+        else appRoot.setAttribute("aria-hidden", wasHidden);
+      }
+      if (priorFocus?.isConnected) priorFocus.focus();
+    };
+  }, []);
+  useEffect(() => {
+    const content = dialogRef.current?.querySelector<HTMLElement>(".inspector-content");
+    if (!content || !sectionIds) return;
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (visible?.target.id) setActiveSection(visible.target.id);
+    }, { root: content, rootMargin: "-8% 0px -72% 0px", threshold: 0 });
+    sectionIds.split("|").forEach((id) => {
+      const target = content.querySelector(`#${CSS.escape(id)}`);
+      if (target) observer.observe(target);
+    });
+    return () => observer.disconnect();
+  }, [sectionIds]);
+  return createPortal((
     <div
       className="inspector-backdrop"
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
-      <aside className="inspector" aria-label={`${title} detail`}>
+      <aside ref={dialogRef} className="inspector" data-entity={title.toLowerCase()} aria-labelledby={titleId} role="dialog" aria-modal="true" tabIndex={-1}>
         <header>
           <div>
-            <span className="entity-type">{title}</span>
+            <span className="entity-type" id={titleId}>{title}</span>
+            {label && <strong className="inspector-label" title={label}>{label}</strong>}
             <div className="inspector-id">
               <CopyValue value={id} />
               {state}
@@ -837,10 +906,15 @@ export function Inspector({
             <Icon name="close" />
           </button>
         </header>
+        {sections.length > 0 && (
+          <nav className="inspector-sections" aria-label="On this record">
+            {sections.map((section) => <a key={section.id} href={`#${section.id}`} aria-current={activeSection === section.id ? "location" : undefined}>{section.label}</a>)}
+          </nav>
+        )}
         <div className="inspector-content">{children}</div>
       </aside>
     </div>
-  );
+  ), document.body);
 }
 
 const dashboardDateLocale = "en-GB";

@@ -3,6 +3,8 @@ import type { Json } from "./api";
 
 export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect?: (id: string) => void }) {
   const container = useRef<HTMLDivElement>(null);
+  const positions = useRef<Record<string, { x: number; y: number }>>({});
+  const viewport = useRef<{ zoom: number; pan: { x: number; y: number } } | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; title: string; detail: string } | null>(null);
   useEffect(() => {
     let disposed = false;
@@ -30,7 +32,7 @@ export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect
             const y = 1 - (index / Math.max(1, total - 1)) * 2;
             const radius = Math.sqrt(1 - y * y);
             return {
-              position: { x: Math.cos(theta) * radius * 500, y: y * 500 + Math.sin(theta) * radius * 95 },
+              position: positions.current[node.id] || { x: Math.cos(theta) * radius * 500, y: y * 500 + Math.sin(theta) * radius * 95 },
               data: { id: node.id, label: node.label, content: node.content, scope: node.scope, status: node.status, salience: node.salience, confidence: node.confidence, degree: degree.get(node.id) || 0 },
             };
           }),
@@ -84,13 +86,18 @@ export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect
         layout: {
           name: "preset",
           animate: false,
-          fit: true,
+          fit: viewport.current === null,
           padding: 24,
         },
       });
       // Keep the graph centered, but open it slightly closer to the memory
       // nodes than the default fit viewport.
-      graph.zoom(Math.min(graph.maxZoom(), graph.zoom() * 1.25));
+      if (viewport.current) {
+        graph.zoom(Math.min(graph.maxZoom(), viewport.current.zoom));
+        graph.pan(viewport.current.pan);
+      } else {
+        graph.zoom(Math.min(graph.maxZoom(), graph.zoom() * 1.25));
+      }
       graph.on("tap", "node", (event) => onSelect?.(event.target.id()));
       graph.on("mouseover", "node", (event) => { const n = event.target.data(); setTooltip({ x: event.renderedPosition.x, y: event.renderedPosition.y, title: n.label, detail: `${n.status} · ${n.scope || "no scope"} · salience ${Number(n.salience).toFixed(1)} · confidence ${Number(n.confidence).toFixed(2)}` }); });
       graph.on("mouseover", "edge", (event) => { const e = event.target.data(); setTooltip({ x: event.renderedPosition.x, y: event.renderedPosition.y, title: e.relation.replaceAll("_", " "), detail: `${e.sourceLabel} → ${e.targetLabel}` }); });
@@ -98,6 +105,10 @@ export default function GraphExplorer({ data, onSelect }: { data: Json; onSelect
     });
     return () => {
       disposed = true;
+      if (graph) {
+        graph.nodes().forEach((node) => { positions.current[node.id()] = node.position(); });
+        viewport.current = { zoom: graph.zoom(), pan: graph.pan() };
+      }
       graph?.destroy();
     };
   }, [data]);

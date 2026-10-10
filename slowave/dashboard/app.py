@@ -1644,7 +1644,8 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
                 dict(r)
                 for r in conn.execute(
                     "SELECT r.context_id AS retrieval_id, r.retrieval_type, r.session_id, "
-                    "r.scope_id, r.created_at, i.pathway, i.reason "
+                    "r.scope_id, r.created_at, i.pathway, i.reason, "
+                    "COALESCE(NULLIF(r.query, ''), NULLIF(r.goal, ''), 'Context exposure') AS task_preview "
                     "FROM context_recall_items i JOIN context_recall_events r "
                     "ON r.context_id = i.context_id "
                     "WHERE i.memory_id IN (?, ?) AND i.admitted = 1 "
@@ -1658,7 +1659,7 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             feedback = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT event_id, retrieval_id, assessment, stale_reason, "
+                    "SELECT event_id, retrieval_id, assessment, effect, stale_reason, "
                     "replacement_target_id, reason, status, created_at "
                     "FROM feedback_events WHERE target_kind = 'memory' "
                     "AND target_id IN (?, ?) ORDER BY created_at DESC LIMIT 50",
@@ -1667,6 +1668,12 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             ]
         except sqlite3.Error:
             pass
+        latest_feedback: dict[str, dict[str, Any]] = {}
+        for item in feedback:
+            if item.get("status") == "accepted":
+                latest_feedback[str(item["retrieval_id"])] = item
+        for item in retrievals:
+            item["feedback"] = latest_feedback.get(str(item["retrieval_id"]))
         try:
             schema["use_history_totals"] = history(occasions(conn), "memory", f"sch_{schema_id}")
         except sqlite3.Error as exc:
@@ -2958,9 +2965,9 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         items = [
             dict(item)
             for item in conn.execute(
-                "SELECT i.memory_id, i.memory_type, i.rank, i.reason, "
-                "COALESCE(s.content_text, i.content_text) AS content_text, "
-                "COALESCE(s.status, i.status) AS status, "
+                "SELECT i.memory_id, i.memory_type, i.rank, i.reason, i.phase, "
+                "i.content_text AS delivered_content_text, i.status AS delivered_status, "
+                "s.content_text AS current_content_text, s.status AS current_status, "
                 "i.pathway, i.admitted, i.created_at "
                 "FROM context_recall_items i "
                 "LEFT JOIN schemas s ON i.memory_type IN ('schema', 'related') "
@@ -2970,6 +2977,18 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
             ).fetchall()
         ]
         for item in items:
+            item["content_text"] = item.get("delivered_content_text") or item.get(
+                "current_content_text"
+            )
+            item["status"] = item.get("delivered_status") or item.get("current_status")
+            item["content_source"] = (
+                "stored snapshot"
+                if item.get("delivered_content_text")
+                else "current library fallback"
+            )
+            item["status_source"] = (
+                "stored snapshot" if item.get("delivered_status") else "current library fallback"
+            )
             pathway = str(item.get("pathway") or "")
             mapping = {
                 "direct": ("Direct", "Matched the active task/query."),
@@ -3085,6 +3104,13 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
                 (retrieval["session_id"],),
             ).fetchone()
             session = dict(session_row) if session_row else None
+        retrieval["feedback_complete"] = bool(
+            conn.execute(
+                f"SELECT ({complete_request_sql()}) AS complete FROM context_recall_events r WHERE r.context_id=?",
+                (retrieval_id,),
+            ).fetchone()["complete"]
+        )
+        retrieval["feedback_observed"] = any(item.get("status") == "accepted" for item in feedback)
         return {"retrieval": retrieval, "items": items, "feedback": feedback, "session": session}
     except sqlite3.Error as exc:
         return {"error": str(exc), "retrieval_id": retrieval_id}
@@ -3349,7 +3375,7 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
         feedback = [
             dict(r)
             for r in conn.execute(
-                "SELECT event_id, retrieval_id, target_kind, target_id, assessment, effect, coverage, status, created_at FROM feedback_events WHERE session_id = ? ORDER BY created_at, rowid",
+                "SELECT event_id, retrieval_id, target_kind, target_id, assessment, effect, contribution, reason, coverage, status, rejection_reason, created_at FROM feedback_events WHERE session_id = ? ORDER BY created_at, rowid",
                 (session_id,),
             ).fetchall()
         ]
