@@ -31,7 +31,11 @@ from typing import Any
 import click
 
 from slowave.cli.output import safe_emoji
-from slowave.cli.services import windows_task_context
+from slowave.cli.services import (
+    DAEMON_HEALTH_TIMEOUT,
+    wait_for_daemon_health,
+    windows_task_context,
+)
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 
@@ -1531,42 +1535,13 @@ def _install_daemon_windows(slowave_bin: str, *, force: bool = False) -> tuple[b
     )
 
 
-# Windows Task Scheduler dispatch is asynchronous (Start-ScheduledTask returns
-# before the process is actually spawned), and the daemon's first import of
-# faiss/numpy is commonly slowed further by antivirus/Defender scanning the
-# freshly-installed DLLs. 15s is routinely too short there even though the
-# daemon comes up fine a little later, so give Windows more room.
-_DAEMON_HEALTH_TIMEOUT = 45.0 if SYSTEM == "Windows" else 15.0
+# Task dispatch, cold imports and antivirus scanning can delay startup on any OS.
+_DAEMON_HEALTH_TIMEOUT = DAEMON_HEALTH_TIMEOUT
 
 
 def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
-    """Poll the daemon /health endpoint until it responds or *timeout* elapses.
-
-    Setup previously claimed success as soon as the service files were written;
-    this turns "setup said OK but nothing is listening" into an immediate error.
-    """
-    import time
-    import urllib.request
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
-                from slowave import __version__
-                from slowave.core.paths import runtime_paths
-
-                data = json.loads(resp.read())
-                if (
-                    resp.status == 200
-                    and data.get("version") == __version__
-                    and data.get("db")
-                    and Path(data["db"]).resolve() == runtime_paths().database.resolve()
-                ):
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
+    """Verify the same daemon identity and deadline used by start/restart."""
+    return wait_for_daemon_health(port, timeout) is None
 
 
 def _build_summary(
@@ -2001,13 +1976,6 @@ def setup_cmd(
                     )
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave serve start")
-            if _verify_daemon_health(selected_daemon_port):
-                _ok(f"Daemon is live: http://127.0.0.1:{selected_daemon_port}/health")
-            else:
-                raise click.ClickException(
-                    f"Daemon did not respond with the installed version on http://127.0.0.1:{selected_daemon_port}/health "
-                    f"within {_DAEMON_HEALTH_TIMEOUT:g}s. Run slowave status --services and slowave doctor; see docs/troubleshooting.md."
-                )
     else:
         _skip("Skipped (--no-worker). Run manually: slowave serve start")
 
@@ -2095,6 +2063,18 @@ def setup_cmd(
     if dry_run:
         _skip("Dry-run — skipping doctor check.")
     else:
+        # Register every service before checking readiness. A slow or failed
+        # daemon must not leave start/restart with missing worker/backup jobs.
+        if worker:
+            if _verify_daemon_health(selected_daemon_port):
+                _ok(f"Daemon is live: http://127.0.0.1:{selected_daemon_port}/health")
+            else:
+                raise click.ClickException(
+                    f"Daemon did not respond with the installed version on http://127.0.0.1:{selected_daemon_port}/health "
+                    f"within {_DAEMON_HEALTH_TIMEOUT:g}s. Service registrations were applied; "
+                    "the daemon may still be starting. Run slowave status --services and "
+                    "slowave doctor before retrying slowave start; see docs/troubleshooting.md."
+                )
         click.echo()
         try:
             subprocess.run([sys.executable, "-m", "slowave", "doctor"], check=True)

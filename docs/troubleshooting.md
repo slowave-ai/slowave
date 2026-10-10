@@ -79,6 +79,18 @@ Use `slowave setup` if registrations are missing or their executable path no
 longer exists. Use `slowave start` when registered services are simply stopped.
 Do not use foreground `serve start` to compete with an installed daemon.
 
+`setup`, `start`, and `restart` allow up to two minutes for the daemon health
+check on every OS, returning immediately when its version and database match
+the installation. Cold imports and antivirus scanning after an upgrade can
+delay startup. Setup applies daemon, worker, and backup registrations before
+checking daemon readiness, so a health timeout does not skip the worker or
+backup registration. Registration errors themselves still stop setup.
+
+After a health timeout, inspect `slowave status --services` and the daemon logs
+in its reported `logs_dir`. The daemon may still be starting; a timeout does
+not stop it. If the registrations exist and the daemon remains unhealthy,
+resolve the logged error and retry `slowave start` without repeating setup.
+
 ### macOS
 
 Run in the logged-in desktop account. These commands inspect jobs and their
