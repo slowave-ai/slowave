@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -59,7 +62,7 @@ Open Cline's MCP settings JSON and add or merge:
 > The legacy `~/.cline/mcp.json` is no longer read by current Cline — writing there
 > makes `slowave doctor` report the client as configured while the tools never appear.
 
-Make sure the daemon is running (`slowave serve status`). Restart / reload Cline after editing.
+Make sure the daemon is running (`slowave status --services`). Restart / reload Cline after editing.
 
 ---
 

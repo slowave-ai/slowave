@@ -31,6 +31,7 @@ from typing import Any
 import click
 
 from slowave.cli.output import safe_emoji
+from slowave.cli.services import windows_task_context
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 
@@ -591,7 +592,14 @@ def _find_mcp_binary(slowave_bin: str) -> str:
 
 
 def _find_slowave_binary() -> str:
-    """Return the absolute path to the `slowave` CLI binary."""
+    """Prefer this interpreter's installation over unrelated copies on PATH."""
+    import sysconfig
+
+    # Full-path venv invocation must not register a different pipx/Homebrew
+    # installation merely because it appears first on the shell's PATH.
+    current = Path(sysconfig.get_path("scripts")) / _add_exe_if_windows("slowave")
+    if current.is_file():
+        return str(current.resolve())
     found = shutil.which("slowave")
     if found:
         return str(Path(found).resolve())
@@ -1192,6 +1200,32 @@ def _launchctl_service_commands(plist_path: Path, *, force: bool) -> tuple[list[
     )
 
 
+def _apply_launchd_service(plist_path: Path, content: str, *, force: bool) -> None:
+    import plistlib
+
+    from slowave.cli.services import launchd_pid, wait_for_process_exit
+
+    label = plistlib.loads(content.encode("utf-8"))["Label"]
+    for command in _launchctl_service_commands(plist_path, force=force):
+        pid = None
+        if command[1] in ("bootout", "unload") and callable(getattr(os, "getuid", None)):
+            state = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                capture_output=True,
+                text=True,
+            )
+            if state is not None and isinstance(state.stdout, str):
+                pid = launchd_pid(state.stdout)
+        subprocess.run(command, capture_output=True, check=command[1] not in ("bootout", "unload"))
+        if pid is not None:
+            wait_for_process_exit(pid)
+
+
+def _systemd_executable(binary: str) -> str:
+    escaped = binary.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
+
+
 def _systemd_runtime_environment() -> str:
     lines = []
     for key, value in _runtime_service_env().items():
@@ -1201,14 +1235,27 @@ def _systemd_runtime_environment() -> str:
 
 
 def _windows_runtime_action(slowave_bin: str, arguments: str) -> tuple[str, str]:
-    """Build a hidden PowerShell task action with an explicit runtime root."""
+    """Launch windowless Python directly, with an explicit runtime root."""
     environment = _runtime_service_env()
     pythonw = _find_pythonw()
-    program = pythonw or slowave_bin
-    command_args = f"-m slowave {arguments}" if pythonw else arguments
+    if pythonw:
+        import shlex
+
+        # Set the environment before importing slowave (including its log-path
+        # setup). Keep pythonw as the scheduled process for its whole lifetime,
+        # so IgnoreNew can suppress recovery ticks while it is running.
+        bootstrap = (
+            "import os,runpy,sys;"
+            f"os.environ.update({environment!r});"
+            f"sys.argv={['slowave', *shlex.split(arguments)]!r};"
+            "runpy.run_module('slowave',run_name='__main__',alter_sys=True)"
+        )
+        return pythonw, subprocess.list2cmdline(["-c", bootstrap])
+
+    # Custom installations without pythonw retain the console launcher fallback.
     command = (
         " ".join(f"$env:{key}='{_ps_squote(value)}';" for key, value in environment.items())
-        + f" & '{_ps_squote(program)}' {command_args}"
+        + f" & '{_ps_squote(slowave_bin)}' {arguments}"
     )
     escaped_command = command.replace('"', '`"')
     return (
@@ -1237,10 +1284,7 @@ def _install_worker_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        for command in _launchctl_service_commands(plist_path, force=force):
-            subprocess.run(
-                command, capture_output=True, check=command[1] not in ("bootout", "unload")
-            )
+        _apply_launchd_service(plist_path, content, force=force)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
@@ -1253,7 +1297,7 @@ def _install_worker_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-worker.service"
     content = _SYSTEMD_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1294,8 +1338,8 @@ def _find_pythonw() -> str | None:
 
 
 # Description marker: bump the version to force re-registration of tasks
-# created by older slowave versions (they lack battery/keep-alive settings).
-_WINDOWS_TASK_MARKER = "Managed by slowave setup (v2)"
+# created by older slowave versions (v3 launches pythonw directly).
+_WINDOWS_TASK_MARKER = "Managed by slowave setup (v3)"
 
 
 def _ps_squote(s: str) -> str:
@@ -1326,16 +1370,21 @@ def _register_windows_task(
         _ps_squote(task_name),
     )
 
-    # Idempotency: skip only when the existing task matches this exact form
-    # (marker + executable + arguments). Older registrations get upgraded.
+    # Task Scheduler's root namespace is machine-wide. Suffixing with the SID
+    # gives each account its own task while permitting safe migration of its
+    # former root-level registration.
+
+    task_context = windows_task_context(task_name, include_legacy=True)
+
+    # Idempotency: skip only when this account's task matches the current action.
     try:
         check = subprocess.run(
             [
                 "powershell",
                 "-NonInteractive",
                 "-Command",
-                f"$t = Get-ScheduledTask -TaskName '{name_q}' -ErrorAction SilentlyContinue; "
-                f"if ($t) {{ $t.Description + '|' + $t.Actions[0].Execute + '|' + $t.Actions[0].Arguments }}",
+                task_context
+                + "if ($currentTask) { $currentTask.Description + '|' + $currentTask.Actions[0].Execute + '|' + $currentTask.Actions[0].Arguments }",
             ],
             capture_output=True,
             text=True,
@@ -1355,28 +1404,32 @@ def _register_windows_task(
         return False, "powershell not available"
 
     ps = (
-        f"$ErrorActionPreference='Stop';"
-        f"$existing=Get-ScheduledTask -TaskName '{name_q}' -ErrorAction SilentlyContinue;"
-        f"if ($existing) {{ Disable-ScheduledTask -TaskName '{name_q}' | Out-Null;"
-        f"Stop-ScheduledTask -TaskName '{name_q}';"
-        f"$deadline=(Get-Date).AddSeconds(30);"
-        f"while ((Get-ScheduledTask -TaskName '{name_q}').State -eq 'Running') {{"
-        f"if ((Get-Date) -gt $deadline) {{ throw 'Task did not stop' }};"
-        f"Start-Sleep -Milliseconds 200 }} }};"
-        f"$a=New-ScheduledTaskAction -Execute '{exe_q}' -Argument '{arg_q}';"
-        f"$logon=New-ScheduledTaskTrigger -AtLogOn;"
-        f"$tick=New-ScheduledTaskTrigger -Once -At (Get-Date) "
-        f"-RepetitionInterval (New-TimeSpan -Minutes 5) "
-        f"-RepetitionDuration (New-TimeSpan -Days 3650);"
-        f"$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 "
-        f"-RestartInterval (New-TimeSpan -Minutes 1) "
-        f"-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
-        f"-MultipleInstances IgnoreNew;"
-        f"$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;"
-        f"Register-ScheduledTask -TaskName '{name_q}' -Description '{_WINDOWS_TASK_MARKER}' "
-        f"-Action $a -Trigger $logon,$tick -Settings $s -Principal $p -Force | Out-Null;"
-        f"Enable-ScheduledTask -TaskName '{name_q}' | Out-Null;"
-        f"Start-ScheduledTask -TaskName '{name_q}'"
+        "$ErrorActionPreference='Stop';"
+        + task_context
+        + "$oldTasks=@(); if ($legacyTask) { $oldTasks+=@($legacyTask) };"
+        + "$currentTask=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue;"
+        + "if ($currentTask) { $oldTasks+=@($currentTask) };"
+        + "foreach ($old in $oldTasks) { Disable-ScheduledTask -InputObject $old | Out-Null;"
+        + "Stop-ScheduledTask -InputObject $old;"
+        + "$deadline=(Get-Date).AddSeconds(30);"
+        + "while ((Get-ScheduledTask -TaskPath $old.TaskPath -TaskName $old.TaskName).State -eq 'Running') {"
+        + "if ((Get-Date) -gt $deadline) { throw 'Task did not stop' };"
+        + "Start-Sleep -Milliseconds 200 };"
+        + "Unregister-ScheduledTask -InputObject $old -Confirm:$false };"
+        + f"$a=New-ScheduledTaskAction -Execute '{exe_q}' -Argument '{arg_q}';"
+        + "$logon=New-ScheduledTaskTrigger -AtLogOn;"
+        + "$tick=New-ScheduledTaskTrigger -Once -At (Get-Date) "
+        + "-RepetitionInterval (New-TimeSpan -Minutes 5) "
+        + "-RepetitionDuration (New-TimeSpan -Days 3650);"
+        + "$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 "
+        + "-RestartInterval (New-TimeSpan -Minutes 1) "
+        + "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        + "-MultipleInstances IgnoreNew;"
+        + "$p=New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited;"
+        + f"Register-ScheduledTask -TaskName $taskName -Description '{_WINDOWS_TASK_MARKER}' "
+        + "-Action $a -Trigger $logon,$tick -Settings $s -Principal $p -Force | Out-Null;"
+        + "Enable-ScheduledTask -TaskName $taskName | Out-Null;"
+        + "Start-ScheduledTask -TaskName $taskName"
     )
     try:
         result = subprocess.run(
@@ -1428,10 +1481,7 @@ def _install_daemon_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        for command in _launchctl_service_commands(plist_path, force=force):
-            subprocess.run(
-                command, capture_output=True, check=command[1] not in ("bootout", "unload")
-            )
+        _apply_launchd_service(plist_path, content, force=force)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
@@ -1445,7 +1495,7 @@ def _install_daemon_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_dir = Path(xdg) / "systemd" / "user"
     svc_path = svc_dir / "slowave-daemon.service"
     content = _SYSTEMD_DAEMON_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     if not force and svc_path.exists() and svc_path.read_text(encoding="utf-8") == content:
         return str(svc_path), False
@@ -1503,8 +1553,15 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as resp:
                 from slowave import __version__
+                from slowave.core.paths import runtime_paths
 
-                if resp.status == 200 and json.loads(resp.read()).get("version") == __version__:
+                data = json.loads(resp.read())
+                if (
+                    resp.status == 200
+                    and data.get("version") == __version__
+                    and data.get("db")
+                    and Path(data["db"]).resolve() == runtime_paths().database.resolve()
+                ):
                     return True
         except Exception:
             pass
@@ -1608,7 +1665,8 @@ def _build_summary(
             xdg = os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config"))
             svc_path = Path(xdg) / "systemd" / "user" / "slowave-worker.service"
             svc_content = _SYSTEMD_SERVICE.format(
-                bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+                bin=_systemd_executable(slowave_bin),
+                runtime_environment=_systemd_runtime_environment(),
             )
             changed = not (
                 svc_path.exists() and svc_path.read_text(encoding="utf-8") == svc_content
@@ -1625,6 +1683,7 @@ def _build_summary(
             )
         elif SYSTEM == "Windows":
             # Check if the task already exists with the current binary
+
             task_exists = False
             try:
                 check = subprocess.run(
@@ -1632,8 +1691,8 @@ def _build_summary(
                         "powershell",
                         "-NonInteractive",
                         "-Command",
-                        "$t = Get-ScheduledTask -TaskName 'SlowaveWorker' -ErrorAction SilentlyContinue; "
-                        "if ($t) { $t.Actions[0].Execute }",
+                        windows_task_context("SlowaveWorker")
+                        + "if ($currentTask) { $currentTask.Actions[0].Execute }",
                     ],
                     capture_output=True,
                     text=True,
@@ -1915,7 +1974,7 @@ def setup_cmd(
             elif SYSTEM == "Linux":
                 _ok("Would install systemd service → ~/.config/systemd/user/slowave-daemon.service")
             elif SYSTEM == "Windows":
-                _ok("Would register Task Scheduler task: SlowaveDaemon")
+                _ok("Would register account-scoped Task Scheduler task: SlowaveDaemon-<SID>")
             else:
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave serve start")
         else:
@@ -1935,9 +1994,11 @@ def setup_cmd(
             elif SYSTEM == "Windows":
                 ok, detail = _install_daemon_windows(slowave_bin, force=True)
                 if ok:
-                    _ok(f"Task Scheduler task SlowaveDaemon: {detail}")
+                    _ok(f"Task Scheduler task SlowaveDaemon-<current-user-SID>: {detail}")
                 else:
-                    raise click.ClickException(f"Task Scheduler task SlowaveDaemon: {detail}")
+                    raise click.ClickException(
+                        f"Task Scheduler task SlowaveDaemon-<current-user-SID>: {detail}"
+                    )
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave serve start")
             if _verify_daemon_health(selected_daemon_port):
@@ -1961,7 +2022,7 @@ def setup_cmd(
             elif SYSTEM == "Linux":
                 _ok("Would install systemd service → ~/.config/systemd/user/slowave-worker.service")
             elif SYSTEM == "Windows":
-                _ok("Would register Task Scheduler task: SlowaveWorker")
+                _ok("Would register account-scoped Task Scheduler task: SlowaveWorker-<SID>")
             else:
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave worker --interval 300")
         else:
@@ -1982,7 +2043,9 @@ def setup_cmd(
                 ok, detail = _install_worker_windows(slowave_bin, force=True)
                 if ok:
                     _ok(f"Task Scheduler task SlowaveWorker: {detail}")
-                    _ok("Verify:  Get-ScheduledTask -TaskName SlowaveWorker")
+                    _ok(
+                        "Verify:  Get-ScheduledTask | Where-Object TaskName -like 'SlowaveWorker-*'"
+                    )
                 else:
                     raise click.ClickException(f"Task Scheduler task SlowaveWorker: {detail}")
             else:
@@ -2001,7 +2064,7 @@ def setup_cmd(
             elif SYSTEM == "Linux":
                 _ok("Would install systemd timer → ~/.config/systemd/user/slowave-backup.timer")
             elif SYSTEM == "Windows":
-                _ok("Would register Task Scheduler task: SlowaveBackup")
+                _ok("Would register account-scoped Task Scheduler task: SlowaveBackup-<SID>")
             else:
                 _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave backup")
         else:
@@ -2021,7 +2084,7 @@ def setup_cmd(
             elif SYSTEM == "Windows":
                 task, _ = _install_backup_windows(slowave_bin, force=True)
                 _ok(f"Task Scheduler task registered: {task}")
-                _ok("Verify:  Get-ScheduledTask -TaskName SlowaveBackup")
+                _ok("Verify:  Get-ScheduledTask | Where-Object TaskName -like 'SlowaveBackup-*'")
             else:
                 _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave backup")
     else:
@@ -2034,9 +2097,12 @@ def setup_cmd(
     else:
         click.echo()
         try:
-            subprocess.run([sys.executable, "-m", "slowave", "doctor"], check=False)
-        except Exception as exc:
-            _warn(f"Could not run slowave doctor: {exc}")
+            subprocess.run([sys.executable, "-m", "slowave", "doctor"], check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise click.ClickException(
+                f"Setup applied configuration but verification failed: {exc}. "
+                "Run slowave doctor --verbose; see slowave docs troubleshooting."
+            ) from exc
 
     click.echo()
     click.echo(click.style("Setup complete.", bold=True))
@@ -2120,19 +2186,7 @@ def _install_backup_macos(slowave_bin: str, *, force: bool = False) -> tuple[str
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")
     try:
-        domain = f"gui/{os.getuid()}"
-        unload = (
-            ["launchctl", "bootout", domain, str(plist_path)]
-            if force
-            else ["launchctl", "unload", str(plist_path)]
-        )
-        load = (
-            ["launchctl", "bootstrap", domain, str(plist_path)]
-            if force
-            else ["launchctl", "load", str(plist_path)]
-        )
-        subprocess.run(unload, capture_output=True, check=False)
-        subprocess.run(load, capture_output=True, check=True)
+        _apply_launchd_service(plist_path, content, force=force)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise click.ClickException(f"Could not apply service: {exc}. Run slowave doctor.") from exc
     return str(plist_path), True
@@ -2147,7 +2201,7 @@ def _install_backup_linux(slowave_bin: str, *, force: bool = False) -> tuple[str
     svc_path = svc_dir / "slowave-backup.service"
     timer_path = svc_dir / "slowave-backup.timer"
     svc_content = _SYSTEMD_BACKUP_SERVICE.format(
-        bin=slowave_bin, runtime_environment=_systemd_runtime_environment()
+        bin=_systemd_executable(slowave_bin), runtime_environment=_systemd_runtime_environment()
     )
     timer_content = _SYSTEMD_BACKUP_TIMER
     svc_changed = not svc_path.exists() or svc_path.read_text(encoding="utf-8") != svc_content
@@ -2181,6 +2235,8 @@ def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[s
     """Register a daily database backup as a Windows Scheduled Task."""
     task_name = "SlowaveBackup"
     execute, argument = _windows_runtime_action(slowave_bin, "backup")
+
+    task_context = windows_task_context(task_name, include_legacy=True)
     already_registered = False
     try:
         check = subprocess.run(
@@ -2188,8 +2244,8 @@ def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[s
                 "powershell",
                 "-NonInteractive",
                 "-Command",
-                f"$t = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; "
-                f"if ($t) {{ $t.Actions[0].Execute + '|' + $t.Actions[0].Arguments }}",
+                task_context
+                + "if ($currentTask) { $currentTask.Actions[0].Execute + '|' + $currentTask.Actions[0].Arguments }",
             ],
             capture_output=True,
             text=True,
@@ -2207,19 +2263,30 @@ def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[s
         pass
 
     if already_registered and not force:
-        return task_name, False
+        return f"{task_name}-<current-user-SID>", False
 
     # Daily trigger at 03:00
     ps = (
-        f"$ErrorActionPreference='Stop';"
-        f"$a=New-ScheduledTaskAction -Execute '{_ps_squote(execute)}' "
+        "$ErrorActionPreference='Stop';"
+        + task_context
+        + "$oldTasks=@(); if ($legacyTask) { $oldTasks+=@($legacyTask) };"
+        + "$currentTask=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue;"
+        + "if ($currentTask) { $oldTasks+=@($currentTask) };"
+        + "foreach ($old in $oldTasks) { Disable-ScheduledTask -InputObject $old | Out-Null;"
+        + "Stop-ScheduledTask -InputObject $old;"
+        + "$deadline=(Get-Date).AddSeconds(30);"
+        + "while ((Get-ScheduledTask -TaskPath $old.TaskPath -TaskName $old.TaskName).State -eq 'Running') {"
+        + "if ((Get-Date) -gt $deadline) { throw 'Task did not stop' };"
+        + "Start-Sleep -Milliseconds 200 };"
+        + "Unregister-ScheduledTask -InputObject $old -Confirm:$false };"
+        + f"$a=New-ScheduledTaskAction -Execute '{_ps_squote(execute)}' "
         f"-Argument '{_ps_squote(argument)}';"
         f"$t=New-ScheduledTaskTrigger -Daily -At 03:00;"
         f"$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0;"
-        f"$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited;"
-        f"Register-ScheduledTask -TaskName '{task_name}' -Action $a -Trigger $t -Settings $s "
-        f"-Principal $p -Force | Out-Null;"
-        f"Enable-ScheduledTask -TaskName '{task_name}' | Out-Null"
+        f"$p=New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited;"
+        "Register-ScheduledTask -TaskName $taskName -Action $a -Trigger $t -Settings $s "
+        "-Principal $p -Force | Out-Null;"
+        "Enable-ScheduledTask -TaskName $taskName | Out-Null"
     )
     try:
         subprocess.run(
@@ -2232,4 +2299,4 @@ def _install_backup_windows(slowave_bin: str, *, force: bool = False) -> tuple[s
         raise click.ClickException(
             f"Could not apply backup task: {exc}. Run slowave doctor."
         ) from exc
-    return task_name, True
+    return f"{task_name}-<current-user-SID>", True

@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -51,7 +54,7 @@ Edit `~/.cursor/mcp.json` (create it if missing):
 }
 ```
 
-Make sure the daemon is running (`slowave serve status`). Restart Cursor after editing.
+Make sure the daemon is running (`slowave status --services`). Restart Cursor after editing.
 
 ---
 
@@ -72,7 +75,7 @@ slowave doctor    # shows client detection and daemon health
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear | Run `slowave serve status`; restart Cursor |
+| Tools don't appear | Run `slowave status --services`; restart Cursor |
 | Tools appear but aren't called | Rules for AI block not set — complete Step 1 above |
 | Sessions are empty | Confirm Rules for AI block is set — complete Step 1 above |
 

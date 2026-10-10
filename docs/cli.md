@@ -1,7 +1,7 @@
 # Slowave CLI
 
 For the recommended commands and complete workflows, see
-[Install, upgrade, run, and remove Slowave](lifecycle.md).
+[Install, upgrade, run, and remove Slowave](install.md).
 
 The Slowave CLI is for local setup, inspection, maintenance, backups, and
 manual experiments. Its JSON output makes it useful in scripts and CI:
@@ -158,8 +158,10 @@ slowave migrate-data --dry-run
 
 `backup` uses SQLite's online backup API and is safe while Slowave services
 run. It writes gzip-compressed database snapshots, retaining seven by default.
-`restore` stops the worker, replaces the database, preserves the previous
-database as `slowave.db.bak`, then restarts the worker. Review the target
+`restore` stops registered services through their OS supervisor and replaces the
+database atomically. Close foreground runtimes and MCP clients first. Services
+remain stopped; run `slowave start` after success. The temporary `.bak` snapshot
+is removed after a successful restore. Review the target
 backup carefully; add `--yes` only in an unattended script.
 
 `migrate-data` explicitly moves an older `~/.slowave` installation to the

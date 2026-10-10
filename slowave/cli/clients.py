@@ -243,7 +243,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 [
                     "powershell",
                     "-Command",
-                    "Get-ScheduledTask -TaskName SlowaveWorker -ErrorAction SilentlyContinue",
+                    "Get-ScheduledTask -TaskName ('SlowaveWorker-'+[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -ErrorAction SilentlyContinue",
                 ],
                 capture_output=True,
                 text=True,

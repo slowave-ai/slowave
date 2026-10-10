@@ -11,10 +11,10 @@ import gzip
 import logging
 import os
 import shutil
-import signal
 import sqlite3
 import tempfile
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -121,6 +121,7 @@ def run_backup(
     # Use a temp file so we never leave a partial .db.gz on disk.
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(backup_dir))
     tmp_path = tmp.name
+    tmp.close()  # Windows must release the handle before SQLite/gzip reopen it.
     try:
         src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30.0)
         try:
@@ -249,8 +250,9 @@ def restore_cmd(
     \\b
     BACKUP_PATH must be a slowave-*.db.gz file created by 'slowave backup'.
 
-    This stops the running worker, replaces the current database with the
-    backup, then restarts the worker. The previous database is backed up
+    Stops registered services through the OS supervisor, then replaces the
+    database. Close foreground servers, workers, dashboards, and MCP clients
+    first. Services remain stopped; run 'slowave start' after success. The previous database is backed up
     in-place as slowave.db.bak before the swap.
 
     \\b
@@ -281,45 +283,12 @@ def restore_cmd(
 
     started = time.monotonic()
 
-    # Stop the daemon so the DB isn't held open.
-    daemon_stopped = False
-    try:
-        from slowave.mcp.daemon import is_running as _daemon_running
-        from slowave.mcp.daemon import stop_daemon as _stop_daemon
+    from slowave.cli.services import require_stopped_runtime, stop_registered_services
 
-        if _daemon_running():
-            _stop_daemon()
-            import time as _time
-
-            _time.sleep(0.5)
-            daemon_stopped = True
-    except Exception:
-        pass
-
-    # Stop the background consolidation worker too, if one is detected. It
-    # isn't managed via daemon.py's PID-file convention -- it typically runs
-    # under an external supervisor (e.g. launchd's com.slowave.worker) -- so
-    # process detection is all restore has to go on. Leaving it running
-    # during the file swap below is the real risk: it can hold an open
-    # WAL-mode connection to the pre-restore file, see the rewritten bytes
-    # mid-copy, and then have its in-memory WAL state invalidated the moment
-    # the sidecar-clearing below deletes -wal/-shm for what is now a
-    # different database on disk.
+    stopped_services = stop_registered_services()
+    require_stopped_runtime("Restore")
+    daemon_stopped = "daemon" in stopped_services
     worker_stopped_pids: list[int] = []
-    try:
-        from slowave.cli.main import _slowave_processes
-
-        for p in _slowave_processes():
-            if "slowave worker" in p.get("command", ""):
-                try:
-                    os.kill(int(p["pid"]), signal.SIGTERM)
-                    worker_stopped_pids.append(int(p["pid"]))
-                except OSError:
-                    pass
-        if worker_stopped_pids:
-            time.sleep(0.5)
-    except Exception:
-        pass
 
     # WAL/SHM sidecars are keyed by the main db file's path, not its content.
     # Leftovers from the pre-restore DB would otherwise get replayed against
@@ -334,15 +303,16 @@ def restore_cmd(
             except FileNotFoundError:
                 pass
 
-    _clear_sidecars()
-
-    # Backup current DB before overwriting.
+    # Snapshot the current database through SQLite before clearing any sidecars.
     bak_path = Path(str(dest) + ".bak")
     if dest.exists():
         try:
-            shutil.copy2(dest, bak_path)
-        except OSError as exc:
-            raise click.ClickException(f"Could not backup current database: {exc}")
+            with closing(sqlite3.connect(f"file:{dest}?mode=ro", uri=True)) as current:
+                with closing(sqlite3.connect(str(bak_path))) as saved:
+                    current.backup(saved)
+        except (sqlite3.Error, OSError) as exc:
+            raise click.ClickException(f"Could not back up current database: {exc}") from exc
+    _clear_sidecars()
 
     # Decompress into a temp file in the same directory as dest (so the final
     # os.replace() is an atomic rename on the same filesystem), then swap it
@@ -412,6 +382,7 @@ def restore_cmd(
         "elapsed_ms": elapsed_ms,
         "daemon_was_stopped": daemon_stopped,
         "worker_pids_stopped": worker_stopped_pids,
+        "services_stopped": stopped_services,
     }
 
     if as_json:
@@ -426,7 +397,7 @@ def restore_cmd(
         if daemon_stopped:
             click.echo(
                 click.style(
-                    "     note : daemon was stopped; run 'slowave serve start' to restart",
+                    "     note : daemon was stopped; run 'slowave start' to resume registered services",
                     fg="yellow",
                 )
             )

@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -62,7 +65,7 @@ Edit `~/.config/opencode/opencode.json` (create it if it doesn't exist):
 }
 ```
 
-Make sure the daemon is running (`slowave serve status`). Restart OpenCode after editing.
+Make sure the daemon is running (`slowave status --services`). Restart OpenCode after editing.
 
 ---
 
@@ -83,7 +86,7 @@ slowave doctor    # shows client detection and daemon health
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear | Run `slowave serve status`; restart OpenCode |
+| Tools don't appear | Run `slowave status --services`; restart OpenCode |
 | Tools appear but aren't called | `~/.config/opencode/slowave-instructions.md` block missing — re-run `slowave setup` |
 | Sessions are empty | Verify `slowave-instructions.md` is present and registered in `instructions` — re-run `slowave setup` |
 | Config not detected | Ensure `~/.config/opencode/opencode.json` exists and has a `mcp.slowave` entry with `"type": "local"` |

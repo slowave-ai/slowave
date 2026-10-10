@@ -147,16 +147,56 @@ def test_generated_service_preserves_legacy_exact_db_override(monkeypatch, tmp_p
     assert environment["SLOWAVE_MCP_HTTP_PORT"] == "8766"
 
 
-def test_windows_task_action_sets_runtime_environment(monkeypatch, tmp_path):
-    root = tmp_path / "windows data"
+@pytest.mark.parametrize("arguments", ["worker --interval 300", "serve start", "backup"])
+def test_windows_task_action_sets_runtime_environment(monkeypatch, tmp_path, arguments):
+    import os
+    import runpy
+    import subprocess
+    import sys
+
+    root = tmp_path / "windows user's data"
     monkeypatch.delenv("SLOWAVE_DB", raising=False)
     monkeypatch.setenv("SLOWAVE_HOME", str(root))
     monkeypatch.setattr(setup, "_find_pythonw", lambda: "C:/Python/pythonw.exe")
-    execute, argument = setup._windows_runtime_action("slowave.exe", "serve start")
-    assert execute == "powershell.exe"
-    assert f"$env:SLOWAVE_HOME='{root}'" in argument
-    assert "$env:SLOWAVE_MCP_HTTP_PORT='8766'" in argument
-    assert "pythonw.exe' -m slowave serve start" in argument
+    command_lines = []
+    list2cmdline = subprocess.list2cmdline
+
+    def capture_command_line(args):
+        command_lines.append(args)
+        return list2cmdline(args)
+
+    monkeypatch.setattr(setup.subprocess, "list2cmdline", capture_command_line)
+    execute, argument = setup._windows_runtime_action("slowave.exe", arguments)
+    assert execute == "C:/Python/pythonw.exe"
+    assert argument == list2cmdline(command_lines[0])
+    assert command_lines[0][0] == "-c"
+    observed = []
+    monkeypatch.setattr(sys, "argv", ["-c"])
+    monkeypatch.setattr(
+        runpy,
+        "run_module",
+        lambda *args, **kwargs: observed.append(
+            (
+                args,
+                kwargs,
+                sys.argv[:],
+                os.environ["SLOWAVE_HOME"],
+                os.environ["SLOWAVE_MCP_HTTP_PORT"],
+            )
+        ),
+    )
+    monkeypatch.delenv("SLOWAVE_HOME")
+    monkeypatch.delenv("SLOWAVE_MCP_HTTP_PORT", raising=False)
+    exec(command_lines[0][1])
+    assert observed == [
+        (
+            ("slowave",),
+            {"run_name": "__main__", "alter_sys": True},
+            ["slowave", *arguments.split()],
+            str(root),
+            "8766",
+        )
+    ]
 
 
 def test_legacy_db_cleanup_never_sweeps_arbitrary_parent(monkeypatch, tmp_path):

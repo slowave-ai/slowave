@@ -12,9 +12,12 @@ slowave setup
 slowave doctor
 ```
 
-`slowave setup` auto-configures every client it detects, injects the same Slowave lifecycle instructions into each client's instruction surface, installs the background worker, and starts the HTTP MCP daemon. It is idempotent — safe to re-run.
+`slowave setup` auto-configures every client it detects, injects the same Slowave lifecycle instructions into each client's instruction surface, installs the background worker, and starts the HTTP MCP daemon. It is safe to repeat and restarts managed services on every run.
 
-**Remove Slowave:**
+For upgrades and service commands, see the [installation guide](../docs/install.md#upgrade).
+For OS-specific logs and recovery, see [troubleshooting](../docs/troubleshooting.md).
+
+**Remove Slowave (choose uninstall or purge, then remove the package):**
 ```bash
 slowave uninstall       # remove integrations and services; keep memories
 slowave purge           # remove integrations, services, and local data

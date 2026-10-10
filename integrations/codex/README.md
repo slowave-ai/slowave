@@ -2,6 +2,9 @@
 
 Full guide: **[../../docs/install.md](../../docs/install.md)**
 
+For upgrades, service management, and removal, see the [installation guide](../../docs/install.md).
+For recovery and OS-specific logs, see [troubleshooting](../../docs/troubleshooting.md).
+
 ---
 
 ## Setup
@@ -84,7 +87,7 @@ url = "http://127.0.0.1:8766/mcp"
 No `auth`, `bearer_token_env_var`, or headers needed — Codex connects to a local, unauthenticated
 server without any credential fields set.
 
-Make sure the daemon is running (`slowave serve status`). Restart Codex after editing.
+Make sure the daemon is running (`slowave status --services`). Restart Codex after editing.
 
 ---
 
@@ -107,6 +110,6 @@ slowave doctor    # shows client detection and daemon health
 
 | Symptom | Fix |
 |---|---|
-| Tools don't appear | Run `slowave serve status`; restart Codex; check for the `experimental_use_rmcp_client` compatibility note above |
+| Tools don't appear | Run `slowave status --services`; restart Codex; check for the `experimental_use_rmcp_client` compatibility note above |
 | Tools appear but aren't called | The `AGENTS.md` block may be missing or shadowed by `AGENTS.override.md` — re-run `slowave setup` or update the override |
 | Sessions are empty | Check that the lifecycle block is available and the `slowave_*` tools are present |
