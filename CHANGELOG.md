@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.4...slowave-v0.21.5) (2026-10-11)
+
+
+### Bug Fixes
+
+* dashboard filtering and token metrics ([#189](https://github.com/slowave-ai/slowave/issues/189)) ([9bebff6](https://github.com/slowave-ai/slowave/commit/9bebff672c16803b8b4054f8e426b0196a28c255))
+
 ## [0.21.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.3...slowave-v0.21.4) (2026-10-10)
 
 
