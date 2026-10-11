@@ -576,7 +576,7 @@ main {
 .metric-subtle { --metric-accent: var(--border); }
 .home-metric-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .home-metric-card-grid .metric-card { min-height: 80px; }
-.token-consumption-breakdown { grid-column: span 2; }
+.token-consumption-breakdown { grid-column: 1 / -1; }
 .activity-metric-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric-warning-note { margin-top: 12px; }
 .evidence-notice { margin-top: 12px; border-color: var(--border); background: var(--raised); color: var(--muted); }
@@ -2053,7 +2053,7 @@ pre {
   .generalization-card-grid,
   .outcome-card-grid { grid-template-columns: 1fr; }
   .distribution-legend { gap: 8px; }
-  .token-consumption-breakdown { grid-column: span 1; }
+  .token-consumption-breakdown { grid-column: 1 / -1; }
   .distribution-card .distribution-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-bar { flex-wrap: wrap; }
 }
@@ -2274,13 +2274,45 @@ pre, .detail-pre { border-radius: 5px; background: var(--subtle); font-size: 11.
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
+.token-consumption-breakdown .token-total { display: block; font-size: 24px; margin-bottom: 4px; }
 .token-consumption-breakdown .distribution-legend {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 12px;
   overflow-x: auto;
 }
 .token-consumption-breakdown .distribution-legend > span {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+/* Home's unlabeled controls form a single, consistently sized toolbar. */
+.home-header .page-actions {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) 80px auto;
+  align-items: center;
+  gap: 8px;
+}
+.home-header .home-controls,
+.home-header .refresh-status { display: contents; }
+.home-header .page-actions label { min-width: 0; }
+.home-header .page-actions select,
+.home-header .page-actions .button {
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.home-header .page-actions select:hover,
+.home-header .page-actions .button:hover { border-color: var(--muted); }
+@media (max-width: 760px) {
+  .home-header .page-actions { grid-template-columns: minmax(0, 1fr) 76px auto; }
 }

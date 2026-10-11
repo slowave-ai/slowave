@@ -569,7 +569,13 @@ const stageDefinitions = [
 const feedbackTooltip =
   "Latest supported assessments divided by actually delivered item/request occasions. Repeated requests count; page retries do not. Missing feedback is unknown. Later accepted corrections may revise past periods.";
 function metricHref(path: string, data: Json) {
-  return `${path}?scope=${encodeURIComponent(data.scope || "")}&from=${data.window?.from || ""}&to=${data.window?.to || ""}`;
+  const current = new URLSearchParams(window.location.search);
+  return structuralUrl(path, {
+    scope: data.scope || undefined,
+    hours: current.get("hours") || "all",
+    from: current.get("from") || undefined,
+    to: current.get("to") || undefined,
+  });
 }
 function LibraryCards({
   data,
@@ -622,53 +628,6 @@ function LibraryCards({
         />
       )}
     </>
-  );
-}
-function StageCard({ data }: { data: Json }) {
-  const total = Number(data.memory_total || 0);
-  return (
-    <MetricCard
-      className="distribution-card"
-      title="Generalization stages"
-      tooltip={stageTooltip}
-      value={
-        <div className="stage-distribution">
-          <div className="distribution-bar">
-            {(data.stages || [0, 0, 0, 0]).map((n: number, k: number) => (
-              <span
-                key={k}
-                className={`stage-${k}`}
-                style={{ width: `${total ? (n / total) * 100 : 0}%` }}
-                title={`${k} · ${stageNames[k]}: ${n}. ${stageDefinitions[k]}`}
-              />
-            ))}
-            {data.unknown_stage > 0 && (
-              <span
-                className="stage-unknown"
-                style={{ width: `${(data.unknown_stage / total) * 100}%` }}
-              />
-            )}
-          </div>
-          <div className="distribution-legend stage-legend">
-            {stageNames.map((name, k) => (
-              <span
-                key={k}
-                className={`stage-label-${k}`}
-                title={`${k} · ${name}: ${data.stages?.[k] || 0} memories. ${stageDefinitions[k]}`}
-              >
-                {k} · {name}{" "}
-                {total
-                  ? `${Math.round(((data.stages?.[k] || 0) / total) * 100)}%`
-                  : "No data"}
-              </span>
-            ))}
-          </div>
-          {data.unknown_stage > 0 && (
-            <small>{data.unknown_stage} missing or unrecognized stage</small>
-          )}
-        </div>
-      }
-    />
   );
 }
 const outcomeCategories = [
@@ -754,12 +713,6 @@ function FocusedChart({
     </Section>
   );
 }
-function estimateResponseTokens(chars: unknown): number | null {
-  if (chars == null || chars === "") return null;
-  const value = Number(chars);
-  return Number.isFinite(value) && value >= 0 ? Math.ceil(value / 4) : null;
-}
-
 function formatTokenEstimate(tokens: number | null): string {
   if (tokens == null) return "No data";
 
@@ -778,11 +731,10 @@ function formatTokenEstimate(tokens: number | null): string {
   return `~${tokens < 0 ? "-" : ""}${formatted}${unit.suffix} tokens`;
 }
 
-function TokenConsumptionCards({ data }: { data: Json }) {
+function TokenConsumptionCard({ data }: { data: Json }) {
   const total = data.context_size?.total;
   const breakdown = data.context_size?.breakdown || {};
   const totalTokens = total?.total_tokens ?? 0;
-  const totalSamples = total?.samples ?? 0;
 
   const endpointLabels: Record<string, string> = {
     activate: "Activate",
@@ -830,31 +782,13 @@ function TokenConsumptionCards({ data }: { data: Json }) {
   }));
 
   return (
-    <>
-      <MetricCard
-        title="Token consumption (all endpoints)"
-        value={formatTokenEstimate(totalTokens)}
-        tooltip={
-          totalSamples > 0
-            ? `Sum of response tokens across all ${totalSamples} MCP calls in the selected window. Estimate uses ceil(chars/4).`
-            : "No token data available for the selected window."
-        }
-      />
-      <MetricCard
+    <MetricCard
         className="distribution-card token-consumption-breakdown"
-        title="Token consumption breakdown"
-        tooltip={
-          breakdownItems.length > 0
-            ? breakdownItems
-                .map(
-                  (d) =>
-                    `${d.label}: ${formatTokenEstimate(d.tokens)} (${Math.round(d.pct)}%) — ${d.samples.toLocaleString()} calls`
-                )
-                .join("\n")
-            : "No endpoint breakdown available."
-        }
+        title="Token consumption"
+        tooltip="Slowave adds memories and procedures to your agent’s context window so it can reuse relevant knowledge. This is an approximate endpoint-by-endpoint breakdown of the tokens added by MCP responses, including metadata, in the selected period (estimated at one token per four characters)."
         value={
           <div className="stage-distribution">
+            <strong className="token-total">{formatTokenEstimate(totalTokens)}</strong>
             <div className="distribution-bar" style={{ width: "100%" }}>
               {breakdownItems.map((d) => (
                 <span
@@ -895,7 +829,6 @@ function TokenConsumptionCards({ data }: { data: Json }) {
           </div>
         }
       />
-    </>
   );
 }
 function MemoryEffectiveness({ data }: { data: Json }) {
@@ -934,7 +867,7 @@ function MemoryEffectiveness({ data }: { data: Json }) {
           tooltip={glossary.active_scopes}
           href={metricHref("/memory", data)}
         />
-        <TokenConsumptionCards data={data} />
+        <TokenConsumptionCard data={data} />
       </div>
     </Section>
   );
@@ -942,28 +875,35 @@ function MemoryEffectiveness({ data }: { data: Json }) {
 function PeriodFilter({
   location,
   path,
+  hideLabel = false,
 }: {
   location: PageProps["location"];
   path: string;
+  hideLabel?: boolean;
 }) {
   return (
     <label>
-      Activity period
+      <span className={hideLabel ? "sr-only" : undefined}>Time range</span>
       <select
-        value={param(location, "hours", "all")}
+        value={param(location, "from") || param(location, "to") ? "custom" : param(location, "hours", "all")}
         onChange={(e) =>
           updateParams(path, location, {
             hours: e.target.value,
             from: undefined,
             to: undefined,
+            saved_from: undefined,
+            saved_to: undefined,
             page: 1,
           })
         }
       >
-        <option value="all">All times</option>
-        <option value="24">Last day</option>
+        {(param(location, "from") || param(location, "to")) && <option value="custom" disabled>Custom period</option>}
+        <option value="3">Last 3 hours</option>
+        <option value="12">Last 12 hours</option>
+        <option value="24">Last 24 hours</option>
         <option value="168">Last week</option>
         <option value="720">Last month</option>
+        <option value="all">All times</option>
       </select>
     </label>
   );
@@ -980,28 +920,15 @@ export function HomePage({ location }: PageProps) {
     <div className="page">
       <PageHeader
         title="Home"
+        className="home-header"
+        hideRefreshLabel
         description="Readiness, actionable exceptions, and observed changes in the selected period."
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
         controls={
           <div className="home-controls">
-            <label className="compact-control">
-              Time range
-              <select
-                value={hours}
-                onChange={(e) =>
-                  updateParams("/", location, { hours: e.target.value })
-                }
-              >
-                <option value="3">Last 3 hours</option>
-                <option value="12">Last 12 hours</option>
-                <option value="24">Last 24 hours</option>
-                <option value="168">Last week</option>
-                <option value="720">Last month</option>
-                <option value="all">All times</option>
-              </select>
-            </label>
+            <PeriodFilter location={location} path="/" hideLabel />
           </div>
         }
       />
@@ -1341,7 +1268,7 @@ export function MemoryPage({ location }: PageProps) {
     <div className="page">
       <PageHeader
         title="Memories"
-        description="Durable context Slowave can use in future retrieval."
+        description="Durable context Slowave can use in future retrieval. The list shows memories updated in the selected period; inventory totals describe the current library."
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
@@ -1433,12 +1360,6 @@ export function MemoryPage({ location }: PageProps) {
             aria-label="Memory summary"
           >
             <LibraryCards data={request.data.metrics || {}} kind="memory" />
-          </div>
-          <div
-            className="metric-card-grid distribution-card-grid generalization-card-grid"
-            aria-label="Memory generalization stages"
-          >
-            <StageCard data={request.data.metrics || {}} />
           </div>
           <FocusedChart data={request.data.metrics?.chart} kind="memory" />
         </>
@@ -2178,21 +2099,7 @@ export function RetrievalPage({ location }: PageProps) {
               secondary={`${request.data.metrics?.missing_memory_feedback || 0} missing memory feedback`}
               tooltip="Memory deliveries the assistant reported as not relevant to that task, among assessed memory deliveries. Missing feedback is shown separately; this does not establish independent retrieval accuracy."
             />
-            {(["Activate", "Recall"] as const).map((kind) => {
-              const size = request.data?.metrics?.context_size?.[kind];
-              const medianTokens = estimateResponseTokens(size?.median_chars);
-              const p95Tokens = formatTokenEstimate(
-                estimateResponseTokens(size?.p95_chars),
-              );
-              return (
-                <MetricCard
-                  key={kind}
-                  title={`${kind} median context size`}
-                  value={formatTokenEstimate(medianTokens)}
-                  tooltip={`Median approximate serialized response size for ${kind}, including returned context and metadata; this is not an average. A stored sample may reflect a continuation page rather than all pages combined. Estimated at one token per four response characters. ${size?.samples || 0} samples; p95 ${p95Tokens}.`}
-                />
-              );
-            })}
+
           </div>
           <FocusedChart data={request.data.metrics?.chart} kind="memory" tabs />
         </>
@@ -2609,7 +2516,7 @@ export function ProceduresPage({ location }: PageProps) {
     <div className="page">
       <PageHeader
         title="Procedures"
-        description="Structured, execution-backed procedure records created when a session closes; a procedure created here is not necessarily a proven general playbook."
+        description="Execution-backed procedure records created in the selected period. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook."
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
@@ -3098,7 +3005,7 @@ export function ActivityPage({ location }: PageProps) {
     const timer = setTimeout(() => setDebounced(search), 250);
     return () => clearTimeout(timer);
   }, [search]);
-  const activityFilters = `scope=${encodeURIComponent(param(location, "scope"))}&outcome=${param(location, "outcome")}&feedback=${param(location, "feedback")}&agent=${encodeURIComponent(param(location, "agent"))}&continuity=${encodeURIComponent(param(location, "continuity"))}&lane=${param(location, "lane")}&from=${param(location, "from")}&to=${param(location, "to")}&q=${encodeURIComponent(debounced)}`;
+  const activityFilters = `scope=${encodeURIComponent(param(location, "scope"))}&outcome=${param(location, "outcome")}&feedback=${param(location, "feedback")}&agent=${encodeURIComponent(param(location, "agent"))}&continuity=${encodeURIComponent(param(location, "continuity"))}&lane=${param(location, "lane")}&hours=${param(location, "hours", "all")}&from=${param(location, "from")}&to=${param(location, "to")}&q=${encodeURIComponent(debounced)}`;
   const rowsRequest = useApi<Json>(`/api/activity?${activityFilters}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&include_summary=false`);
   const summaryRequest = useApi<Json>(`/api/activity?${activityFilters}&summary_only=true`);
   const reloadActivity = () => {
@@ -3127,6 +3034,7 @@ export function ActivityPage({ location }: PageProps) {
         onRefresh={reloadActivity}
       />
       <div className="filter-bar">
+        <PeriodFilter location={location} path="/activity" />
         <label>
           Search
           <input
@@ -3840,7 +3748,7 @@ export function GraphPage({ location }: PageProps) {
   const graphRelations = param(location, "relations", "relates_to,coactivated_with");
   const setGraphFilter = (key: string, value: string) => updateParams("/graph", location, { [key]: value });
   const graph = useApi<Json>(
-    `/api/graph/schemas?limit=all&relations=${encodeURIComponent(graphRelations)}&scope=${encodeURIComponent(graphScope)}&statuses=${encodeURIComponent(graphStatuses)}`,
+    `/api/graph/schemas?limit=all&hours=${param(location, "hours", "all")}&from=${param(location, "from")}&to=${param(location, "to")}&relations=${encodeURIComponent(graphRelations)}&scope=${encodeURIComponent(graphScope)}&statuses=${encodeURIComponent(graphStatuses)}`,
   );
   const graphData = graph.data;
   const graphNodes = graphData?.nodes || [];
@@ -3849,7 +3757,7 @@ export function GraphPage({ location }: PageProps) {
     <div className="page">
       <PageHeader
         title="Memory graph"
-        description="Explore connected memory clusters. Use search for exact lookup; use the graph for browsing."
+        description="Explore connections between memories updated in the selected period. Use search for exact lookup; use the graph for browsing."
         updatedAt={graph.updatedAt}
         refreshing={graph.refreshing}
         onRefresh={graph.reload}
@@ -3862,6 +3770,7 @@ export function GraphPage({ location }: PageProps) {
       <Section title="Explore your memory network">
           <p className="neutral">Each dot is a memory. Vertex color shows lifecycle state (green active, yellow review, red stale); blue connections are related memories and violet connections are co-activations. Select a dot to inspect it.</p>
           <div className="filter-bar graph-controls">
+            <PeriodFilter location={location} path="/graph" />
             <label>Scope<select value={graphScope} onChange={(event) => setGraphFilter("scope", event.target.value)}><option value="">All scopes</option>{[...new Set((graphData?.nodes || []).map((node: any) => node.scope).filter(Boolean))].map((scope: any) => <option key={scope} value={scope}>{scope}</option>)}</select></label>
             <div className="toggle-group" role="group" aria-label="Memory states"><span className="toggle-label">States</span>{[["active","Active"],["needs_review","Review"],["stale","Stale"]].map(([value,label]) => <button type="button" key={value} className={`toggle-badge toggle-state-${value} ${graphStatuses.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphStatuses.split(",").includes(value)} onClick={() => { const values = graphStatuses.split(",").filter(Boolean); setGraphFilter("statuses", values.includes(value) ? values.filter((item) => item !== value).join(",") : [...values, value].join(",")); }}>{label}</button>)}</div>
             <div className="toggle-group" role="group" aria-label="Edge types"><span className="toggle-label">Edges</span>{[["relates_to","Related to","related"],["coactivated_with","Co-activated","coactivated"]].map(([value,label,kind]) => <button type="button" key={value} className={`toggle-badge toggle-${kind} ${graphRelations.split(",").includes(value) ? "selected" : ""}`} aria-pressed={graphRelations.split(",").includes(value)} onClick={() => { const values = graphRelations.split(",").filter(Boolean); setGraphFilter("relations", values.includes(value) ? values.filter((item) => item !== value).join(",") : [...values, value].join(",")); }}>{label}</button>)}</div>

@@ -439,3 +439,36 @@ def test_feedback_batch_size_is_counted_once_across_sessions(fixture):
     assert {row[0] for row in rows} == {"a", "source"}
     assert sum(row[1] for row in rows) == chars
     assert sum(row[2] for row in rows) == (chars + 3) // 4
+
+
+def test_period_filters_memory_and_graph_before_pagination(fixture, monkeypatch):
+    path, conn = fixture
+    monkeypatch.setattr("time.time", lambda: 20_000)
+    conn.execute("UPDATE schemas SET last_updated_ts = 10000 WHERE id IN (1,2)")
+    conn.execute("UPDATE schemas SET last_updated_ts = 20001 WHERE id = 3")
+    conn.commit()
+    qs = {"scope": ["project:one"], "hours": ["3"], "per_page": ["1"]}
+    memories = app._schemas_payload(str(path), qs)
+    assert memories["pagination"]["total"] == 2
+    assert len(memories["schemas"]) == 1
+    graph = app._schema_graph_payload(str(path), qs)
+    assert {node["schema_id"] for node in graph["nodes"]} == {1, 2}
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in graph["edges"])
+    assert app._schemas_payload(str(path), {"hours": ["all"]})["pagination"]["total"] == 9
+
+
+def test_procedure_and_activity_periods_filter_rows_and_summaries(fixture, monkeypatch):
+    path, _ = fixture
+    monkeypatch.setattr("time.time", lambda: 10_900)
+    qs = {"hours": ["3"], "cohort": ["all"]}
+    procedures = app._procedural_memory_payload(str(path), qs)
+    assert procedures["procedures"] == []  # source procedure was created at 20
+    assert app._procedural_memory_payload(str(path), {"hours": ["all"], "cohort": ["all"]})[
+        "procedures"
+    ]
+    activity = app._activity_payload(str(path), qs)
+    assert activity["pagination"]["total"] == 3
+    assert {row["id"] for row in activity["activities"]} == {"a", "b", "ongoing"}
+    summary = app._activity_payload(str(path), {**qs, "summary_only": ["true"]})
+    assert activity["summary"] == summary["summary"]

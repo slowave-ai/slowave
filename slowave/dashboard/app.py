@@ -1258,6 +1258,10 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         else:
             where += " AND lower(content_text) LIKE ?"
             args.append(f"%{q}%")
+    period_from, period_to = bounds(qs)
+    if period_from or (qs.get("to") or [""])[0]:
+        where += " AND last_updated_ts >= ? AND last_updated_ts <= ?"
+        args.extend((period_from, period_to))
     saved_from = _qs_int(qs, "saved_from", 0)
     saved_to = _qs_int(qs, "saved_to", 0)
     if saved_from:
@@ -1418,6 +1422,10 @@ def _schema_graph_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, A
     if max_salience is not None:
         sql += " AND salience <= ?"
         args.append(float(max_salience))
+    period_from, period_to = bounds(qs)
+    if period_from or (qs.get("to") or [""])[0]:
+        sql += " AND last_updated_ts >= ? AND last_updated_ts <= ?"
+        args.extend((period_from, period_to))
     sql += " ORDER BY salience DESC, last_updated_ts DESC LIMIT ?"
     args.append(limit)
     conn = _connect(db_path)
@@ -4084,6 +4092,13 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         if from_ts:
             precedents = [
                 item for item in precedents if int(item.get("created_at") or 0) >= from_ts
+            ]
+
+        if period_from or (qs.get("to") or [""])[0]:
+            precedents = [
+                item
+                for item in precedents
+                if period_from <= int(item.get("created_at") or 0) <= period_to
             ]
 
         ordered_precedents = sorted(precedents, key=sort_key, reverse=reverse)

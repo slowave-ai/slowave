@@ -106,10 +106,25 @@ export function useLocation() {
   return location;
 }
 
+export function withTimeRange(to: string): string {
+  // Keep the chosen period when moving between dashboard pages. Explicit
+  // destination bounds take precedence over the current rolling window.
+  const destination = new URL(to, window.location.origin);
+  const current = new URLSearchParams(window.location.search);
+  if (destination.origin === window.location.origin &&
+      !["hours", "from", "to"].some((key) => destination.searchParams.has(key))) {
+    const hours = current.get("hours");
+    if (hours) destination.searchParams.set("hours", hours);
+    to = `${destination.pathname}${destination.search}${destination.hash}`;
+  }
+  return to;
+}
+
 export function navigate(
   to: string,
   options: { replace?: boolean; state?: any; preserveScroll?: boolean } = {},
 ) {
+  to = withTimeRange(to);
   const method = options.replace ? "replaceState" : "pushState";
   window.history[method](options.state ?? window.history.state ?? null, "", to);
   window.dispatchEvent(new Event("slowave:navigate"));

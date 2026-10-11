@@ -1,3 +1,4 @@
+import { withTimeRange } from "./api";
 import {
   useEffect,
   useId,
@@ -181,6 +182,7 @@ export function Link({
   className?: string;
   state?: any;
 }) {
+  to = withTimeRange(to);
   return (
     <a
       href={to}
@@ -325,6 +327,8 @@ export function PageHeader({
   refreshing,
   onRefresh,
   controls,
+  hideRefreshLabel = false,
+  className = "",
 }: {
   title: string;
   description?: string;
@@ -332,13 +336,15 @@ export function PageHeader({
   refreshing?: boolean;
   onRefresh?: () => void;
   controls?: ReactNode;
+  hideRefreshLabel?: boolean;
+  className?: string;
 }) {
   const [interval, setInterval] = useState(String(refreshMs));
   useEffect(() => {
     document.title = `${title} · Slowave`;
   }, [title]);
   return (
-    <header className="page-header">
+    <header className={`page-header ${className}`}>
       <div>
         <h1>{title}</h1>
         {description && <p>{description}</p>}
@@ -347,7 +353,8 @@ export function PageHeader({
         {controls}
         {onRefresh && (
           <div className="refresh-status">
-            <label className="refresh-interval">Auto-refresh
+            <label className="refresh-interval">
+              <span className={hideRefreshLabel ? "sr-only" : undefined}>Auto-refresh</span>
               <select value={interval} onChange={(e) => { localStorage.setItem("slowave-refresh-ms", e.target.value); setInterval(e.target.value); window.location.reload(); }}>
                 <option value="5000">5 sec</option><option value="15000">15 sec</option><option value="30000">30 sec</option><option value="60000">1 min</option><option value="300000">5 min</option>
               </select>
