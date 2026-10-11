@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
 <p align="center">
-  Supports: Claude Code, Codex, OpenCode, Cursor, Cline, Windsurf/Devin Desktop, Claude Desktop, GitHub Copilot CLI
+  Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Claude Desktop
 </p>
 
 
@@ -127,7 +127,7 @@ From the dashboard you can:
 
 The overview also helps answer whether the memory loop is working: how many memories and procedures exist, how often retrieved context is reported as used, how much is marked irrelevant, whether feedback is being recorded, and how creation, retrieval, and use change over time.
 
-Slowave also shows a rough estimate of the context returned through the MCP endpoints, so you can keep an eye on memory overhead. 
+Slowave also shows a rough estimate of the context returned through the MCP endpoints, so you can keep an eye on memory overhead.
 <p align="center">
   <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="90%"></a>
 </p>
@@ -145,24 +145,27 @@ Slowave also shows a rough estimate of the context returned through the MCP endp
 
 Client coverage is actively expanding. Suggest more integrations or report broken ones with setup details.
 
-✅ = manually verified · ⬜ = pending verification
+✅ = supported. Copilot validation limits are listed below.
 
 | Client         | macOS | Linux | Windows | Setup                                    |
 |----------------|--|--|--|------------------------------------------|
 | [Claude Code](integrations/claude-code/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-code` |
-| [Cline](integrations/cline/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cline` |
-| [Cursor](integrations/cursor/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cursor` ¹ |
-| [Windsurf](integrations/windsurf/README.md) | ✅ | ✅ | ✅ | `slowave setup --client windsurf` |
-| [Claude Desktop](integrations/claude-desktop/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
-| [OpenCode](integrations/opencode/README.md) | ✅ | ✅ | ✅ | `slowave setup --client opencode` |
+| [Copilot CLI](integrations/copilot/README.md) | ✅ | ✅ | ✅ | `slowave setup --client copilot` |
 | [Codex](integrations/codex/README.md) | ✅ | ✅ | ✅ | `slowave setup --client codex` |
-| [GitHub Copilot CLI](integrations/copilot/README.md) | ⬜ | ⬜ | ⬜ | `slowave setup --client copilot` |
+| [Cursor](integrations/cursor/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cursor` ¹ |
+| [OpenCode](integrations/opencode/README.md) | ✅ | ✅ | ✅ | `slowave setup --client opencode` |
+| [Windsurf](integrations/windsurf/README.md) | ✅ | ✅ | ✅ | `slowave setup --client windsurf` |
+| [Cline](integrations/cline/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cline` |
+| [Claude Desktop](integrations/claude-desktop/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
 | All the above |  |  |  | `slowave setup` |
 
 ¹ requires one manual paste after setup
 
-Copilot support targets local CLI execution. Automated integration tests pass; native
-Copilot verification is pending. IDE, desktop, and hosted/cloud Copilot support is deferred.
+Copilot support targets local CLI execution. Automated integration tests pass, and
+native configuration discovery is verified on macOS. A user also confirmed memory
+reads and writes through Copilot CLI on macOS. Full model-driven lifecycle and native
+Windows/Linux qualification remain pending. IDE, desktop, and hosted/cloud
+Copilot support is deferred.
 
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.

@@ -516,6 +516,11 @@ def fake_home(tmp_path, monkeypatch):
     """Redirect _home() to tmp_path in both setup and cleanup modules."""
     monkeypatch.setattr(_setup_mod, "_home", lambda: tmp_path)
     monkeypatch.setattr(_cleanup_mod, "_home", lambda: tmp_path)
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
+    real_which = _setup_mod.shutil.which
+    monkeypatch.setattr(
+        _setup_mod.shutil, "which", lambda name: None if name == "copilot" else real_which(name)
+    )
     return tmp_path
 
 
@@ -1007,7 +1012,9 @@ def test_manual_clients_receive_current_pasteable_block_even_when_configured(
     assert not spec.mcp_path().exists()
 
 
-@pytest.mark.parametrize("client", ["claude-code", "cline", "windsurf", "opencode", "codex"])
+@pytest.mark.parametrize(
+    "client", ["claude-code", "cline", "windsurf", "opencode", "codex", "copilot"]
+)
 def test_current_rules_replace_stale_installed_blocks_without_changing_user_rules(
     fake_home, monkeypatch, client
 ):
@@ -1015,6 +1022,7 @@ def test_current_rules_replace_stale_installed_blocks_without_changing_user_rule
 
     monkeypatch.setattr(_setup_mod, "SYSTEM", "Darwin")
     monkeypatch.setenv("CODEX_HOME", str(fake_home / ".codex"))
+    monkeypatch.setenv("COPILOT_HOME", str(fake_home / ".copilot"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
     spec = next(spec for spec in _setup_mod._clients() if spec.key == client)
     spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)

@@ -133,11 +133,13 @@ slowave doctor --verbose
 slowave status --services
 ```
 
-`setup` configures detected clients, lifecycle instructions, enforcement
-hooks where supported, and daemon/worker services. Choose one client with
-`--client claude-code|claude-desktop|cline|cursor|windsurf|opencode|codex|all`.
+`setup` configures detected clients, lifecycle instructions, and daemon/worker/backup
+services. It does not install hooks. Choose one client with
+`--client claude-code|copilot|codex|cursor|opencode|windsurf|cline|claude-desktop|all`.
 Use `--dry-run` before changing configuration, or `--no-worker` to skip
-worker-service installation. `doctor` verifies the local environment.
+daemon, worker, and backup service installation. `doctor` verifies the local environment.
+For Copilot CLI installation, verification and usage, see the
+[Copilot guide](../integrations/copilot/README.md).
 
 Use `slowave start|stop|restart` for installed daemon, worker, and backup
 schedule. `slowave status --services` reports supervisor state and daemon

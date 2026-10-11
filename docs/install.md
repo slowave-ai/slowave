@@ -271,12 +271,13 @@ To configure a single client, or to find client-specific details:
 | Client | Integration doc |
 |---|---|
 | Claude Code | [integrations/claude-code/README.md](../integrations/claude-code/README.md) |
-| Claude Desktop ¹ | [integrations/claude-desktop/README.md](../integrations/claude-desktop/README.md) |
-| Cline | [integrations/cline/README.md](../integrations/cline/README.md) |
+| Copilot CLI | [integrations/copilot/README.md](../integrations/copilot/README.md) |
+| Codex ² | [integrations/codex/README.md](../integrations/codex/README.md) |
 | Cursor ¹ | [integrations/cursor/README.md](../integrations/cursor/README.md) |
 | OpenCode | [integrations/opencode/README.md](../integrations/opencode/README.md) |
 | Windsurf | [integrations/windsurf/README.md](../integrations/windsurf/README.md) |
-| Codex ² | [integrations/codex/README.md](../integrations/codex/README.md) |
+| Cline | [integrations/cline/README.md](../integrations/cline/README.md) |
+| Claude Desktop ¹ | [integrations/claude-desktop/README.md](../integrations/claude-desktop/README.md) |
 
 ¹ requires one manual paste after setup
 ² also configures Codex Desktop (ChatGPT app) and the Codex IDE extension — all three share `~/.codex/config.toml`
@@ -290,7 +291,7 @@ rerun setup and refresh/restart the client to load current tool definitions.
 | Action | Clients | Detail |
 |---|---|---|
 | MCP config | All | Patches each client's MCP config so `slowave_*` tools appear |
-| Lifecycle instructions | Claude Code, Cline, Windsurf, OpenCode, Codex | Injects the mandatory Slowave block automatically |
+| Lifecycle instructions | Claude Code, Copilot CLI, Codex, OpenCode, Windsurf, Cline | Injects the mandatory Slowave block automatically |
 | Lifecycle instructions | Claude Desktop, Cursor | Prints the block to paste — requires one manual step |
 | HTTP daemon | All | Installs as launchd/systemd/Task Scheduler — auto-starts |
 | Background worker | All | Installs as launchd/systemd/Task Scheduler — consolidates events |
@@ -299,7 +300,7 @@ rerun setup and refresh/restart the client to load current tool definitions.
 Options:
 
 ```
-slowave setup --client [claude-code|claude-desktop|cline|cursor|opencode|windsurf|codex|all]
+slowave setup --client [claude-code|copilot|codex|cursor|opencode|windsurf|cline|claude-desktop|all]
               --no-worker       # skip daemon, worker, and backup registration
               --dry-run         # preview without writing
 ```
@@ -308,19 +309,25 @@ slowave setup --client [claude-code|claude-desktop|cline|cursor|opencode|windsur
 
 ## Client detection
 
-`slowave setup` only configures clients it detects on your machine. Detection checks whether each client's config directory exists — if the directory isn't there, the client is skipped silently.
+`slowave setup` only configures clients it detects on your machine. Most clients are detected by their config directory. Copilot CLI is also detected when the `copilot` executable is on PATH, including before its first launch.
 
 | Client | Detection |
 |---|---|
 | Claude Code | `~/.claude/` exists |
-| Claude Desktop | `~/Library/Application Support/Claude/` (macOS) or equivalent exists |
-| Cline | `~/.cline/` (CLI/TUI) or `~/Library/Application Support/Code/.../cline_mcp_settings.json` parent exists |
+| Copilot CLI | `copilot` on PATH, or `~/.copilot/` (or `$COPILOT_HOME`) exists |
+| Codex | `~/.codex/` (or `$CODEX_HOME`) exists |
 | Cursor | `~/.cursor/` exists |
 | OpenCode | `~/.config/opencode/` exists |
 | Windsurf | `~/.codeium/windsurf/` exists |
-| Codex | `~/.codex/` (or `$CODEX_HOME`) exists |
+| Cline | `~/.cline/` (CLI/TUI) or `~/Library/Application Support/Code/.../cline_mcp_settings.json` parent exists |
+| Claude Desktop | `~/Library/Application Support/Claude/` (macOS) or equivalent exists |
 
-Clients not detected are omitted from the setup output.
+Clients not detected are omitted from automatic setup. Explicit `--client copilot`
+reports an installation/PATH hint if Copilot is not detected. Slowave does not
+install or sign in to Copilot for you. Follow the [Copilot guide](../integrations/copilot/README.md).
+Set `COPILOT_HOME` consistently for setup, doctor, uninstall and Copilot itself.
+A configuration directory can remain after removing Copilot; directory detection
+is not proof that its executable or account is ready.
 
 ---
 
@@ -350,18 +357,20 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 |---|---|---|
 | `~/.claude.json` | Claude Code MCP config | Adds `mcpServers.slowave` entry (user-scope MCP registry) |
 | `~/.claude/CLAUDE.md` | Claude Code instructions | Prepends lifecycle block |
-| `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
+| `~/.copilot/mcp-config.json` | Copilot CLI MCP config | Adds HTTP `mcpServers.slowave` with all tools available by default |
+| `~/.copilot/copilot-instructions.md` | Copilot CLI personal instructions | Prepends the same lifecycle block; preserves user text |
+| `~/.codex/config.toml` | Codex MCP config | Adds `[mcp_servers.slowave]` |
+| `~/.codex/AGENTS.md` | Codex instructions | Prepends lifecycle block |
+| `~/.cursor/mcp.json` | Cursor native MCP config | Adds `mcpServers.slowave` entry |
+| `~/.config/opencode/opencode.json` | OpenCode MCP + instructions config | Adds `mcp.slowave` and registers instructions file |
+| `~/.config/opencode/slowave-instructions.md` | OpenCode lifecycle instructions | Creates Slowave-owned instruction file |
+| `~/.codeium/windsurf/mcp_config.json` | Windsurf MCP config | Adds `mcpServers.slowave` entry |
+| `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Prepends lifecycle block |
+| `~/Library/Application Support/Cursor/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (Cursor) | Adds `mcpServers.slowave` entry |
 | `~/.cline/rules/slowave.md` | Cline instructions | Prepends lifecycle block |
 | `~/.cline/data/settings/cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Adds `mcpServers.slowave` entry |
 | `~/Library/Application Support/Code/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (VS Code) | Adds `mcpServers.slowave` entry |
-| `~/Library/Application Support/Cursor/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config (Cursor) | Adds `mcpServers.slowave` entry |
-| `~/.cursor/mcp.json` | Cursor native MCP config | Adds `mcpServers.slowave` entry |
-| `~/.codeium/windsurf/mcp_config.json` | Windsurf MCP config | Adds `mcpServers.slowave` entry |
-| `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Prepends lifecycle block |
-| `~/.config/opencode/opencode.json` | OpenCode MCP + instructions config | Adds `mcp.slowave` and registers instructions file |
-| `~/.config/opencode/slowave-instructions.md` | OpenCode lifecycle instructions | Creates Slowave-owned instruction file |
-| `~/.codex/config.toml` | Codex MCP config | Adds `[mcp_servers.slowave]` |
-| `~/.codex/AGENTS.md` | Codex instructions | Prepends lifecycle block |
+| `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 | `~/Library/LaunchAgents/com.slowave.worker.plist` | Background worker | launchd plist, loads with `launchctl` |
 | `~/Library/LaunchAgents/com.slowave.daemon.plist` | HTTP MCP daemon | launchd plist, auto-starts on load |
 | `~/Library/LaunchAgents/com.slowave.backup.plist` | Daily backup | launchd plist with `StartCalendarInterval` |
@@ -372,21 +381,23 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 |---|---|---|
 | `~/.claude.json` | Claude Code MCP config | Same as macOS |
 | `~/.claude/CLAUDE.md` | Claude Code instructions | Same as macOS |
-| `~/.config/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
-| `~/.cline/rules/slowave.md` | Cline instructions | Same as macOS |
-| `~/.cline/data/settings/cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Same as macOS |
-| `~/.config/Code/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config | Same as macOS |
+| `~/.copilot/mcp-config.json` | Copilot CLI MCP config | Same as macOS |
+| `~/.copilot/copilot-instructions.md` | Copilot CLI personal instructions | Same as macOS |
+| `~/.codex/config.toml` | Codex MCP config | Same as macOS |
+| `~/.codex/AGENTS.md` | Codex instructions | Same as macOS |
 | `~/.config/systemd/user/slowave-worker.service` | Background worker | systemd user service, enabled with `systemctl --user` |
 | `~/.config/systemd/user/slowave-daemon.service` | HTTP MCP daemon | systemd user service, auto-starts |
 | `~/.config/systemd/user/slowave-backup.service` | Daily backup | systemd oneshot service |
 | `~/.config/systemd/user/slowave-backup.timer` | Daily backup timer | Triggers backup daily |
+| `~/.cursor/mcp.json` | Cursor native MCP config | Same as macOS |
 | `~/.config/opencode/opencode.json` | OpenCode MCP + instructions config | Same as macOS |
 | `~/.config/opencode/slowave-instructions.md` | OpenCode lifecycle instructions | Same as macOS |
-| `~/.cursor/mcp.json` | Cursor native MCP config | Same as macOS |
 | `~/.codeium/windsurf/mcp_config.json` | Windsurf MCP config | Same as macOS |
 | `~/.codeium/windsurf/memories/global_rules.md` | Windsurf global rules | Same as macOS |
-| `~/.codex/config.toml` | Codex MCP config | Same as macOS |
-| `~/.codex/AGENTS.md` | Codex instructions | Same as macOS |
+| `~/.cline/rules/slowave.md` | Cline instructions | Same as macOS |
+| `~/.cline/data/settings/cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Same as macOS |
+| `~/.config/Code/User/globalStorage/.../cline_mcp_settings.json` | Cline MCP config | Same as macOS |
+| `~/.config/Claude/claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 
 ### Windows
 
@@ -394,20 +405,22 @@ To restore: `cp ~/.claude.json.bak.20260611_142300 ~/.claude.json`
 |---|---|---|
 | `%USERPROFILE%\.claude.json` | Claude Code MCP config | Same as macOS |
 | `%USERPROFILE%\.claude\CLAUDE.md` | Claude Code instructions | Same as macOS |
-| `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
-| `%USERPROFILE%\.cline\rules\slowave.md` | Cline instructions | Same as macOS |
-| `%USERPROFILE%\.cline\data\settings\cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Same as macOS |
-| `%APPDATA%\Code\User\globalStorage\.../cline_mcp_settings.json` | Cline MCP config | Same as macOS |
+| `%USERPROFILE%\.copilot\mcp-config.json` | Copilot CLI MCP config | Same as macOS |
+| `%USERPROFILE%\.copilot\copilot-instructions.md` | Copilot CLI personal instructions | Same as macOS |
+| `%USERPROFILE%\.codex\config.toml` | Codex MCP config | Same as macOS |
+| `%USERPROFILE%\.codex\AGENTS.md` | Codex instructions | Same as macOS |
 | Task Scheduler | Background worker | Registers account-scoped `SlowaveWorker-<SID>` task |
 | Task Scheduler | HTTP MCP daemon | Registers account-scoped `SlowaveDaemon-<SID>` task |
 | Task Scheduler | Daily backup | Registers account-scoped `SlowaveBackup-<SID>` task |
+| `%USERPROFILE%\.cursor\mcp.json` | Cursor native MCP config | Same as macOS |
 | `%USERPROFILE%\.config\opencode\opencode.json` | OpenCode MCP + instructions config | Same as macOS |
 | `%USERPROFILE%\.config\opencode\slowave-instructions.md` | OpenCode lifecycle instructions | Same as macOS |
-| `%USERPROFILE%\.cursor\mcp.json` | Cursor native MCP config | Same as macOS |
 | `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Windsurf MCP config | Same as macOS |
 | `%USERPROFILE%\.codeium\windsurf\memories\global_rules.md` | Windsurf global rules | Same as macOS |
-| `%USERPROFILE%\.codex\config.toml` | Codex MCP config | Same as macOS |
-| `%USERPROFILE%\.codex\AGENTS.md` | Codex instructions | Same as macOS |
+| `%USERPROFILE%\.cline\rules\slowave.md` | Cline instructions | Same as macOS |
+| `%USERPROFILE%\.cline\data\settings\cline_mcp_settings.json` | Cline MCP config (CLI/TUI) | Same as macOS |
+| `%APPDATA%\Code\User\globalStorage\.../cline_mcp_settings.json` | Cline MCP config | Same as macOS |
+| `%APPDATA%\Claude\claude_desktop_config.json` | Claude Desktop MCP config | Adds `mcpServers.slowave` entry |
 
 ---
 
@@ -561,7 +574,8 @@ brew uninstall slowave
 
 ### MCP config block
 
-All clients except Claude Desktop use this HTTP transport block:
+Most HTTP clients use the following transport block; see the client guides for
+format differences (including Copilot CLI’s `tools` selection):
 
 ```json
 {
@@ -585,14 +599,15 @@ url = "http://127.0.0.1:8766/mcp"
 | Client | Config file |
 |---|---|
 | Claude Code | `~/.claude.json` |
-| Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Claude Desktop (Windows) | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Claude Desktop (Linux) | `~/.config/Claude/claude_desktop_config.json` |
-| Cline (VS Code / Cursor) | `.../cline_mcp_settings.json` |
+| Copilot CLI | `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
+| Codex | `~/.codex/config.toml` (shared by the CLI, Codex Desktop, and the IDE extension) |
 | Cursor | `~/.cursor/mcp.json` |
 | OpenCode | `~/.config/opencode/opencode.json` |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Codex | `~/.codex/config.toml` (shared by the CLI, Codex Desktop, and the IDE extension) |
+| Cline (VS Code / Cursor) | `.../cline_mcp_settings.json` |
+| Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Desktop (Windows) | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Desktop (Linux) | `~/.config/Claude/claude_desktop_config.json` |
 
 ### Lifecycle instruction block
 
@@ -606,14 +621,15 @@ contracts.
 | Client | Location | `agent` value |
 |---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` (global) or repo `CLAUDE.md` | `claude-code` |
-| Claude Desktop | **Settings → General → Instructions for Claude** | `claude-desktop` |
-| Cline | `~/.cline/rules/slowave.md` or repo `.clinerules` | `cline-tui` |
+| Copilot CLI | `~/.copilot/copilot-instructions.md` (or `$COPILOT_HOME/copilot-instructions.md`) | `copilot` |
+| Codex | `~/.codex/AGENTS.md` | `codex` |
 | Cursor | **Settings → Rules for AI** (or repo `.cursorrules`) | `cursor` |
 | OpenCode | `~/.config/opencode/slowave-instructions.md` | `opencode` |
 | Windsurf | `~/.codeium/windsurf/memories/global_rules.md` | `windsurf` |
-| Codex | `~/.codex/AGENTS.md` | `codex` |
+| Cline | `~/.cline/rules/slowave.md` or repo `.clinerules` | `cline-tui` |
+| Claude Desktop | **Settings → General → Instructions for Claude** | `claude-desktop` |
 
-Claude Code, Cline, Windsurf, OpenCode, and Codex are injected automatically.
+Claude Code, Copilot CLI, Codex, OpenCode, Windsurf, and Cline are injected automatically.
 Claude Desktop and Cursor require manual paste.
 
 ---

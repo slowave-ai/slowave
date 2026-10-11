@@ -235,6 +235,27 @@ client's tool connection. Lifecycle validation errors, including outstanding
 feedback targets, should be handled using the connected MCP tool schema and
 error response; reinstalling does not fix missing task feedback.
 
+### Copilot CLI
+
+Start with the [Copilot setup and verification guide](../integrations/copilot/README.md).
+Normal `slowave setup` discovers `copilot` on PATH or its existing user config
+directory. If `--client copilot` is not recognized, upgrade the Slowave installation
+you are actually running. Install/sign in to Copilot separately.
+
+Use the same `COPILOT_HOME` for setup, doctor, removal, and Copilot. Run `/mcp`
+and `/instructions` inside a fresh Copilot session to check effective tool and
+instruction loading. Setup preserves explicit tool restrictions and disabled
+state; all five lifecycle tools must be enabled. Repository/plugin definitions
+can override the user MCP entry, and organization policy can block it. Slowave
+does not change those policies or files automatically.
+
+Doctor checks user files, selected daemon URL and the canonical lifecycle block;
+it cannot verify a running model's compliance or resolve every client-side
+override. For a connection failure, compare `slowave serve status` with the URL
+shown in Copilot and rerun setup if needed. In WSL, containers or SSH sessions,
+loopback refers to that environment; a local laptop daemon is not automatically
+reachable. Hosted execution and other Copilot surfaces are deferred.
+
 ## Database and recovery
 
 Use `slowave doctor` for effective paths and reported database checks; the

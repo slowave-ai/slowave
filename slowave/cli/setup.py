@@ -389,6 +389,26 @@ def _codex_agents_md_path() -> Path:
     return _codex_home() / "AGENTS.md"
 
 
+def _copilot_home() -> Path:
+    """Copilot CLI user configuration — respects COPILOT_HOME."""
+    copilot_home = os.environ.get("COPILOT_HOME")
+    return Path(copilot_home).expanduser() if copilot_home else _home() / ".copilot"
+
+
+def _copilot_mcp_config_path() -> Path:
+    return _copilot_home() / "mcp-config.json"
+
+
+def _copilot_instructions_path() -> Path:
+    """Always-on personal instructions, including tasks that edit no files."""
+    return _copilot_home() / "copilot-instructions.md"
+
+
+def _copilot_settings_path() -> Path:
+    """Copilot owns disabledMcpServers; setup/removal must leave it intact."""
+    return _copilot_home() / "settings.json"
+
+
 # ---------------------------------------------------------------------------
 # ClientSpec — single source of truth for every supported client
 # ---------------------------------------------------------------------------
@@ -399,7 +419,7 @@ class ClientSpec:
     """Describes one AI client that Slowave can configure.
 
     All setup, cleanup, summary-preview, and backup-cleanup code iterates
-    ``_clients()`` so that adding a new client is a one-line change here.
+    ``_clients()``. Specialized config formats and diagnostics also need handlers.
     Fields
     ------
     key         CLI ``--client`` value, e.g. ``"claude-code"``
@@ -526,6 +546,15 @@ def _clients() -> list[ClientSpec]:
             require_dir_exists=True,
             restart_note="Restart Codex (CLI, Desktop, or IDE extension) to apply changes.",
         ),
+        ClientSpec(
+            key="copilot",
+            label="Copilot CLI",
+            mcp_path=_copilot_mcp_config_path,
+            lifecycle_path=_copilot_instructions_path,
+            lifecycle_agent="copilot",
+            require_dir_exists=True,
+            restart_note="Restart Copilot CLI to load MCP tools and personal instructions.",
+        ),
     ]
 
 
@@ -550,6 +579,9 @@ def _is_client_detected(spec: ClientSpec) -> bool:
         return (_home() / ".claude").exists()
     if spec.key == "cline":
         return (_home() / ".cline").exists() or spec.mcp_path().parent.exists()
+    if spec.key == "copilot":
+        # Fresh CLI installs need not have created their user directory yet.
+        return _copilot_home().is_dir() or shutil.which("copilot") is not None
     return spec.mcp_path().parent.exists()
 
 
@@ -760,6 +792,35 @@ def _patch_mcp_servers(
         return config, False
     # Anything else (stdio, missing, different url) — overwrite
     servers["slowave"] = want
+    return config, True
+
+
+def _patch_copilot_mcp(
+    config: dict[str, Any],
+    url: str = "http://127.0.0.1:8766/mcp",
+) -> tuple[dict[str, Any], bool]:
+    """Use the shared daemon without discarding Copilot tool/timeout preferences.
+
+    Setup owns the Slowave transport. Explicit tool restrictions and disabled
+    state are preserved; diagnostics warns when they prevent the lifecycle.
+    """
+    if not isinstance(config, dict):
+        raise click.ClickException("Copilot MCP configuration must be a JSON object.")
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise click.ClickException("Copilot mcpServers must be a JSON object.")
+    existing = servers.get("slowave", {})
+    if not isinstance(existing, dict):
+        raise click.ClickException("Copilot mcpServers.slowave must be a JSON object.")
+    want = dict(existing)
+    # Stdio process settings must not survive migration to HTTP.
+    for key in ("command", "args", "env", "cwd"):
+        want.pop(key, None)
+    want.update(type="http", url=url)
+    want.setdefault("tools", ["*"])
+    if "slowave" in servers and existing == want:
+        return config, False
+    config.setdefault("mcpServers", {})["slowave"] = want
     return config, True
 
 
@@ -1573,6 +1634,8 @@ def _build_summary(
             changed_mcp = changed_mcp_only or changed_instructions
         elif spec.key == "codex":
             _, changed_mcp = _patch_codex_mcp(cfg, mcp_url)
+        elif spec.key == "copilot":
+            _, changed_mcp = _patch_copilot_mcp(cfg, mcp_url)
         else:
             _, changed_mcp = _patch_mcp_servers(
                 cfg,
@@ -1724,16 +1787,7 @@ def _section(title: str) -> None:
 @click.option(
     "--client",
     type=click.Choice(
-        [
-            "claude-code",
-            "claude-desktop",
-            "cline",
-            "cursor",
-            "windsurf",
-            "opencode",
-            "codex",
-            "all",
-        ],
+        [spec.key for spec in _clients()] + ["all"],
         case_sensitive=False,
     ),
     default="all",
@@ -1756,7 +1810,7 @@ def _section(title: str) -> None:
 def setup_cmd(
     client: str, worker: bool, dry_run: bool, as_json: bool = False, force: bool = False
 ) -> None:
-    """One-command post-install wiring for Claude Code, Claude Desktop, Cline, Cursor, Windsurf, OpenCode, and Codex.
+    """One-command post-install wiring for Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf, Cline, and Claude Desktop.
 
     Configures every detected client to connect to the Slowave HTTP MCP daemon
     at http://127.0.0.1:8766/mcp.  The daemon and background worker start
@@ -1835,6 +1889,9 @@ def setup_cmd(
             if change.status == ChangeStatus.SKIP:
                 change.status = ChangeStatus.UPDATE
     click.echo(summary.format())
+    for spec in detected_specs:
+        if spec.restart_note:
+            click.echo(f"  After setup: {spec.restart_note}")
     if worker:
         _ok("Services will be reapplied and restarted, including after package upgrades.")
     if summary.manual_steps:
@@ -1861,7 +1918,7 @@ def setup_cmd(
             click.echo(click.style("\nSetup cancelled.", fg="yellow"))
             sys.exit(0)
 
-    # 3-N. Clients (data-driven — add new clients in _clients() only)
+    # 3-N. Clients (shared spec registry with format-specific patchers)
     for i, spec in enumerate(detected_specs, start=3):
         _section(f"{i}. {spec.label}")
         mcp_file = spec.mcp_path()
@@ -1897,6 +1954,9 @@ def setup_cmd(
                 instructions_path = str(_opencode_instructions_path().resolve())
                 cfg, instructions_changed = _patch_opencode_instructions(cfg, instructions_path)
                 changed = mcp_changed or instructions_changed
+            elif spec.key == "copilot":
+                cfg, changed = _patch_copilot_mcp(cfg, mcp_url)
+                transport_label = "HTTP"
             else:
                 cfg, changed = _patch_mcp_servers(
                     cfg,

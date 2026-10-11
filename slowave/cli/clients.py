@@ -18,6 +18,77 @@ class ClientStatus:
     lifecycle_enabled: bool = False
     lifecycle_version: str | None = None
     running: bool = False
+    configuration_warning: str | None = None
+
+
+def _copilot_status() -> ClientStatus:
+    """Inspect installed user config; client-side trust/overrides need a live check."""
+    from slowave.cli.setup import (
+        _copilot_instructions_path,
+        _copilot_mcp_config_path,
+        _copilot_settings_path,
+        _detect_lifecycle_version,
+        _lifecycle_block,
+        _lifecycle_block_up_to_date,
+    )
+    from slowave.core.paths import daemon_port, runtime_paths
+
+    status = ClientStatus(name="Copilot CLI")
+    warnings: list[str] = []
+    path = _copilot_mcp_config_path()
+    expected_url = f"http://127.0.0.1:{daemon_port(runtime_paths())}/mcp"
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+        entry = config["mcpServers"]["slowave"]
+        status.mcp_configured = (
+            isinstance(entry, dict)
+            and entry.get("type") == "http"
+            and entry.get("url") == expected_url
+            and "command" not in entry
+        )
+        if not status.mcp_configured:
+            warnings.append("MCP transport/URL differs from this installation; run slowave setup")
+        if isinstance(entry, dict):
+            tools = entry.get("tools", ["*"])
+            required = {
+                "slowave_activate",
+                "slowave_remember",
+                "slowave_recall",
+                "slowave_feedback",
+                "slowave_commit",
+            }
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                warnings.append("invalid MCP tools selection")
+            elif "*" not in tools and not required.issubset(tools):
+                warnings.append("MCP tools selection excludes lifecycle tools; enable all five")
+            if entry.get("enabled") is False or entry.get("disabled") is True:
+                warnings.append("Slowave MCP server is disabled; enable it in Copilot")
+    except FileNotFoundError:
+        warnings.append("MCP configuration missing; run slowave setup --client copilot")
+    except (OSError, ValueError, TypeError, KeyError):
+        warnings.append(f"invalid or missing slowave MCP entry in {path}; repair it then run setup")
+    settings_path = _copilot_settings_path()
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        disabled = settings.get("disabledMcpServers", [])
+        if not isinstance(disabled, list):
+            warnings.append(f"invalid disabledMcpServers in {settings_path}")
+        elif "slowave" in disabled:
+            warnings.append("Slowave disabled in Copilot settings; run copilot mcp enable slowave")
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError):
+        warnings.append(f"cannot read Copilot settings in {settings_path}; repair that file")
+    try:
+        text = _copilot_instructions_path().read_text(encoding="utf-8")
+        status.lifecycle_version = _detect_lifecycle_version(text)
+        status.lifecycle_enabled = _lifecycle_block_up_to_date(text, _lifecycle_block("copilot"))
+    except (OSError, UnicodeError):
+        pass
+    if not status.lifecycle_enabled:
+        warnings.append("personal lifecycle instructions missing or stale; run slowave setup")
+    status.configuration_warning = "; ".join(warnings) or None
+    return status
 
 
 def _cursor_mcp_config_path() -> Path:
@@ -217,6 +288,10 @@ def get_client_statuses() -> dict[str, ClientStatus]:
                 lifecycle_enabled=codex_has_lifecycle and not codex_override.exists(),
                 lifecycle_version=codex_lifecycle_version,
             )
+        from slowave.cli.setup import _clients_for, _is_client_detected
+
+        if _is_client_detected(_clients_for("copilot")[0]):
+            statuses["copilot"] = _copilot_status()
     except ImportError:
         pass
 
@@ -274,6 +349,10 @@ def get_client_statuses() -> dict[str, ClientStatus]:
 
 
 def summarize_client_status(client: ClientStatus) -> tuple[Status, str]:
+    if client.configuration_warning:
+        return (Status.WARN, client.configuration_warning)
+    if client.name == "Copilot CLI" and client.mcp_configured and client.lifecycle_enabled:
+        return (Status.OK, "MCP (HTTP), lifecycle (user config; verify in Copilot)")
     if "http mcp daemon" in client.name.lower():
         return (
             Status.OK if client.running else Status.SKIP,
