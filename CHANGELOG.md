@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.5...slowave-v0.22.0) (2026-10-11)
+
+
+### Features
+
+* added copilot support ([#191](https://github.com/slowave-ai/slowave/issues/191)) ([b3bd3c0](https://github.com/slowave-ai/slowave/commit/b3bd3c08a991e12b4fc806a1d622f204f803718a))
+
 ## [0.21.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.4...slowave-v0.21.5) (2026-10-11)
 
 
