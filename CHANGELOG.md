@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.0...slowave-v0.22.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* lifecycle improvements ([#193](https://github.com/slowave-ai/slowave/issues/193)) ([eb9ed56](https://github.com/slowave-ai/slowave/commit/eb9ed569c85d5cebca1615fa12b97777e5d8ce8e))
+
 ## [0.22.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.21.5...slowave-v0.22.0) (2026-10-11)
 
 
