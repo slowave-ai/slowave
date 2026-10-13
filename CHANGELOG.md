@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.1...slowave-v0.22.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* activation enrichment and clarify lifecycle tool modes ([#194](https://github.com/slowave-ai/slowave/issues/194)) ([5c562bd](https://github.com/slowave-ai/slowave/commit/5c562bd6e46b92290f38f4afbecc308bfff2010b))
+
 ## [0.22.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.0...slowave-v0.22.1) (2026-10-13)
 
 
