@@ -1,0 +1,452 @@
+- generic [ref=f1e3]:
+  - complementary [ref=f1e4]:
+    - navigation "Primary" [ref=f1e6]:
+      - link [ref=f1e7] [cursor=pointer]:
+        - /url: /
+      - link [ref=f1e11] [cursor=pointer]:
+        - /url: /memory
+      - link [ref=f1e15] [cursor=pointer]:
+        - /url: /procedures
+      - link [ref=f1e20] [cursor=pointer]:
+        - /url: /retrieval
+      - link [ref=f1e24] [cursor=pointer]:
+        - /url: /activity
+      - link [ref=f1e27] [cursor=pointer]:
+        - /url: /graph
+      - link [ref=f1e33] [cursor=pointer]:
+        - /url: /diagnostics
+    - generic [ref=f1e37]:
+      - link [ref=f1e38] [cursor=pointer]:
+        - /url: https://github.com/mrsalty/slowave
+      - link "Documentation" [ref=f1e43] [cursor=pointer]:
+        - /url: /docs
+    - 'button "Theme: system. Change theme" [ref=f1e49] [cursor=pointer]'
+  - main [ref=f1e53]:
+    - generic [ref=f1e54]:
+      - generic [ref=f1e55]:
+        - generic [ref=f1e56]:
+          - heading "Home" [level=1] [ref=f1e57]
+          - paragraph [ref=f1e58]: Readiness, actionable exceptions, and observed changes in the selected period.
+        - generic [ref=f1e59]:
+          - generic [ref=f1e61]:
+            - generic [ref=f1e62]: Time range
+            - combobox "Time range" [ref=f1e63] [cursor=pointer]:
+              - option "Last 3 hours"
+              - option "Last 12 hours"
+              - option "Last 24 hours"
+              - option "Last week"
+              - option "Last month"
+              - option "All times" [selected]
+          - generic [ref=f1e64]:
+            - generic [ref=f1e65]:
+              - generic [ref=f1e66]: Auto-refresh
+              - combobox "Auto-refresh" [ref=f1e67] [cursor=pointer]:
+                - option "5 sec" [selected]
+                - option "15 sec"
+                - option "30 sec"
+                - option "1 min"
+                - option "5 min"
+            - button "Refresh" [ref=f1e68] [cursor=pointer]
+      - generic [ref=f1e82]:
+        - heading "Availability" [level=2] [ref=f1e84]
+        - generic [ref=f1e85]:
+          - link "MCP daemon Needs attention No reachable process observed Process probe · just now" [ref=f1e86] [cursor=pointer]:
+            - /url: /diagnostics#services
+            - generic [ref=f1e87]:
+              - strong [ref=f1e88]: MCP daemon
+              - generic [ref=f1e89]: Needs attention
+            - paragraph [ref=f1e91]: No reachable process observed
+            - generic [ref=f1e92]: Process probe · just now
+          - link "Database Available 44.6 MB Integrity check · just now" [ref=f1e93] [cursor=pointer]:
+            - /url: /diagnostics#database
+            - generic [ref=f1e94]:
+              - strong [ref=f1e95]: Database
+              - generic [ref=f1e96]: Available
+            - paragraph [ref=f1e98]: 44.6 MB
+            - generic [ref=f1e99]: Integrity check · just now
+          - link "Maintenance Available 0 formed · 177 reinforced Last recorded run · 4h ago" [ref=f1e100] [cursor=pointer]:
+            - /url: /diagnostics#maintenance
+            - generic [ref=f1e101]:
+              - strong [ref=f1e102]: Maintenance
+              - generic [ref=f1e103]: Available
+            - paragraph [ref=f1e105]: 0 formed · 177 reinforced
+            - generic [ref=f1e106]: Last recorded run · 4h ago
+      - generic [ref=f1e107]:
+        - heading [level=2] [ref=f1e109]:
+          - text: Memory activity
+          - button "Memory activity definition" [ref=f1e111] [cursor=pointer]
+        - group "Knowledge type" [ref=f1e115]:
+          - button "Memories" [pressed] [ref=f1e116] [cursor=pointer]
+          - button "Procedures" [ref=f1e117] [cursor=pointer]
+        - generic [ref=f1e119]:
+          - img "Memories created, retrieved, and reported used over the selected period" [ref=f1e121]:
+            - generic [ref=f1e122]: "200"
+            - generic [ref=f1e124]: "150"
+            - generic [ref=f1e126]: "100"
+            - generic [ref=f1e128]: "50"
+            - generic [ref=f1e130]: "0"
+            - generic [ref=f1e132]: Oct 6
+            - generic [ref=f1e134]: Oct 8
+            - generic [ref=f1e136]: Oct 9
+            - generic [ref=f1e138]: Oct 10
+            - generic [ref=f1e140]: Oct 12
+            - generic [ref=f1e142]: Oct 13
+          - generic "Visible series" [ref=f1e154]:
+            - button "Created 523" [pressed] [ref=f1e155] [cursor=pointer]:
+              - text: Created
+              - generic [ref=f1e157]: "523"
+            - button "Retrieved 1,285" [pressed] [ref=f1e158] [cursor=pointer]:
+              - text: Retrieved
+              - generic [ref=f1e160]: 1,285
+            - button "Used 369" [pressed] [ref=f1e161] [cursor=pointer]:
+              - text: Used
+              - generic [ref=f1e163]: "369"
+      - generic [ref=f1e164]:
+        - heading "Overview" [level=2] [ref=f1e166]
+        - generic [ref=f1e167]:
+          - link "Active memories Active memories definition 509" [ref=f1e168] [cursor=pointer]:
+            - /url: /memory?hours=all
+            - generic [ref=f1e169]:
+              - generic [ref=f1e170]:
+                - generic [ref=f1e171]: Active memories
+                - button "Active memories definition" [ref=f1e173]
+              - strong [ref=f1e178]: "509"
+          - link "Memory retrieval coverage Memory retrieval coverage definition 35%" [ref=f1e179] [cursor=pointer]:
+            - /url: /memory?hours=all
+            - generic [ref=f1e180]:
+              - generic [ref=f1e181]:
+                - generic [ref=f1e182]: Memory retrieval coverage
+                - button "Memory retrieval coverage definition" [ref=f1e184]
+              - generic [ref=f1e188]: 35%
+          - link "Memory usage rate Memory usage rate definition 63%" [ref=f1e191] [cursor=pointer]:
+            - /url: /memory?hours=all
+            - generic [ref=f1e192]:
+              - generic [ref=f1e193]:
+                - generic [ref=f1e194]: Memory usage rate
+                - button "Memory usage rate definition" [ref=f1e196]
+              - generic [ref=f1e200]: 63%
+          - link "Saved procedures Saved procedures definition 175" [ref=f1e203] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f1e204]:
+              - generic [ref=f1e205]:
+                - generic [ref=f1e206]: Saved procedures
+                - button "Saved procedures definition" [ref=f1e208]
+              - strong [ref=f1e213]: "175"
+          - link "Procedure retrieval coverage Procedure retrieval coverage definition 28%" [ref=f1e214] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f1e215]:
+              - generic [ref=f1e216]:
+                - generic [ref=f1e217]: Procedure retrieval coverage
+                - button "Procedure retrieval coverage definition" [ref=f1e219]
+              - generic [ref=f1e223]: 28%
+          - link "Procedure usage rate Procedure usage rate definition 45%" [ref=f1e226] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f1e227]:
+              - generic [ref=f1e228]:
+                - generic [ref=f1e229]: Procedure usage rate
+                - button "Procedure usage rate definition" [ref=f1e231]
+              - generic [ref=f1e235]: 45%
+          - link "Retrieval match rate Retrieval match rate definition 90%" [ref=f1e238] [cursor=pointer]:
+            - /url: /retrieval?hours=all
+            - generic [ref=f1e239]:
+              - generic [ref=f1e240]:
+                - generic [ref=f1e241]: Retrieval match rate
+                - button "Retrieval match rate definition" [ref=f1e243]
+              - generic [ref=f1e247]: 90%
+          - link "Feedback coverage Feedback coverage definition 93%" [ref=f1e250] [cursor=pointer]:
+            - /url: /retrieval?hours=all
+            - generic [ref=f1e251]:
+              - generic [ref=f1e252]:
+                - generic [ref=f1e253]: Feedback coverage
+                - button "Feedback coverage definition" [ref=f1e255]
+              - generic [ref=f1e259]: 93%
+          - link "Active scopes Active scopes definition 4" [ref=f1e262] [cursor=pointer]:
+            - /url: /memory?hours=all
+            - generic [ref=f1e263]:
+              - generic [ref=f1e264]:
+                - generic [ref=f1e265]: Active scopes
+                - button "Active scopes definition" [ref=f1e267]
+              - strong [ref=f1e272]: "4"
+          - generic [ref=f1e273]:
+            - generic [ref=f1e274]:
+              - generic [ref=f1e275]: Token consumption
+              - button "Token consumption definition" [ref=f1e277] [cursor=pointer]
+            - generic [ref=f1e282]:
+              - strong [ref=f1e283]: ~351.2K tokens
+              - generic [ref=f1e284]:
+                - 'generic "Activate: ~292.2K tokens (83%) — 398 calls" [ref=f1e285]'
+                - 'generic "Recall: ~28.7K tokens (8%) — 51 calls" [ref=f1e286]'
+                - 'generic "Feedback: ~20.1K tokens (6%) — 127 calls" [ref=f1e287]'
+                - 'generic "Commit: ~7.1K tokens (2%) — 123 calls" [ref=f1e288]'
+                - 'generic "Remember: ~2.9K tokens (1%) — 43 calls" [ref=f1e289]'
+              - generic [ref=f1e290]:
+                - 'generic "Activate: ~292.2K tokens (83%) — 398 calls" [ref=f1e291]': Activate
+                - 'generic "Recall: ~28.7K tokens (8%) — 51 calls" [ref=f1e294]': Recall
+                - 'generic "Feedback: ~20.1K tokens (6%) — 127 calls" [ref=f1e297]': Feedback
+                - 'generic "Commit: ~7.1K tokens (2%) — 123 calls" [ref=f1e300]': Commit
+                - 'generic "Remember: ~2.9K tokens (1%) — 43 calls" [ref=f1e303]': Remember
+      - generic [ref=f1e306]:
+        - heading "Memory by scope" [level=2] [ref=f1e308]
+        - region "Memory by scope" [ref=f1e309]:
+          - table [ref=f1e310]:
+            - rowgroup [ref=f1e311]:
+              - row [ref=f1e312]:
+                - columnheader "Scope" [ref=f1e313]
+                - columnheader "Memories" [ref=f1e314]
+                - columnheader "Share" [ref=f1e315]
+                - columnheader [ref=f1e316]:
+                  - text: Retrieval coverage
+                  - button "Retrieval coverage definition" [ref=f1e318] [cursor=pointer]
+            - rowgroup [ref=f1e322]:
+              - row [ref=f1e323] [cursor=pointer]:
+                - cell "project:slowave-private" [ref=f1e324]
+                - cell "334" [ref=f1e325]
+                - cell [ref=f1e326]:
+                  - progressbar "66% of memories" [ref=f1e327]:
+                    - generic [ref=f1e330]: 66%
+                - cell [ref=f1e331]:
+                  - progressbar "33% retrieval coverage" [ref=f1e332]:
+                    - generic [ref=f1e335]: 33%
+              - row [ref=f1e336] [cursor=pointer]:
+                - cell "project:slowave-eval-corpus" [ref=f1e337]
+                - cell "79" [ref=f1e338]
+                - cell [ref=f1e339]:
+                  - progressbar "16% of memories" [ref=f1e340]:
+                    - generic [ref=f1e343]: 16%
+                - cell [ref=f1e344]:
+                  - progressbar "53% retrieval coverage" [ref=f1e345]:
+                    - generic [ref=f1e348]: 53%
+              - row [ref=f1e349] [cursor=pointer]:
+                - cell "project:slowave-web" [ref=f1e350]
+                - cell "71" [ref=f1e351]
+                - cell [ref=f1e352]:
+                  - progressbar "14% of memories" [ref=f1e353]:
+                    - generic [ref=f1e356]: 14%
+                - cell [ref=f1e357]:
+                  - progressbar "23% retrieval coverage" [ref=f1e358]:
+                    - generic [ref=f1e361]: 23%
+              - row [ref=f1e362] [cursor=pointer]:
+                - cell "project:slowave" [ref=f1e363]
+                - cell "25" [ref=f1e364]
+                - cell [ref=f1e365]:
+                  - progressbar "5% of memories" [ref=f1e366]:
+                    - generic [ref=f1e369]: 5%
+                - cell [ref=f1e370]:
+                  - progressbar "40% retrieval coverage" [ref=f1e371]:
+                    - generic [ref=f1e374]: 40%
+      - generic [ref=f1e375]:
+        - generic [ref=f1e376]:
+          - heading "Recent activity selected period" [level=2] [ref=f1e377]
+          - link "View all activity" [ref=f1e378] [cursor=pointer]:
+            - /url: /activity?from=1791316130&to=1791893557
+        - generic [ref=f1e379]:
+          - link "just now Retrieval PR summaruy project:slowave-private Recorded" [ref=f1e380] [cursor=pointer]:
+            - /url: /retrieval/ctx_93910bb24536
+            - time [ref=f1e381]: just now
+            - generic [ref=f1e382]: Retrieval
+            - generic [ref=f1e384]: PR summaruy
+            - generic [ref=f1e385]: project:slowave-private
+            - generic [ref=f1e386]: Recorded
+          - 'link "2m ago Memory PR summary format (replaces the earlier fenced-code-block preference): When the user requests a PR summary, output plain Markdown directly in the rep… project:slowave-private Active" [ref=f1e388] [cursor=pointer]':
+            - /url: /memory/sch_523
+            - time [ref=f1e389]: 2m ago
+            - generic [ref=f1e390]: Memory
+            - generic [ref=f1e392]: "PR summary format (replaces the earlier fenced-code-block preference): When the user requests a PR summary, output plain Markdown directly in the rep…"
+            - generic [ref=f1e393]: project:slowave-private
+            - generic [ref=f1e394]: Active
+          - link "2m ago Activity Record the updated PR-summary formatting policy as durable guidance and retire the superseded fenced-code-block preference; no code changes project:slowave-private Complete" [ref=f1e396] [cursor=pointer]:
+            - /url: /activity/sess_b1551fbc34ae
+            - time [ref=f1e397]: 2m ago
+            - generic [ref=f1e398]: Activity
+            - generic [ref=f1e400]: Record the updated PR-summary formatting policy as durable guidance and retire the superseded fenced-code-block preference; no code changes
+            - generic [ref=f1e401]: project:slowave-private
+            - generic [ref=f1e402]: Complete
+          - link "2m ago Memory Whenever the user requests a PR summary, inspect the aggregate current branch diff against main and provide a high-level PR summary as raw Markdown i… project:slowave-private Stale" [ref=f1e404] [cursor=pointer]:
+            - /url: /memory/sch_274
+            - time [ref=f1e405]: 2m ago
+            - generic [ref=f1e406]: Memory
+            - generic [ref=f1e408]: Whenever the user requests a PR summary, inspect the aggregate current branch diff against main and provide a high-level PR summary as raw Markdown i…
+            - generic [ref=f1e409]: project:slowave-private
+            - generic [ref=f1e410]: Stale
+          - 'link "3m ago Retrieval For PR summaries from now on, give plain Markdown without an outer code fence, with exactly these headings: Context, Change, Checks. Keep comparing t… project:slowave-private Recorded" [ref=f1e412] [cursor=pointer]':
+            - /url: /retrieval/ctx_af9bad7ff17a
+            - time [ref=f1e413]: 3m ago
+            - generic [ref=f1e414]: Retrieval
+            - generic [ref=f1e416]: "For PR summaries from now on, give plain Markdown without an outer code fence, with exactly these headings: Context, Change, Checks. Keep comparing t…"
+            - generic [ref=f1e417]: project:slowave-private
+            - generic [ref=f1e418]: Recorded
+          - link "4h ago Retrieval For the prior goal 'Probe live memory recall without injecting synthetic data, checking source identity and delivered answer content separately', wha… project:slowave-private Recorded" [ref=f1e420] [cursor=pointer]:
+            - /url: /retrieval/rec_a6678a452dac
+            - time [ref=f1e421]: 4h ago
+            - generic [ref=f1e422]: Retrieval
+            - generic [ref=f1e424]: For the prior goal 'Probe live memory recall without injecting synthetic data, checking source identity and delivered answer content separately', wha…
+            - generic [ref=f1e425]: project:slowave-private
+            - generic [ref=f1e426]: Recorded
+          - link "4h ago Retrieval ok please carry one more new stress test, bearing in mind how it worked for me. Try to deep into all directions so that you can spot both - suprising… project:slowave-private Recorded" [ref=f1e428] [cursor=pointer]:
+            - /url: /retrieval/ctx_abf3b0ff4d09
+            - time [ref=f1e429]: 4h ago
+            - generic [ref=f1e430]: Retrieval
+            - generic [ref=f1e432]: ok please carry one more new stress test, bearing in mind how it worked for me. Try to deep into all directions so that you can spot both - suprising…
+            - generic [ref=f1e433]: project:slowave-private
+            - generic [ref=f1e434]: Recorded
+          - 'link "4h ago Memory 2026-10-06 update to the pre-push lint rule: the documented pre-existing black drift in tests/unit/test_shared_retrieval.py was cleaned (format-only,… project:slowave-private Active" [ref=f1e436] [cursor=pointer]':
+            - /url: /memory/sch_24
+            - time [ref=f1e437]: 4h ago
+            - generic [ref=f1e438]: Memory
+            - generic [ref=f1e440]: "2026-10-06 update to the pre-push lint rule: the documented pre-existing black drift in tests/unit/test_shared_retrieval.py was cleaned (format-only,…"
+            - generic [ref=f1e441]: project:slowave-private
+            - generic [ref=f1e442]: Active
+          - 'link "4h ago Memory Full gate green: black 235 files unchanged, isort clean, mypy clean Recorded cleanup in RESULTS §14; committed 1dd3c24 project:slowave-private Active" [ref=f1e444] [cursor=pointer]':
+            - /url: /memory/sch_27
+            - time [ref=f1e445]: 4h ago
+            - generic [ref=f1e446]: Memory
+            - generic [ref=f1e448]: "Full gate green: black 235 files unchanged, isort clean, mypy clean Recorded cleanup in RESULTS §14; committed 1dd3c24"
+            - generic [ref=f1e449]: project:slowave-private
+            - generic [ref=f1e450]: Active
+          - link "4h ago Memory Submitted feedback for all 15 retrievals including missing-memory descriptions and quality labels; all events accepted, none rejected. Store verifica… project:slowave-eval-corpus Active" [ref=f1e452] [cursor=pointer]:
+            - /url: /memory/sch_82
+            - time [ref=f1e453]: 4h ago
+            - generic [ref=f1e454]: Memory
+            - generic [ref=f1e456]: Submitted feedback for all 15 retrievals including missing-memory descriptions and quality labels; all events accepted, none rejected. Store verifica…
+            - generic [ref=f1e457]: project:slowave-eval-corpus
+            - generic [ref=f1e458]: Active
+          - 'link "4h ago Memory Reviewed branch changes vs main: starvation repair, shared-v1 pipeline and floors, WP-2 learning projection, section-3 feedback payload, release-revi… project:slowave-eval-corpus Active" [ref=f1e460] [cursor=pointer]':
+            - /url: /memory/sch_83
+            - time [ref=f1e461]: 4h ago
+            - generic [ref=f1e462]: Memory
+            - generic [ref=f1e464]: "Reviewed branch changes vs main: starvation repair, shared-v1 pipeline and floors, WP-2 learning projection, section-3 feedback payload, release-revi…"
+            - generic [ref=f1e465]: project:slowave-eval-corpus
+            - generic [ref=f1e466]: Active
+          - 'link "4h ago Memory Activate symptom paraphrase: 0 hits on first run and again after feedback. Activate roasting, sourdough, kubernetes probes: all 0 hits; unrelated ref… project:slowave-eval-corpus Active" [ref=f1e468] [cursor=pointer]':
+            - /url: /memory/sch_89
+            - time [ref=f1e469]: 4h ago
+            - generic [ref=f1e470]: Memory
+            - generic [ref=f1e472]: "Activate symptom paraphrase: 0 hits on first run and again after feedback. Activate roasting, sourdough, kubernetes probes: all 0 hits; unrelated ref…"
+            - generic [ref=f1e473]: project:slowave-eval-corpus
+            - generic [ref=f1e474]: Active
+          - 'link "4h ago Memory Reviewed branch changes vs main: starvation repair, shared-v1 pipeline and floors, WP-2 learning projection, section-3 feedback payload, release-revi… project:slowave-eval-corpus Active" [ref=f1e476] [cursor=pointer]':
+            - /url: /memory/sch_91
+            - time [ref=f1e477]: 4h ago
+            - generic [ref=f1e478]: Memory
+            - generic [ref=f1e480]: "Reviewed branch changes vs main: starvation repair, shared-v1 pipeline and floors, WP-2 learning projection, section-3 feedback payload, release-revi…"
+            - generic [ref=f1e481]: project:slowave-eval-corpus
+            - generic [ref=f1e482]: Active
+          - 'link "4h ago Memory Recall exact lookups and moderate paraphrases: 5/6 hits (sch_33, sch_43, sch_62, sch_52, sch_78). Recall symptom paraphrase: 0 hits - matches activat… project:slowave-eval-corpus Active" [ref=f1e484] [cursor=pointer]':
+            - /url: /memory/sch_92
+            - time [ref=f1e485]: 4h ago
+            - generic [ref=f1e486]: Memory
+            - generic [ref=f1e488]: "Recall exact lookups and moderate paraphrases: 5/6 hits (sch_33, sch_43, sch_62, sch_52, sch_78). Recall symptom paraphrase: 0 hits - matches activat…"
+            - generic [ref=f1e489]: project:slowave-eval-corpus
+            - generic [ref=f1e490]: Active
+          - 'link "4h ago Memory Ran the dense multi-clause espresso maintenance activate probe expecting >= 7 cluster memories. Multi-memory probe returned only sch_31 (1 of 12): br… project:slowave-eval-corpus Active" [ref=f1e492] [cursor=pointer]':
+            - /url: /memory/sch_93
+            - time [ref=f1e493]: 4h ago
+            - generic [ref=f1e494]: Memory
+            - generic [ref=f1e496]: "Ran the dense multi-clause espresso maintenance activate probe expecting >= 7 cluster memories. Multi-memory probe returned only sch_31 (1 of 12): br…"
+            - generic [ref=f1e497]: project:slowave-eval-corpus
+            - generic [ref=f1e498]: Active
+          - 'link "4h ago Memory Italian activate: 0 hits; French recall: sch_43 hit; Italian recall: sch_33 hit. Ran German activate question for the same content the French recall … project:slowave-eval-corpus Active" [ref=f1e500] [cursor=pointer]':
+            - /url: /memory/sch_95
+            - time [ref=f1e501]: 4h ago
+            - generic [ref=f1e502]: Memory
+            - generic [ref=f1e504]: "Italian activate: 0 hits; French recall: sch_43 hit; Italian recall: sch_33 hit. Ran German activate question for the same content the French recall …"
+            - generic [ref=f1e505]: project:slowave-eval-corpus
+            - generic [ref=f1e506]: Active
+          - 'link "4h ago Memory Ran German activate question for the same content the French recall retrieved. German activate question hit sch_43: cross-language activate works onl… project:slowave-eval-corpus Active" [ref=f1e508] [cursor=pointer]':
+            - /url: /memory/sch_96
+            - time [ref=f1e509]: 4h ago
+            - generic [ref=f1e510]: Memory
+            - generic [ref=f1e512]: "Ran German activate question for the same content the French recall retrieved. German activate question hit sch_43: cross-language activate works onl…"
+            - generic [ref=f1e513]: project:slowave-eval-corpus
+            - generic [ref=f1e514]: Active
+          - 'link "4h ago Memory All-cluster probe returned 0 memories: broader tasks dilute admission to empty. Submitted feedback with missing-memory descriptions for both probes a… project:slowave-eval-corpus Active" [ref=f1e516] [cursor=pointer]':
+            - /url: /memory/sch_98
+            - time [ref=f1e517]: 4h ago
+            - generic [ref=f1e518]: Memory
+            - generic [ref=f1e520]: "All-cluster probe returned 0 memories: broader tasks dilute admission to empty. Submitted feedback with missing-memory descriptions for both probes a…"
+            - generic [ref=f1e521]: project:slowave-eval-corpus
+            - generic [ref=f1e522]: Active
+          - link "4h ago Memory Ran dense coffee-weekend activate probe spanning espresso and roasting clusters (22 eligible memories) expecting >= 15. Coffee-weekend probe returned… project:slowave-eval-corpus Active" [ref=f1e524] [cursor=pointer]:
+            - /url: /memory/sch_100
+            - time [ref=f1e525]: 4h ago
+            - generic [ref=f1e526]: Memory
+            - generic [ref=f1e528]: Ran dense coffee-weekend activate probe spanning espresso and roasting clusters (22 eligible memories) expecting >= 15. Coffee-weekend probe returned…
+            - generic [ref=f1e529]: project:slowave-eval-corpus
+            - generic [ref=f1e530]: Active
+          - link "4h ago Memory Resubmitted the rejected marks with effect absent; all accepted as access_evidence without strengthening, confirming irrelevant feedback never reinfo… project:slowave-eval-corpus Active" [ref=f1e532] [cursor=pointer]:
+            - /url: /memory/sch_103
+            - time [ref=f1e533]: 4h ago
+            - generic [ref=f1e534]: Memory
+            - generic [ref=f1e536]: Resubmitted the rejected marks with effect absent; all accepted as access_evidence without strengthening, confirming irrelevant feedback never reinfo…
+            - generic [ref=f1e537]: project:slowave-eval-corpus
+            - generic [ref=f1e538]: Active
+          - link "4h ago Memory Opened a fresh eval-scope session after the prior one was committed, then ran two maximal-breadth recall probes (coffee-everything, list-everything).… project:slowave-eval-corpus Active" [ref=f1e540] [cursor=pointer]:
+            - /url: /memory/sch_104
+            - time [ref=f1e541]: 4h ago
+            - generic [ref=f1e542]: Memory
+            - generic [ref=f1e544]: Opened a fresh eval-scope session after the prior one was committed, then ran two maximal-breadth recall probes (coffee-everything, list-everything).…
+            - generic [ref=f1e545]: project:slowave-eval-corpus
+            - generic [ref=f1e546]: Active
+          - 'link "4h ago Memory Read the admission code: ActivationTask.build, select_complementary, relevant_catalog, _rank_applicability, recall relevant-set path, config floors. … project:slowave-private Active" [ref=f1e548] [cursor=pointer]':
+            - /url: /memory/sch_107
+            - time [ref=f1e549]: 4h ago
+            - generic [ref=f1e550]: Memory
+            - generic [ref=f1e552]: "Read the admission code: ActivationTask.build, select_complementary, relevant_catalog, _rank_applicability, recall relevant-set path, config floors. …"
+            - generic [ref=f1e553]: project:slowave-private
+            - generic [ref=f1e554]: Active
+          - link "4h ago Memory Backed up and edited the launchd plist (flag pin), restarted the daemon; confirmed the daemon runs pipx venv code with SLOWAVE_POOL_RELATIVE_ADMISSIO… project:slowave-private Active" [ref=f1e556] [cursor=pointer]:
+            - /url: /memory/sch_108
+            - time [ref=f1e557]: 4h ago
+            - generic [ref=f1e558]: Memory
+            - generic [ref=f1e560]: Backed up and edited the launchd plist (flag pin), restarted the daemon; confirmed the daemon runs pipx venv code with SLOWAVE_POOL_RELATIVE_ADMISSIO…
+            - generic [ref=f1e561]: project:slowave-private
+            - generic [ref=f1e562]: Active
+          - link "4h ago Memory Two MCP activate probes succeeded pre-restart (baseline behavior); after restart the Cline MCP client went stale (-32602) and live probes could not r… project:slowave-private Active" [ref=f1e564] [cursor=pointer]:
+            - /url: /memory/sch_109
+            - time [ref=f1e565]: 4h ago
+            - generic [ref=f1e566]: Memory
+            - generic [ref=f1e568]: Two MCP activate probes succeeded pre-restart (baseline behavior); after restart the Cline MCP client went stale (-32602) and live probes could not r…
+            - generic [ref=f1e569]: project:slowave-private
+            - generic [ref=f1e570]: Active
+          - 'link "4h ago Memory Implemented WP-6: pool_relative module, facet decomposition, relative floors in three assessment call sites, E5 channel promotion, truncation truthfu… project:slowave-private Active" [ref=f1e572] [cursor=pointer]':
+            - /url: /memory/sch_111
+            - time [ref=f1e573]: 4h ago
+            - generic [ref=f1e574]: Memory
+            - generic [ref=f1e576]: "Implemented WP-6: pool_relative module, facet decomposition, relative floors in three assessment call sites, E5 channel promotion, truncation truthfu…"
+            - generic [ref=f1e577]: project:slowave-private
+            - generic [ref=f1e578]: Active
+          - 'link "4h ago Memory Implemented WP-6: pool_relative module, facet decomposition, relative floors in three assessment call sites, E5 channel promotion, truncation truthfu… project:slowave-private Active" [ref=f1e580] [cursor=pointer]':
+            - /url: /memory/sch_112
+            - time [ref=f1e581]: 4h ago
+            - generic [ref=f1e582]: Memory
+            - generic [ref=f1e584]: "Implemented WP-6: pool_relative module, facet decomposition, relative floors in three assessment call sites, E5 channel promotion, truncation truthfu…"
+            - generic [ref=f1e585]: project:slowave-private
+            - generic [ref=f1e586]: Active
+          - link "4h ago Memory Ran 10 activate and 8 recall probes through the MCP endpoint. Recorded per-probe hits, noise, policy version, truncation flags. project:slowave-eval-corpus Active" [ref=f1e588] [cursor=pointer]:
+            - /url: /memory/sch_115
+            - time [ref=f1e589]: 4h ago
+            - generic [ref=f1e590]: Memory
+            - generic [ref=f1e592]: Ran 10 activate and 8 recall probes through the MCP endpoint. Recorded per-probe hits, noise, policy version, truncation flags.
+            - generic [ref=f1e593]: project:slowave-eval-corpus
+            - generic [ref=f1e594]: Active
+          - link "4h ago Memory Reinstalled branch commit 4a92a95 into the daemon venv, pinned SLOWAVE_POOL_RELATIVE_ADMISSION=1 in the launchd plist, restarted the daemon. Ran 10 a… project:slowave-eval-corpus Active" [ref=f1e596] [cursor=pointer]:
+            - /url: /memory/sch_117
+            - time [ref=f1e597]: 4h ago
+            - generic [ref=f1e598]: Memory
+            - generic [ref=f1e600]: Reinstalled branch commit 4a92a95 into the daemon venv, pinned SLOWAVE_POOL_RELATIVE_ADMISSION=1 in the launchd plist, restarted the daemon. Ran 10 a…
+            - generic [ref=f1e601]: project:slowave-eval-corpus
+            - generic [ref=f1e602]: Active
+          - link "4h ago Memory Swept for leftover flag references; replaced the setup pin-preservation example with a generic key. Ran the full CI-marker suite and lint/typecheck; … project:slowave-private Active" [ref=f1e604] [cursor=pointer]:
+            - /url: /memory/sch_121
+            - time [ref=f1e605]: 4h ago
+            - generic [ref=f1e606]: Memory
+            - generic [ref=f1e608]: Swept for leftover flag references; replaced the setup pin-preservation example with a generic key. Ran the full CI-marker suite and lint/typecheck; …
+            - generic [ref=f1e609]: project:slowave-private
+            - generic [ref=f1e610]: Active
+          - link "4h ago Memory Inspected the declarative learning projection and feedback event service. Latest accepted feedback wins per retrieval and memory; dashboard raw event… project:slowave-private Active" [ref=f1e612] [cursor=pointer]:
+            - /url: /memory/sch_127
+            - time [ref=f1e613]: 4h ago
+            - generic [ref=f1e614]: Memory
+            - generic [ref=f1e616]: Inspected the declarative learning projection and feedback event service. Latest accepted feedback wins per retrieval and memory; dashboard raw event…
+            - generic [ref=f1e617]: project:slowave-private
+            - generic [ref=f1e618]: Active

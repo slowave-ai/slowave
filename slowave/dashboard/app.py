@@ -3376,7 +3376,9 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
         retrievals = [
             dict(r)
             for r in conn.execute(
-                "SELECT context_id, retrieval_type, query, goal, count_n, created_at FROM context_recall_events WHERE session_id = ? ORDER BY created_at",
+                "SELECT context_id, retrieval_type, query, goal, count_n, created_at "
+                "FROM context_recall_events WHERE session_id = ? "
+                "AND retrieval_type IN ('context','activate','recall') ORDER BY created_at",
                 (session_id,),
             ).fetchall()
         ]

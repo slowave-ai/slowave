@@ -1,0 +1,250 @@
+- generic [ref=f5e1]:
+  - generic [ref=f5e3]:
+    - complementary [ref=f5e4]:
+      - generic [ref=f5e6]:
+        - strong [ref=f5e7]: Slowave
+        - generic [ref=f5e8]: Dashboard
+      - navigation [ref=f5e254]:
+        - link [ref=f5e255] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f5e14]: Home
+        - link [ref=f5e256] [cursor=pointer]:
+          - /url: /memory
+          - generic [ref=f5e19]: Memories
+        - link [ref=f5e257] [cursor=pointer]:
+          - /url: /procedures
+          - generic [ref=f5e25]: Procedures
+        - link [ref=f5e258] [cursor=pointer]:
+          - /url: /retrieval
+          - generic [ref=f5e30]: Retrieval
+        - link [ref=f5e259] [cursor=pointer]:
+          - /url: /activity
+          - generic [ref=f5e34]: Activity
+        - link [ref=f5e260] [cursor=pointer]:
+          - /url: /graph
+          - generic [ref=f5e41]: Memory graph
+        - link [ref=f5e261] [cursor=pointer]:
+          - /url: /diagnostics
+          - generic [ref=f5e46]: Diagnostics
+      - generic [ref=f5e47]:
+        - generic [ref=f5e48]: Resources
+        - link [ref=f5e262] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+          - generic [ref=f5e54]: GitHub
+          - generic [aria-hidden] [ref=f5e55]: ↗
+        - link [ref=f5e263] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=f5e61]: Docs
+          - generic [aria-hidden] [ref=f5e62]: ↗
+      - button [ref=f5e264] [cursor=pointer]:
+        - generic [ref=f5e68]: "Theme: system"
+    - main [ref=f5e69]:
+      - generic [ref=f5e70]:
+        - generic [ref=f5e71]:
+          - generic [ref=f5e72]:
+            - heading [level=1] [ref=f5e265]: Activity
+            - paragraph [ref=f5e74]: Recorded task segments and the consequential links Slowave observed.
+          - generic [ref=f5e76]:
+            - generic [ref=f5e77]:
+              - generic [ref=f5e78]: Auto-refresh
+              - combobox [ref=f5e266] [cursor=pointer]
+            - button [ref=f5e267] [cursor=pointer]: Refresh
+        - generic [ref=f5e83]:
+          - generic [ref=f5e84]:
+            - generic [ref=f5e85]: Time range
+            - combobox [ref=f5e268] [cursor=pointer]
+          - generic [ref=f5e87]:
+            - text: Search
+            - textbox [ref=f5e269]:
+              - /placeholder: Search task or goal…
+          - generic [ref=f5e89]:
+            - text: Outcome
+            - combobox [ref=f5e270] [cursor=pointer]
+          - generic [ref=f5e91]:
+            - text: Closure
+            - combobox [ref=f5e271] [cursor=pointer]
+          - generic [ref=f5e93]:
+            - text: Started since
+            - textbox [ref=f5e272]
+          - group [ref=f5e95]:
+            - generic [ref=f5e273] [cursor=pointer]: More filters
+        - generic [ref=f5e274]:
+          - generic [ref=f5e202]:
+            - generic [ref=f5e203]:
+              - generic [ref=f5e204]: Activities
+              - button [ref=f5e275] [cursor=pointer]
+            - strong [ref=f5e211]: "3"
+          - generic [ref=f5e212]:
+            - generic [ref=f5e213]:
+              - generic [ref=f5e214]: Feedback completion
+              - button [ref=f5e276] [cursor=pointer]
+            - generic [ref=f5e221]:
+              - generic [ref=f5e222]: 100%
+              - generic [ref=f5e223]: 3 / 3
+          - generic [ref=f5e224]:
+            - generic [ref=f5e225]:
+              - generic [ref=f5e226]: Context usage rate
+              - button [ref=f5e277] [cursor=pointer]
+            - generic [ref=f5e233]:
+              - generic [ref=f5e234]: 50%
+              - generic [ref=f5e235]: 1 / 2
+        - generic [ref=f5e237]:
+          - generic [ref=f5e238]:
+            - generic [ref=f5e239]: Reported outcomes
+            - button [ref=f5e279] [cursor=pointer]
+          - generic [ref=f5e249]:
+            - generic [ref=f5e250]: Success · 3
+            - generic [ref=f5e251]: Partial · 0
+            - generic [ref=f5e252]: Failure · 0
+            - generic [ref=f5e253]: Not reported · 0
+        - region [ref=f5e281]:
+          - table [ref=f5e98]:
+            - rowgroup [ref=f5e99]:
+              - row [ref=f5e282]:
+                - columnheader [ref=f5e283]:
+                  - button [ref=f5e284] [cursor=pointer]: Started ↓
+                - columnheader [ref=f5e285]:
+                  - button [ref=f5e286] [cursor=pointer]: Task / goal
+                - columnheader [ref=f5e287]:
+                  - button [ref=f5e288] [cursor=pointer]: Scope
+                  - button [ref=f5e289] [cursor=pointer]
+                - columnheader [ref=f5e290]:
+                  - button [ref=f5e291] [cursor=pointer]: Outcome
+                - columnheader [ref=f5e292]:
+                  - button [ref=f5e293] [cursor=pointer]: Closure
+                  - button [ref=f5e294] [cursor=pointer]
+                - columnheader [ref=f5e295]:
+                  - button [ref=f5e296] [cursor=pointer]: Duration
+                - columnheader [ref=f5e297]:
+                  - button [ref=f5e298] [cursor=pointer]: Retrievals
+                  - button [ref=f5e299] [cursor=pointer]
+                - columnheader [ref=f5e300]:
+                  - button [ref=f5e301] [cursor=pointer]: Memories touched
+                  - button [ref=f5e302] [cursor=pointer]
+                - columnheader [ref=f5e303]:
+                  - button [ref=f5e304] [cursor=pointer]: Procedure record
+                  - button [ref=f5e305] [cursor=pointer]
+            - rowgroup [ref=f5e144]:
+              - row [ref=f5e306] [cursor=pointer]:
+                - cell [ref=f5e307]: 3m ago
+                - cell [ref=f5e308]:
+                  - generic [ref=f5e148]: Implement and verify GET /exports/subscriptions using the invoice export's customer data source.
+                - cell [ref=f5e309]: project:relaydesk
+                - cell [ref=f5e310]:
+                  - generic [ref=f5e151]: Success
+                - cell [ref=f5e311]:
+                  - generic [ref=f5e154]: Complete
+                - cell [ref=f5e312]: 37s
+                - cell [ref=f5e313]: "2"
+                - cell [ref=f5e314]: "0"
+                - cell [ref=f5e315]:
+                  - generic [ref=f5e160]: Created
+              - row [ref=f5e316] [cursor=pointer]:
+                - cell [ref=f5e317]: 3m ago
+                - cell [ref=f5e318]:
+                  - generic [ref=f5e165]: Record the updated export requirement without code changes
+                - cell [ref=f5e319]: project:relaydesk
+                - cell [ref=f5e320]:
+                  - generic [ref=f5e168]: Success
+                - cell [ref=f5e321]:
+                  - generic [ref=f5e171]: Complete
+                - cell [ref=f5e322]: 15s
+                - cell [ref=f5e323]: "1"
+                - cell [ref=f5e324]: "1"
+                - cell [ref=f5e325]:
+                  - generic [ref=f5e177]: Created
+              - row [ref=f5e326] [cursor=pointer]:
+                - cell [ref=f5e327]: 4m ago
+                - cell [ref=f5e328]:
+                  - generic [ref=f5e182]: Implement and verify the invoice export endpoint
+                - cell [ref=f5e329]: project:relaydesk
+                - cell [ref=f5e330]:
+                  - generic [ref=f5e185]: Success
+                - cell [ref=f5e331]:
+                  - generic [ref=f5e188]: Complete
+                - cell [ref=f5e332]: 35s
+                - cell [ref=f5e333]: "1"
+                - cell [ref=f5e334]: "0"
+                - cell [ref=f5e335]:
+                  - generic [ref=f5e194]: Created
+        - generic [ref=f5e196]:
+          - generic [ref=f5e197]: 3 results · page 1 of 1
+          - generic [ref=f5e198]:
+            - button [disabled] [ref=f5e336]: Previous
+            - button [disabled] [ref=f5e337]: Next
+  - dialog "Activity" [active] [ref=f5e339]:
+    - banner [ref=f5e340]:
+      - generic [ref=f5e341]:
+        - generic [ref=f5e342]: Activity
+        - strong [ref=f5e343]: Implement and verify GET /exports/subscriptions using the invoice export's customer data source.
+        - generic [ref=f5e344]:
+          - button "sess_59cfb5119dc1 Copy ID" [ref=f5e345] [cursor=pointer]:
+            - code [ref=f5e346]: sess_59cfb5119dc1
+            - generic [ref=f5e350]: Copy ID
+          - generic [ref=f5e351]: Success
+      - button "Close detail" [ref=f5e353] [cursor=pointer]
+    - navigation "On this record" [ref=f5e356]:
+      - link "Task" [ref=f5e357] [cursor=pointer]:
+        - /url: "#activity-task"
+      - link "Memory loop" [ref=f5e358] [cursor=pointer]:
+        - /url: "#activity-loop"
+      - link "Linked records" [ref=f5e359] [cursor=pointer]:
+        - /url: "#activity-linked"
+      - link "Technical details" [ref=f5e360] [cursor=pointer]:
+        - /url: "#activity-technical"
+    - generic [ref=f5e361]:
+      - generic [ref=f5e362]:
+        - heading "Task" [level=2] [ref=f5e364]
+        - heading "Implement and verify GET /exports/subscriptions using the invoice export's customer data source." [level=2] [ref=f5e365]
+        - generic [ref=f5e366]:
+          - term [ref=f5e367]: Initial goal
+          - definition [ref=f5e368]: Implement and verify the subscriptions export endpoint.
+          - term [ref=f5e369]: Scope
+          - definition [ref=f5e370]: project:relaydesk
+          - term [ref=f5e371]: Agent / integration
+          - definition [ref=f5e372]: mcp:copilot-cli
+          - term [ref=f5e373]: Outcome
+          - definition [ref=f5e374]:
+            - generic [ref=f5e375]: Success
+            - group [ref=f5e377]:
+              - generic "Outcome summary" [ref=f5e378] [cursor=pointer]
+          - term [ref=f5e379]: Verification
+          - definition [ref=f5e380]:
+            - generic [ref=f5e381]: Verified
+            - group [ref=f5e383]:
+              - generic "Verification summary" [ref=f5e384] [cursor=pointer]
+          - term [ref=f5e385]: Feedback closure
+          - definition [ref=f5e386]:
+            - generic [ref=f5e387]: Complete
+          - term [ref=f5e389]: Started
+          - definition [ref=f5e390]: 12/10/2026, 22:05:08
+          - term [ref=f5e391]: Ended
+          - definition [ref=f5e392]: 12/10/2026, 22:05:45
+          - term [ref=f5e393]: Duration
+          - definition [ref=f5e394]: 37s
+        - generic [ref=f5e399]:
+          - strong [ref=f5e400]: Related sessions
+          - generic [ref=f5e401]: Correlation by continuity ID; this is not a complete or independently validated work-attempt model.
+      - generic [ref=f5e402]:
+        - heading "Memory loop" [level=2] [ref=f5e404]
+        - paragraph [ref=f5e405]: Recorded retrievals and their effective accepted feedback. Optional actions may be absent.
+        - generic [ref=f5e406]:
+          - 'link "Add GET /exports/subscriptions for subscription sub_101, customer cus_101, plan starter. Use the same customer data source as the invoice export, fol…12/10/2026, 22:05:09 · Activation · 2 items returnedmemory: used · helped; procedure: not_used · unknown" [ref=f5e407] [cursor=pointer]':
+            - /url: /retrieval/ctx_d051ae2b58f9
+            - generic [ref=f5e408]:
+              - strong [ref=f5e409]: Add GET /exports/subscriptions for subscription sub_101, customer cus_101, plan starter. Use the same customer data source as the invoice export, fol…
+              - generic [ref=f5e410]: 12/10/2026, 22:05:09 · Activation · 2 items returned
+              - text: "memory: used · helped; procedure: not_used · unknown"
+          - 'link "How was GET /exports/invoices implemented and verified, particularly its data source and expected customer payload? Apply this precedent to adding th…12/10/2026, 22:05:14 · Recall · 1 items returnedmemory: used · helped" [ref=f5e413] [cursor=pointer]':
+            - /url: /retrieval/rec_82c64ef51e29
+            - generic [ref=f5e414]:
+              - strong [ref=f5e415]: How was GET /exports/invoices implemented and verified, particularly its data source and expected customer payload? Apply this precedent to adding th…
+              - generic [ref=f5e416]: 12/10/2026, 22:05:14 · Recall · 1 items returned
+              - text: "memory: used · helped"
+      - generic [ref=f5e419]:
+        - heading "Linked records" [level=2] [ref=f5e421]
+        - paragraph [ref=f5e422]: No memories are linked through source evidence.
+        - link "Procedure from this activity · Add and verify a FastAPI export that reuses existing entity export data." [ref=f5e424] [cursor=pointer]:
+          - /url: /procedures/proc_sess_59cfb5119dc1
+      - group [ref=f5e428]:
+        - generic "Technical details · raw events and episodes" [ref=f5e429] [cursor=pointer]

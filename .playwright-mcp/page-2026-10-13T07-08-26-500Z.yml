@@ -1,0 +1,72 @@
+- generic [ref=f8e1]:
+  - generic [ref=f8e3]:
+    - complementary [ref=f8e4]:
+      - navigation [ref=f8e6]:
+        - link [ref=f8e7] [cursor=pointer]:
+          - /url: /
+        - link [ref=f8e11] [cursor=pointer]:
+          - /url: /memory
+        - link [ref=f8e15] [cursor=pointer]:
+          - /url: /procedures
+        - link [ref=f8e20] [cursor=pointer]:
+          - /url: /retrieval
+        - link [ref=f8e24] [cursor=pointer]:
+          - /url: /activity
+        - link [ref=f8e27] [cursor=pointer]:
+          - /url: /graph
+        - link [ref=f8e33] [cursor=pointer]:
+          - /url: /diagnostics
+      - generic [ref=f8e37]:
+        - link [ref=f8e38] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+        - link [ref=f8e43] [cursor=pointer]:
+          - /url: /docs
+      - button [ref=f8e49] [cursor=pointer]
+    - main [ref=f8e53]:
+      - generic [ref=f8e54]:
+        - generic [ref=f8e55]:
+          - generic [ref=f8e56]:
+            - heading [level=1] [ref=f8e57]: Procedures
+            - paragraph [ref=f8e58]: Execution-backed procedure records created in the selected period. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook.
+          - generic [ref=f8e60]:
+            - generic [ref=f8e61]:
+              - generic [ref=f8e62]: Auto-refresh
+              - combobox [ref=f8e63] [cursor=pointer]
+            - button [ref=f8e64] [cursor=pointer]: Refresh
+        - generic [ref=f8e67]:
+          - generic [ref=f8e68]:
+            - generic [ref=f8e69]: Time range
+            - combobox [ref=f8e70] [cursor=pointer]
+          - generic [ref=f8e71]:
+            - text: View
+            - combobox [ref=f8e72] [cursor=pointer]
+          - generic [ref=f8e73]:
+            - text: Outcome
+            - combobox [ref=f8e74] [cursor=pointer]
+          - generic [ref=f8e75]:
+            - text: Verification
+            - combobox [ref=f8e76] [cursor=pointer]
+          - generic [ref=f8e77]:
+            - text: Exposure
+            - combobox [ref=f8e78] [cursor=pointer]
+          - generic [ref=f8e79]:
+            - text: Created since
+            - textbox [ref=f8e80]
+  - dialog "Procedure" [active] [ref=f8e90]:
+    - banner [ref=f8e91]:
+      - generic [ref=f8e92]:
+        - generic [ref=f8e93]: Procedure
+        - button "proc_sess_198eec440dde Copy ID" [ref=f8e95] [cursor=pointer]:
+          - code [ref=f8e96]: proc_sess_198eec440dde
+          - generic [ref=f8e100]: Copy ID
+      - button "Close detail" [ref=f8e101] [cursor=pointer]
+    - navigation "On this record" [ref=f8e104]:
+      - link "Method" [ref=f8e105] [cursor=pointer]:
+        - /url: "#procedure-method"
+      - link "Use history" [ref=f8e106] [cursor=pointer]:
+        - /url: "#procedure-history"
+      - link "Source task" [ref=f8e107] [cursor=pointer]:
+        - /url: "#procedure-source"
+      - link "Technical details" [ref=f8e108] [cursor=pointer]:
+        - /url: "#procedure-technical"
+    - generic "Loading" [ref=f8e110]

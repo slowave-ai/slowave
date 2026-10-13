@@ -1,0 +1,254 @@
+- generic [ref=f1e1]:
+  - generic [ref=f1e3]:
+    - complementary [ref=f1e4]:
+      - generic [ref=f1e6]:
+        - strong [ref=f1e7]: Slowave
+        - generic [ref=f1e8]: Dashboard
+      - navigation [ref=f1e676]:
+        - link [ref=f1e677] [cursor=pointer]:
+          - /url: /
+          - generic [ref=f1e14]: Home
+        - link [ref=f1e678] [cursor=pointer]:
+          - /url: /memory
+          - generic [ref=f1e19]: Memories
+        - link [ref=f1e679] [cursor=pointer]:
+          - /url: /procedures
+          - generic [ref=f1e25]: Procedures
+        - link [ref=f1e680] [cursor=pointer]:
+          - /url: /retrieval
+          - generic [ref=f1e30]: Retrieval
+        - link [ref=f1e681] [cursor=pointer]:
+          - /url: /activity
+          - generic [ref=f1e34]: Activity
+        - link [ref=f1e682] [cursor=pointer]:
+          - /url: /graph
+          - generic [ref=f1e41]: Memory graph
+        - link [ref=f1e683] [cursor=pointer]:
+          - /url: /diagnostics
+          - generic [ref=f1e46]: Diagnostics
+      - generic [ref=f1e47]:
+        - generic [ref=f1e48]: Resources
+        - link [ref=f1e684] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+          - generic [ref=f1e54]: GitHub
+          - generic [aria-hidden] [ref=f1e55]: ↗
+        - link [ref=f1e685] [cursor=pointer]:
+          - /url: /docs
+          - generic [ref=f1e61]: Docs
+          - generic [aria-hidden] [ref=f1e62]: ↗
+      - button [ref=f1e686] [cursor=pointer]:
+        - generic [ref=f1e68]: "Theme: system"
+    - main [ref=f1e69]:
+      - generic [ref=f1e1174]:
+        - generic [ref=f1e1175]:
+          - generic [ref=f1e1176]:
+            - heading [level=1] [ref=f1e1177]: Activity
+            - paragraph [ref=f1e1178]: Recorded task segments and the consequential links Slowave observed.
+          - generic [ref=f1e1180]:
+            - generic [ref=f1e1181]:
+              - generic [ref=f1e1182]: Auto-refresh
+              - combobox [ref=f1e1183] [cursor=pointer]
+            - button [ref=f1e1184] [cursor=pointer]: Refresh
+        - generic [ref=f1e1187]:
+          - generic [ref=f1e1188]:
+            - generic [ref=f1e1189]: Time range
+            - combobox [ref=f1e1190] [cursor=pointer]
+          - generic [ref=f1e1191]:
+            - text: Search
+            - textbox [ref=f1e1192]:
+              - /placeholder: Search task or goal…
+          - generic [ref=f1e1193]:
+            - text: Outcome
+            - combobox [ref=f1e1194] [cursor=pointer]
+          - generic [ref=f1e1195]:
+            - text: Closure
+            - combobox [ref=f1e1196] [cursor=pointer]
+          - generic [ref=f1e1197]:
+            - text: Started since
+            - textbox [ref=f1e1198]
+          - group [ref=f1e1199]:
+            - generic [ref=f1e1200] [cursor=pointer]: More filters
+        - generic [ref=f1e1201]:
+          - generic [ref=f1e1202]:
+            - generic [ref=f1e1203]:
+              - generic [ref=f1e1204]: Activities
+              - button [ref=f1e1206] [cursor=pointer]
+            - strong [ref=f1e1211]: "3"
+          - generic [ref=f1e1212]:
+            - generic [ref=f1e1213]:
+              - generic [ref=f1e1214]: Feedback completion
+              - button [ref=f1e1216] [cursor=pointer]
+            - generic [ref=f1e1221]:
+              - generic [ref=f1e1222]: 100%
+              - generic [ref=f1e1223]: 3 / 3
+          - generic [ref=f1e1224]:
+            - generic [ref=f1e1225]:
+              - generic [ref=f1e1226]: Context usage rate
+              - button [ref=f1e1228] [cursor=pointer]
+            - generic [ref=f1e1233]:
+              - generic [ref=f1e1234]: 100%
+              - generic [ref=f1e1235]: 1 / 1
+        - generic [ref=f1e1237]:
+          - generic [ref=f1e1238]:
+            - generic [ref=f1e1239]: Reported outcomes
+            - button [ref=f1e1241] [cursor=pointer]
+          - generic [ref=f1e1249]:
+            - generic [ref=f1e1250]: Success · 3
+            - generic [ref=f1e1251]: Partial · 0
+            - generic [ref=f1e1252]: Failure · 0
+            - generic [ref=f1e1253]: Not reported · 0
+        - region [ref=f1e1254]:
+          - table [ref=f1e1255]:
+            - rowgroup [ref=f1e1256]:
+              - row [ref=f1e1257]:
+                - columnheader [ref=f1e1258]:
+                  - button [ref=f1e1259] [cursor=pointer]: Started ↓
+                - columnheader [ref=f1e1260]:
+                  - button [ref=f1e1261] [cursor=pointer]: Task / goal
+                - columnheader [ref=f1e1262]:
+                  - button [ref=f1e1263] [cursor=pointer]: Scope
+                  - button [ref=f1e1265] [cursor=pointer]
+                - columnheader [ref=f1e1269]:
+                  - button [ref=f1e1270] [cursor=pointer]: Outcome
+                - columnheader [ref=f1e1271]:
+                  - button [ref=f1e1272] [cursor=pointer]: Closure
+                  - button [ref=f1e1274] [cursor=pointer]
+                - columnheader [ref=f1e1278]:
+                  - button [ref=f1e1279] [cursor=pointer]: Duration
+                - columnheader [ref=f1e1280]:
+                  - button [ref=f1e1281] [cursor=pointer]: Retrievals
+                  - button [ref=f1e1283] [cursor=pointer]
+                - columnheader [ref=f1e1287]:
+                  - button [ref=f1e1288] [cursor=pointer]: Memories touched
+                  - button [ref=f1e1290] [cursor=pointer]
+                - columnheader [ref=f1e1294]:
+                  - button [ref=f1e1295] [cursor=pointer]: Procedure record
+                  - button [ref=f1e1297] [cursor=pointer]
+            - rowgroup [ref=f1e1301]:
+              - row [ref=f1e1302] [cursor=pointer]:
+                - cell [ref=f1e1303]: 1h ago
+                - cell [ref=f1e1304]:
+                  - generic [ref=f1e1305]: Implement and verify GET /exports/subscriptions
+                - cell [ref=f1e1306]: project:relaydesk
+                - cell [ref=f1e1307]:
+                  - generic [ref=f1e1308]: Success
+                - cell [ref=f1e1310]:
+                  - generic [ref=f1e1311]: Complete
+                - cell [ref=f1e1313]: 1m 3s
+                - cell [ref=f1e1314]: "1"
+                - cell [ref=f1e1315]: "0"
+                - cell [ref=f1e1316]:
+                  - generic [ref=f1e1317]: Created
+              - row [ref=f1e1319] [cursor=pointer]:
+                - cell [ref=f1e1320]: 1h ago
+                - cell [ref=f1e1321]:
+                  - generic [ref=f1e1322]: Record requirements update for customer-facing exports
+                - cell [ref=f1e1323]: project:relaydesk
+                - cell [ref=f1e1324]:
+                  - generic [ref=f1e1325]: Success
+                - cell [ref=f1e1327]:
+                  - generic [ref=f1e1328]: Complete
+                - cell [ref=f1e1330]: 8s
+                - cell [ref=f1e1331]: "1"
+                - cell [ref=f1e1332]: "1"
+                - cell [ref=f1e1333]:
+                  - generic [ref=f1e1334]: Created
+              - row [ref=f1e1336] [cursor=pointer]:
+                - cell [ref=f1e1337]: 1h ago
+                - cell [ref=f1e1338]:
+                  - generic [ref=f1e1339]: Implement and verify the invoice export endpoint using existing project conventions.
+                - cell [ref=f1e1340]: project:relaydesk
+                - cell [ref=f1e1341]:
+                  - generic [ref=f1e1342]: Success
+                - cell [ref=f1e1344]:
+                  - generic [ref=f1e1345]: Complete
+                - cell [ref=f1e1347]: 20s
+                - cell [ref=f1e1348]: "1"
+                - cell [ref=f1e1349]: "0"
+                - cell [ref=f1e1350]:
+                  - generic [ref=f1e1351]: Created
+        - generic [ref=f1e1353]:
+          - generic [ref=f1e1354]: 3 results · page 1 of 1
+          - generic [ref=f1e1355]:
+            - button [disabled] [ref=f1e1356]: Previous
+            - button [disabled] [ref=f1e1357]: Next
+  - dialog "Activity" [active] [ref=f1e1359]:
+    - banner [ref=f1e1360]:
+      - generic [ref=f1e1361]:
+        - generic [ref=f1e1362]: Activity
+        - strong [ref=f1e1363]: Implement and verify GET /exports/subscriptions
+        - generic [ref=f1e1364]:
+          - button "sess_689691eb1eaa Copy ID" [ref=f1e1365] [cursor=pointer]:
+            - code [ref=f1e1366]: sess_689691eb1eaa
+            - generic [ref=f1e1370]: Copy ID
+          - generic [ref=f1e1371]: Success
+      - button "Close detail" [ref=f1e1373] [cursor=pointer]
+    - navigation "On this record" [ref=f1e1376]:
+      - link "Task" [ref=f1e1377] [cursor=pointer]:
+        - /url: "#activity-task"
+      - link "Memory loop" [ref=f1e1378] [cursor=pointer]:
+        - /url: "#activity-loop"
+      - link "Linked records" [ref=f1e1379] [cursor=pointer]:
+        - /url: "#activity-linked"
+      - link "Technical details" [ref=f1e1380] [cursor=pointer]:
+        - /url: "#activity-technical"
+    - generic [ref=f1e1381]:
+      - generic [ref=f1e1382]:
+        - heading "Task" [level=2] [ref=f1e1384]
+        - heading "Implement and verify GET /exports/subscriptions" [level=2] [ref=f1e1385]
+        - generic [ref=f1e1386]:
+          - term [ref=f1e1387]: Initial goal
+          - definition [ref=f1e1388]: Implement and verify the subscriptions export endpoint
+          - term [ref=f1e1389]: Scope
+          - definition [ref=f1e1390]: project:relaydesk
+          - term [ref=f1e1391]: Agent / integration
+          - definition [ref=f1e1392]: mcp:copilot-cli
+          - term [ref=f1e1393]: Outcome
+          - definition [ref=f1e1394]:
+            - generic [ref=f1e1395]: Success
+            - group [ref=f1e1397]:
+              - generic "Outcome summary" [ref=f1e1398] [cursor=pointer]
+          - term [ref=f1e1399]: Verification
+          - definition [ref=f1e1400]:
+            - generic [ref=f1e1401]: Verified
+            - group [ref=f1e1403]:
+              - generic "Verification summary" [ref=f1e1404] [cursor=pointer]
+          - term [ref=f1e1405]: Feedback closure
+          - definition [ref=f1e1406]:
+            - generic [ref=f1e1407]: Complete
+          - term [ref=f1e1409]: Started
+          - definition [ref=f1e1410]: 12/10/2026, 20:53:51
+          - term [ref=f1e1411]: Ended
+          - definition [ref=f1e1412]: 12/10/2026, 20:54:54
+          - term [ref=f1e1413]: Duration
+          - definition [ref=f1e1414]: 1m 3s
+        - generic [ref=f1e1419]:
+          - strong [ref=f1e1420]: Related sessions
+          - generic [ref=f1e1421]: Correlation by continuity ID; this is not a complete or independently validated work-attempt model.
+      - generic [ref=f1e1422]:
+        - heading "Memory loop" [level=2] [ref=f1e1424]
+        - paragraph [ref=f1e1425]: Recorded retrievals and their effective accepted feedback. Optional actions may be absent.
+        - generic [ref=f1e1426]:
+          - 'link "Add GET /exports/subscriptions for subscription sub_101, customer cus_101, plan starter. Use the same customer data source as the invoice export, fol…12/10/2026, 20:53:52 · Activation · 1 items returnedmemory: used · helped" [ref=f1e1427] [cursor=pointer]':
+            - /url: /retrieval/ctx_71674b22f697
+            - generic [ref=f1e1428]:
+              - strong [ref=f1e1429]: Add GET /exports/subscriptions for subscription sub_101, customer cus_101, plan starter. Use the same customer data source as the invoice export, fol…
+              - generic [ref=f1e1430]: 12/10/2026, 20:53:52 · Activation · 1 items returned
+              - text: "memory: used · helped"
+          - link "Context exposure12/10/2026, 20:54:51 · Recall · 0 items returnedFeedback pending or none accepted" [ref=f1e1433] [cursor=pointer]:
+            - /url: /retrieval/fbk_yoYwZXLizUvik9nW17-qFA
+            - generic [ref=f1e1434]:
+              - strong [ref=f1e1435]: Context exposure
+              - generic [ref=f1e1436]: 12/10/2026, 20:54:51 · Recall · 0 items returned
+              - text: Feedback pending or none accepted
+          - link "Context exposure12/10/2026, 20:54:54 · Recall · 0 items returnedFeedback pending or none accepted" [ref=f1e1439] [cursor=pointer]:
+            - /url: /retrieval/cmt_C8ICOZEebtPG1w3PI9HmqA
+            - generic [ref=f1e1440]:
+              - strong [ref=f1e1441]: Context exposure
+              - generic [ref=f1e1442]: 12/10/2026, 20:54:54 · Recall · 0 items returned
+              - text: Feedback pending or none accepted
+      - generic [ref=f1e1445]:
+        - heading "Linked records" [level=2] [ref=f1e1447]
+        - paragraph [ref=f1e1448]: No memories are linked through source evidence.
+      - group [ref=f1e1449]:
+        - generic "Technical details · raw events and episodes" [ref=f1e1450] [cursor=pointer]

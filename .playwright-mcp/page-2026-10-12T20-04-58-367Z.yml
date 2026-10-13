@@ -1,0 +1,83 @@
+- generic [ref=f4e3]:
+  - complementary [ref=f4e4]:
+    - generic [ref=f4e6]:
+      - strong [ref=f4e7]: Slowave
+      - generic [ref=f4e8]: Dashboard
+    - navigation "Primary" [ref=f4e9]:
+      - link "Home" [ref=f4e10] [cursor=pointer]:
+        - /url: /
+      - link "Memories" [ref=f4e15] [cursor=pointer]:
+        - /url: /memory
+      - link "Procedures" [ref=f4e20] [cursor=pointer]:
+        - /url: /procedures
+      - link "Retrieval" [ref=f4e26] [cursor=pointer]:
+        - /url: /retrieval
+      - link "Activity" [ref=f4e31] [cursor=pointer]:
+        - /url: /activity
+      - link "Memory graph" [ref=f4e35] [cursor=pointer]:
+        - /url: /graph
+      - link "Diagnostics" [ref=f4e42] [cursor=pointer]:
+        - /url: /diagnostics
+    - generic [ref=f4e47]:
+      - generic [ref=f4e48]: Resources
+      - link "GitHub" [ref=f4e49] [cursor=pointer]:
+        - /url: https://github.com/mrsalty/slowave
+        - generic [aria-hidden] [ref=f4e55]: ↗
+      - link "Docs" [ref=f4e56] [cursor=pointer]:
+        - /url: /docs
+        - generic [aria-hidden] [ref=f4e62]: ↗
+    - 'button "Theme: system. Change theme" [ref=f4e64] [cursor=pointer]':
+      - generic [ref=f4e68]: "Theme: system"
+  - main [ref=f4e69]:
+    - generic [ref=f4e70]:
+      - generic [ref=f4e71]:
+        - generic [ref=f4e72]:
+          - heading "Memory graph" [level=1] [ref=f4e73]
+          - paragraph [ref=f4e74]: Explore connections between memories updated in the selected period. Use search for exact lookup; use the graph for browsing.
+        - generic [ref=f4e76]:
+          - generic [ref=f4e77]:
+            - generic [ref=f4e78]: Auto-refresh
+            - combobox "Auto-refresh" [ref=f4e79] [cursor=pointer]:
+              - option "5 sec" [selected]
+              - option "15 sec"
+              - option "30 sec"
+              - option "1 min"
+              - option "5 min"
+          - button "Refresh" [ref=f4e80] [cursor=pointer]
+      - generic [ref=f4e83]:
+        - heading "Explore your memory network" [level=2] [ref=f4e85]
+        - paragraph [ref=f4e86]: Each dot is a memory. Vertex color shows lifecycle state (green active, yellow review, red stale); blue connections are related memories and violet connections are co-activations. Select a dot to inspect it.
+        - generic [ref=f4e87]:
+          - generic [ref=f4e88]:
+            - generic [ref=f4e89]: Time range
+            - combobox "Time range" [ref=f4e90] [cursor=pointer]:
+              - option "Last 3 hours"
+              - option "Last 12 hours"
+              - option "Last 24 hours"
+              - option "Last week"
+              - option "Last month"
+              - option "All times" [selected]
+          - generic [ref=f4e91]:
+            - text: Scope
+            - combobox "Scope" [ref=f4e92] [cursor=pointer]:
+              - option "All scopes" [selected]
+              - option "project:relaydesk"
+          - group "Memory states" [ref=f4e93]:
+            - generic [ref=f4e94]: States
+            - button "Active" [pressed] [ref=f4e95] [cursor=pointer]
+            - button "Review" [pressed] [ref=f4e96] [cursor=pointer]
+            - button "Stale" [pressed] [ref=f4e97] [cursor=pointer]
+          - group "Edge types" [ref=f4e98]:
+            - generic [ref=f4e99]: Edges
+            - button "Related to" [pressed] [ref=f4e100] [cursor=pointer]
+            - button "Co-activated" [pressed] [ref=f4e101] [cursor=pointer]
+        - generic "Loading" [ref=f4e102]
+        - generic [ref=f4e107]:
+          - heading "Find a memory" [level=2] [ref=f4e109]
+          - paragraph [ref=f4e110]: The list provides keyboard access and exact text lookup. Layout distance does not measure semantic similarity.
+          - textbox "Search graph memories" [ref=f4e111]:
+            - /placeholder: Search memory text or ID
+          - button "Customer-facing exports must omit email fields entirely instead of returning placeholders; identifiers and names must remain present. Existing endpoi… sch_1 · project:relaydesk · active" [ref=f4e113] [cursor=pointer]:
+            - generic [ref=f4e114]:
+              - strong [ref=f4e115]: Customer-facing exports must omit email fields entirely instead of returning placeholders; identifiers and names must remain present. Existing endpoi…
+              - generic [ref=f4e116]: sch_1 · project:relaydesk · active

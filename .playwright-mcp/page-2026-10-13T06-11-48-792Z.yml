@@ -1,0 +1,321 @@
+- generic [ref=f1e1]:
+  - generic [ref=f1e3]:
+    - complementary [ref=f1e4]:
+      - navigation [ref=f1e469]:
+        - link [ref=f1e7] [cursor=pointer]:
+          - /url: /
+        - link [ref=f1e11] [cursor=pointer]:
+          - /url: /memory
+        - link [ref=f1e15] [cursor=pointer]:
+          - /url: /procedures
+        - link [ref=f1e20] [cursor=pointer]:
+          - /url: /retrieval
+        - link [ref=f1e24] [cursor=pointer]:
+          - /url: /activity
+        - link [ref=f1e27] [cursor=pointer]:
+          - /url: /graph
+        - link [ref=f1e33] [cursor=pointer]:
+          - /url: /diagnostics
+      - generic [ref=f1e37]:
+        - link [ref=f1e38] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+        - link [ref=f1e470] [cursor=pointer]:
+          - /url: /docs
+      - button [ref=f1e471] [cursor=pointer]
+    - main [ref=f1e53]:
+      - generic [ref=f1e813]:
+        - generic [ref=f1e814]:
+          - generic [ref=f1e815]:
+            - heading [level=1] [ref=f1e816]: Retrieval
+            - paragraph [ref=f1e817]: Context Slowave exposed for a task. Exposure is not proof it was used.
+          - generic [ref=f1e819]:
+            - generic [ref=f1e820]:
+              - generic [ref=f1e821]: Auto-refresh
+              - combobox [ref=f1e822] [cursor=pointer]
+            - button [ref=f1e823] [cursor=pointer]: Refresh
+        - generic [ref=f1e826]:
+          - generic [ref=f1e827]:
+            - generic [ref=f1e828]: Time range
+            - combobox [ref=f1e829] [cursor=pointer]
+          - generic [ref=f1e830]:
+            - text: Search
+            - textbox [ref=f1e831]:
+              - /placeholder: Search task/query…
+          - generic [ref=f1e832]:
+            - text: Type
+            - combobox [ref=f1e833] [cursor=pointer]
+          - generic [ref=f1e834]:
+            - text: Feedback
+            - combobox [ref=f1e835] [cursor=pointer]
+          - generic [ref=f1e836]:
+            - text: Scope
+            - combobox [ref=f1e837] [cursor=pointer]
+          - generic [ref=f1e838]:
+            - text: Contains
+            - combobox [ref=f1e839] [cursor=pointer]
+          - generic [ref=f1e840]:
+            - text: Observed since
+            - textbox [ref=f1e841]
+        - generic [ref=f1e842]:
+          - generic [ref=f1e843]:
+            - generic [ref=f1e844]:
+              - generic [ref=f1e845]: Retrievals
+              - button [ref=f1e847] [cursor=pointer]
+            - strong [ref=f1e852]: "5"
+          - generic [ref=f1e853]:
+            - generic [ref=f1e854]:
+              - generic [ref=f1e855]: Retrieval match rate
+              - button [ref=f1e857] [cursor=pointer]
+            - generic [ref=f1e862]:
+              - generic [ref=f1e863]: 80%
+              - generic [ref=f1e864]: 4 / 5
+          - generic [ref=f1e865]:
+            - generic [ref=f1e866]:
+              - generic [ref=f1e867]: Retrieval usage rate
+              - button [ref=f1e869] [cursor=pointer]
+            - generic [ref=f1e874]:
+              - generic [ref=f1e875]: 75%
+              - generic [ref=f1e876]: 3 / 4
+          - generic [ref=f1e877]:
+            - generic [ref=f1e878]:
+              - generic [ref=f1e879]: Feedback coverage
+              - button [ref=f1e881] [cursor=pointer]
+            - generic [ref=f1e886]:
+              - generic [ref=f1e887]: 100%
+              - generic [ref=f1e888]: 9 / 9
+          - generic [ref=f1e889]:
+            - generic [ref=f1e890]:
+              - generic [ref=f1e891]: Irrelevant context
+              - button [ref=f1e893] [cursor=pointer]
+            - generic [ref=f1e898]:
+              - generic [ref=f1e899]: 25%
+              - generic [ref=f1e900]: 2 / 8
+        - generic [ref=f1e901]:
+          - heading [level=2] [ref=f1e903]: Activity
+          - group [ref=f1e904]:
+            - button [pressed] [ref=f1e905] [cursor=pointer]: Memories
+            - button [ref=f1e906] [cursor=pointer]: Procedures
+          - generic [ref=f1e907]:
+            - img [ref=f1e909]:
+              - generic [ref=f1e910]: "8"
+              - generic [ref=f1e912]: "6"
+              - generic [ref=f1e914]: "4"
+              - generic [ref=f1e916]: "2"
+              - generic [ref=f1e918]: "0"
+              - generic [ref=f1e920]: 10:55 PM
+              - generic [ref=f1e922]: 12:45 AM
+              - generic [ref=f1e924]: 02:35 AM
+              - generic [ref=f1e926]: 04:30 AM
+              - generic [ref=f1e928]: 06:20 AM
+              - generic [ref=f1e930]: 08:10 AM
+            - generic [ref=f1e939]:
+              - button [pressed] [ref=f1e940] [cursor=pointer]:
+                - text: Retrieved
+                - generic [ref=f1e942]: "8"
+              - button [pressed] [ref=f1e943] [cursor=pointer]:
+                - text: Used
+                - generic [ref=f1e945]: "5"
+        - region [ref=f1e946]:
+          - table [ref=f1e947]:
+            - rowgroup [ref=f1e954]:
+              - row [ref=f1e955]:
+                - columnheader [ref=f1e956]:
+                  - button [ref=f1e957] [cursor=pointer]: When ↓
+                  - button [ref=f1e959] [cursor=pointer]
+                - columnheader [ref=f1e963]:
+                  - button [ref=f1e964] [cursor=pointer]: Task / query
+                  - button [ref=f1e966] [cursor=pointer]
+                - columnheader [ref=f1e970]:
+                  - button [ref=f1e971] [cursor=pointer]: Type
+                  - button [ref=f1e973] [cursor=pointer]
+                - columnheader [ref=f1e977]:
+                  - button [ref=f1e978] [cursor=pointer]: Context used
+                  - button [ref=f1e980] [cursor=pointer]
+                - columnheader [ref=f1e984]:
+                  - button [ref=f1e985] [cursor=pointer]: Feedback
+                  - button [ref=f1e987] [cursor=pointer]
+            - rowgroup [ref=f1e991]:
+              - row [ref=f1e992] [cursor=pointer]:
+                - cell [ref=f1e993]: 9h ago
+                - cell [ref=f1e994]:
+                  - generic [ref=f1e995]: "What is the current provider contract for relaydesk refund deliveries: event identity, account_id meaning, revision precedence, and any merchant-specific operational pause that limits refund processing?"
+                  - generic [ref=f1e996]: project:relaydesk
+                - cell [ref=f1e997]:
+                  - generic [ref=f1e998]: Recall
+                - cell [ref=f1e1000]:
+                  - generic [ref=f1e1002]:
+                    - generic [ref=f1e1003]: Memories
+                    - generic [ref=f1e1006]: 3/3
+                - cell [ref=f1e1007]:
+                  - generic [ref=f1e1008]: Complete
+              - row [ref=f1e1010] [cursor=pointer]:
+                - cell [ref=f1e1011]: 9h ago
+                - cell [ref=f1e1012]:
+                  - generic [ref=f1e1013]: How was the earlier relaydesk duplicate captured-payment webhook incident reproduced, fixed, and verified, and what condition made its event_id dedupe rule inappropriate for refunds? Apply the original payments incident procedure to the current refunds incident only if provider semantics support it.
+                  - generic [ref=f1e1014]: project:relaydesk
+                - cell [ref=f1e1015]:
+                  - generic [ref=f1e1016]: Recall
+                - cell [ref=f1e1018]:
+                  - generic [ref=f1e1020]:
+                    - generic [ref=f1e1021]: Memories
+                    - generic [ref=f1e1024]: 1/1
+                - cell [ref=f1e1025]:
+                  - generic [ref=f1e1026]: Complete
+              - row [ref=f1e1028] [cursor=pointer]:
+                - cell [ref=f1e1029]: 9h ago
+                - cell [ref=f1e1030]:
+                  - generic [ref=f1e1031]: Investigate and fix duplicate webhook processing in refunds, like the earlier duplicate-payment incident. Apply the current provider contract, keep the repair scoped to refunds, and verify it.
+                  - generic [ref=f1e1032]: project:relaydesk
+                - cell [ref=f1e1033]:
+                  - generic [ref=f1e1034]: Activation
+                - cell [ref=f1e1036]:
+                  - generic [ref=f1e1037]:
+                    - generic [ref=f1e1038]:
+                      - generic [ref=f1e1039]: Memories
+                      - generic [ref=f1e1042]: 1/1
+                    - generic [ref=f1e1043]:
+                      - generic [ref=f1e1044]: Procedures
+                      - generic [ref=f1e1047]: 1/1
+                - cell [ref=f1e1048]:
+                  - generic [ref=f1e1049]: Complete
+              - row [ref=f1e1051] [cursor=pointer]:
+                - cell [ref=f1e1052]: 9h ago
+                - cell [ref=f1e1053]:
+                  - generic [ref=f1e1054]: "Aggiornamento del contratto del provider: gli ID evento sono univoci solo per esercente (merchant_id), non globalmente. account_id identifica un collegamento di consegna: lo stesso evento può arrivare su account diversi dopo una rotazione delle credenziali. L’identità di un evento è ora la coppia (merchant_id, event_id). Questa regola sostituisce la precedente garanzia di unicità globale per tutti i webhook. Non modificare il codice in questa attività. Inoltre, il provider può correggere un evento già consegnato: per ogni identità va elaborata la revisione numerica più alta (revision), non la prima consegna. L’ordine di arrivo non garantisce l’ordine delle revisioni. Inoltre, merchant_2 è in pausa operativa: per ora i suoi eventi non devono essere elaborati. Questa sospensione resta valida fino a nuove istruzioni."
+                  - generic [ref=f1e1055]: project:relaydesk
+                - cell [ref=f1e1056]:
+                  - generic [ref=f1e1057]: Activation
+                - cell [ref=f1e1059]:
+                  - generic [ref=f1e1061]:
+                    - generic [ref=f1e1062]: Memories
+                    - generic [ref=f1e1064]: 0/3
+                - cell [ref=f1e1065]:
+                  - generic [ref=f1e1066]: Complete
+              - row [ref=f1e1068] [cursor=pointer]:
+                - cell [ref=f1e1069]: 9h ago
+                - cell [ref=f1e1070]:
+                  - generic [ref=f1e1071]: Investigate and fix the duplicate payment processing in the captured payments incident. The provider currently guarantees event IDs are globally unique; retries have different delivery IDs but represent the same business event. Replay the incident to reproduce it, fix payments only, and verify the repair with a regression check plus the normal development checks.
+                  - generic [ref=f1e1072]: project:relaydesk
+                - cell [ref=f1e1073]:
+                  - generic [ref=f1e1074]: Activation
+                - cell [ref=f1e1076]: "-"
+                - cell [ref=f1e1077]:
+                  - generic [ref=f1e1078]: Complete
+        - generic [ref=f1e1080]:
+          - generic [ref=f1e1081]: 5 results · page 1 of 1
+          - generic [ref=f1e1082]:
+            - button [disabled] [ref=f1e1083]: Previous
+            - button [disabled] [ref=f1e1084]: Next
+  - dialog "Retrieval" [active] [ref=f1e1086]:
+    - banner [ref=f1e1087]:
+      - generic [ref=f1e1088]:
+        - generic [ref=f1e1089]: Retrieval
+        - strong [ref=f1e1090]: Investigate and fix duplicate webhook processing in refunds, like the earlier duplicate-payment…
+        - generic [ref=f1e1091]:
+          - button "ctx_6d57f93b16b1 Copy ID" [ref=f1e1092] [cursor=pointer]:
+            - code [ref=f1e1093]: ctx_6d57f93b16b1
+            - generic [ref=f1e1097]: Copy ID
+          - generic [ref=f1e1098]: Feedback complete
+      - button "Close detail" [ref=f1e1100] [cursor=pointer]
+    - navigation "On this record" [ref=f1e1103]:
+      - link "Request" [ref=f1e1104] [cursor=pointer]:
+        - /url: "#retrieval-request"
+      - link "Returned context" [ref=f1e1105] [cursor=pointer]:
+        - /url: "#retrieval-context"
+      - link "Feedback" [ref=f1e1106] [cursor=pointer]:
+        - /url: "#retrieval-feedback"
+      - link "Technical details" [ref=f1e1107] [cursor=pointer]:
+        - /url: "#retrieval-technical"
+    - generic [ref=f1e1108]:
+      - generic [ref=f1e1109]:
+        - heading "Request" [level=2] [ref=f1e1111]
+        - heading "Investigate and fix duplicate webhook processing in refunds, like the earlier duplicate-payment incident. Apply the current provider contract, keep the repair scoped to refunds, and verify it." [level=2] [ref=f1e1112]
+        - generic [ref=f1e1113]:
+          - term [ref=f1e1114]: Source
+          - definition [ref=f1e1115]: Activation
+          - term [ref=f1e1116]: Observed
+          - definition [ref=f1e1117]: 12/10/2026, 22:59:30
+          - term [ref=f1e1118]: Scope
+          - definition [ref=f1e1119]: project:relaydesk
+          - term [ref=f1e1120]: Response size
+          - definition [ref=f1e1121]: 1827 characters
+          - term [ref=f1e1122]: Activity
+          - definition [ref=f1e1123]:
+            - link "sess_e135292e85fc" [ref=f1e1124] [cursor=pointer]:
+              - /url: /activity/sess_e135292e85fc
+          - term [ref=f1e1125]:
+            - text: Task outcome
+            - button "Task outcome definition" [ref=f1e1127] [cursor=pointer]
+          - definition [ref=f1e1131]:
+            - generic [ref=f1e1132]: Success
+        - generic [ref=f1e1135]:
+          - generic "1 of 1 retrieved memories reported used. Grey means not reported used." [ref=f1e1136]:
+            - generic [ref=f1e1137]: Memories
+            - generic [ref=f1e1140]: 1/1
+          - generic "1 of 1 retrieved procedures reported used. Grey means not reported used." [ref=f1e1141]:
+            - generic [ref=f1e1142]: Procedures
+            - generic [ref=f1e1145]: 1/1
+        - paragraph [ref=f1e1146]: Reported used / returned. Grey includes items without a reported use; a dash means feedback is pending.
+      - generic [ref=f1e1147]:
+        - heading "Returned context" [level=2] [ref=f1e1149]
+        - paragraph [ref=f1e1150]: Items are shown in the recorded order. “Stored snapshot” is the content delivered at the time; a fallback means only current library content remains available.
+        - generic [ref=f1e1151]:
+          - heading "Direct" [level=3] [ref=f1e1152]
+          - generic [ref=f1e1153]:
+            - generic [ref=f1e1154]:
+              - strong [ref=f1e1155]: relaydesk README requires keeping changes focused on the requested component only; refunds.py was intentionally left untouched during the payments dedupe fix because its incident's semantics (same event_id across differ…
+              - generic [ref=f1e1156]: schema · active
+              - generic [ref=f1e1157]: Matched the active task/query.
+              - generic [ref=f1e1158]: Current library fallback · focus
+              - generic [ref=f1e1159]:
+                - text: "Assessment:"
+                - generic [ref=f1e1160]: Used
+                - text: "Effect:"
+                - generic [ref=f1e1162]: Helpful
+            - generic [ref=f1e1164]:
+              - generic [ref=f1e1165]: Active
+              - link "Open" [ref=f1e1167] [cursor=pointer]:
+                - /url: /memory/sch_3
+            - group [ref=f1e1168]:
+              - generic "Stored pathway metadata" [ref=f1e1169] [cursor=pointer]
+          - generic [ref=f1e1170]:
+            - generic [ref=f1e1171]:
+              - strong [ref=f1e1172]: proc_sess_fc6b5dc43d36
+              - generic [ref=f1e1173]: procedural_memory · State not recorded
+              - generic [ref=f1e1174]: Matched the active task/query.
+              - generic [ref=f1e1175]: Current library fallback · focus
+              - generic [ref=f1e1176]:
+                - text: "Assessment:"
+                - generic [ref=f1e1177]: Used
+                - text: "Effect:"
+                - generic [ref=f1e1179]: Helpful
+            - generic [ref=f1e1181]:
+              - generic [ref=f1e1182]: Unknown
+              - link "Open" [ref=f1e1184] [cursor=pointer]:
+                - /url: /procedures/proc_sess_fc6b5dc43d36
+            - group [ref=f1e1185]:
+              - generic "Stored pathway metadata" [ref=f1e1186] [cursor=pointer]
+      - generic [ref=f1e1187]:
+        - heading "Feedback" [level=2] [ref=f1e1189]
+        - paragraph [ref=f1e1190]: Effective feedback is shown beside each returned item. This audit retains accepted and rejected submissions separately.
+        - generic [ref=f1e1191]:
+          - generic [ref=f1e1192]:
+            - generic [ref=f1e1193]:
+              - strong [ref=f1e1194]: memory · sch_3
+              - generic [ref=f1e1195]: accepted
+            - paragraph [ref=f1e1197]: used · helped
+            - generic [ref=f1e1198]: 12/10/2026, 23:01:02 · complete coverage
+          - generic [ref=f1e1199]:
+            - generic [ref=f1e1200]:
+              - strong [ref=f1e1201]: procedure · proc_sess_fc6b5dc43d36
+              - generic [ref=f1e1202]: accepted
+            - paragraph [ref=f1e1204]: used · helped
+            - generic [ref=f1e1205]: 12/10/2026, 23:01:02 · complete coverage
+          - generic [ref=f1e1206]:
+            - generic [ref=f1e1207]:
+              - strong [ref=f1e1208]: retrieval · ctx_6d57f93b16b1
+              - generic [ref=f1e1209]: accepted
+            - paragraph [ref=f1e1211]: Coverage observation only
+            - generic [ref=f1e1212]: 12/10/2026, 23:01:02 · complete coverage
+      - group [ref=f1e1213]:
+        - generic "Technical details" [ref=f1e1214] [cursor=pointer]

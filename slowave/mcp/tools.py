@@ -1495,6 +1495,18 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             Retrieval considers meaning and specific terms, then selects context
             applicable to the task. The bounded result is not a complete inventory
             or a verification of the returned claims; assess their actual use.
+            A user message establishing or changing durable guidance is also a
+            task, even without another action request. Save the durable claim
+            and complete feedback and commit before acknowledging completion;
+            saving guidance is part of completing the task.
+            Answer-only tasks also require retrieval feedback and commit before
+            the final response; remember and recall are conditional.
+            Procedures here are previews, not their complete methods. When a
+            relevant precedent could materially affect the plan, use deliberate
+            slowave_recall to inspect its steps, context, outcome, and caveats
+            before deciding whether to adapt it to the current evidence.
+            Name the preview's original goal and relevant conditions in that
+            query; procedure admission checks applicability to the source goal.
 
             The cognitive cycle:
                 1. slowave_activate(task, initial_goal, scope)      <- start here
@@ -1520,7 +1532,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 session_id: required by recall and commit.
                 memory_state: cold_start or available for the resolved scope.
                 memories: canonical [{memory_id, content, pathway, provenance?}].
-                procedures: execution-backed procedures, pending O4 canonicalization.
+                procedures: execution-backed previews with ID, goal, summary,
+                    outcome, outcome_summary, and safety caveats. Deliberate
+                    recall returns full steps, context, and reuse evidence.
                 warnings: stable structured safety warnings.
                 continuity_id: server-issued opaque client-conversation token.
                 continuity_state: started on omission, continued on valid reuse.
@@ -2262,6 +2276,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         a future task should retrieve directly. Store any such claims with
         slowave_remember; if none qualifies, commit normally. Commit records the
         task outcome and optional procedure, not a substitute for explicit claims.
+        In particular, save a newly established requirement or decision that
+        governs future tasks as a standalone claim before closing. Describing
+        it in outcome_summary alone does not create that remembered claim.
         Call at the end of every task. If skipped, the idle-session reaper closes
         the session after SLOWAVE_SESSION_IDLE_TIMEOUT seconds (default 3600).
         Args:

@@ -1,0 +1,145 @@
+- generic [ref=f3e3]:
+  - complementary [ref=f3e4]:
+    - generic [ref=f3e6]:
+      - strong [ref=f3e7]: Slowave
+      - generic [ref=f3e8]: Dashboard
+    - navigation "Primary" [ref=f3e9]:
+      - link "Home" [ref=f3e10] [cursor=pointer]:
+        - /url: /
+      - link "Memories" [ref=f3e15] [cursor=pointer]:
+        - /url: /memory
+      - link "Procedures" [ref=f3e20] [cursor=pointer]:
+        - /url: /procedures
+      - link "Retrieval" [ref=f3e26] [cursor=pointer]:
+        - /url: /retrieval
+      - link "Activity" [ref=f3e31] [cursor=pointer]:
+        - /url: /activity
+      - link "Memory graph" [ref=f3e35] [cursor=pointer]:
+        - /url: /graph
+      - link "Diagnostics" [ref=f3e42] [cursor=pointer]:
+        - /url: /diagnostics
+    - generic [ref=f3e47]:
+      - generic [ref=f3e48]: Resources
+      - link "GitHub" [ref=f3e49] [cursor=pointer]:
+        - /url: https://github.com/mrsalty/slowave
+        - generic [aria-hidden] [ref=f3e55]: ↗
+      - link "Docs" [ref=f3e56] [cursor=pointer]:
+        - /url: /docs
+        - generic [aria-hidden] [ref=f3e62]: ↗
+    - 'button "Theme: system. Change theme" [ref=f3e64] [cursor=pointer]':
+      - generic [ref=f3e68]: "Theme: system"
+  - main [ref=f3e69]:
+    - generic [ref=f3e70]:
+      - generic [ref=f3e71]:
+        - generic [ref=f3e72]:
+          - heading "Procedures" [level=1] [ref=f3e73]
+          - paragraph [ref=f3e74]: Execution-backed procedure records created in the selected period. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook.
+        - generic [ref=f3e76]:
+          - generic [ref=f3e77]:
+            - generic [ref=f3e78]: Auto-refresh
+            - combobox "Auto-refresh" [ref=f3e79] [cursor=pointer]:
+              - option "5 sec" [selected]
+              - option "15 sec"
+              - option "30 sec"
+              - option "1 min"
+              - option "5 min"
+          - button "Refresh" [ref=f3e80] [cursor=pointer]
+      - generic [ref=f3e83]:
+        - generic [ref=f3e84]:
+          - generic [ref=f3e85]: Time range
+          - combobox "Time range" [ref=f3e86] [cursor=pointer]:
+            - option "Last 3 hours"
+            - option "Last 12 hours"
+            - option "Last 24 hours"
+            - option "Last week"
+            - option "Last month"
+            - option "All times" [selected]
+        - generic [ref=f3e87]:
+          - text: View
+          - combobox "View" [ref=f3e88] [cursor=pointer]:
+            - option "Recently created" [selected]
+            - option "Most retrieved"
+            - option "Most used"
+            - option "Most helpful"
+            - option "Most harmful"
+        - generic [ref=f3e89]:
+          - text: Outcome
+          - combobox "Outcome" [ref=f3e90] [cursor=pointer]:
+            - option "Any outcome" [selected]
+            - option "Success"
+            - option "Partial"
+            - option "Failure"
+        - generic [ref=f3e91]:
+          - text: Verification
+          - combobox "Verification" [ref=f3e92] [cursor=pointer]:
+            - option "Any verification" [selected]
+            - option "Verified"
+            - option "Partially verified"
+            - option "Unverified"
+        - generic [ref=f3e93]:
+          - text: Exposure
+          - combobox "Exposure" [ref=f3e94] [cursor=pointer]:
+            - option "Any exposure" [selected]
+            - option "Retrieved"
+            - option "Never retrieved"
+        - generic [ref=f3e95]:
+          - text: Created since
+          - textbox "Created since" [ref=f3e96]
+      - generic [ref=f3e97]:
+        - generic "Procedure summary" [ref=f3e98]:
+          - link "Saved procedures Saved procedures definition 0" [ref=f3e99] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f3e100]:
+              - generic [ref=f3e101]:
+                - generic [ref=f3e102]: Saved procedures
+                - button "Saved procedures definition" [ref=f3e104]
+              - strong [ref=f3e109]: "0"
+          - link "Procedure retrieval coverage Procedure retrieval coverage definition No data" [ref=f3e110] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f3e111]:
+              - generic [ref=f3e112]:
+                - generic [ref=f3e113]: Procedure retrieval coverage
+                - button "Procedure retrieval coverage definition" [ref=f3e115]
+              - strong [ref=f3e120]: No data
+          - link "Procedure usage rate Procedure usage rate definition No data" [ref=f3e121] [cursor=pointer]:
+            - /url: /procedures?hours=all
+            - generic [ref=f3e122]:
+              - generic [ref=f3e123]:
+                - generic [ref=f3e124]: Procedure usage rate
+                - button "Procedure usage rate definition" [ref=f3e126]
+              - strong [ref=f3e131]: No data
+          - generic [ref=f3e132]:
+            - generic [ref=f3e133]:
+              - generic [ref=f3e134]: Feedback coverage · occasions
+              - button "Feedback coverage · occasions definition" [ref=f3e136] [cursor=pointer]
+            - strong [ref=f3e141]: No data
+        - generic "Procedure usage outcomes" [ref=f3e142]:
+          - generic [ref=f3e143]:
+            - generic [ref=f3e144]:
+              - generic [ref=f3e145]: Helpful rate · uses
+              - button "Helpful rate · uses definition" [ref=f3e147] [cursor=pointer]
+            - strong [ref=f3e152]: No data
+          - generic [ref=f3e153]:
+            - generic [ref=f3e154]:
+              - generic [ref=f3e155]: Harmful rate · uses
+              - button "Harmful rate · uses definition" [ref=f3e157] [cursor=pointer]
+            - strong [ref=f3e162]: No data
+        - generic [ref=f3e163]:
+          - heading "Activity" [level=2] [ref=f3e165]
+          - generic [ref=f3e166]:
+            - generic [ref=f3e168]:
+              - strong [ref=f3e169]: No procedures activity yet
+              - paragraph [ref=f3e170]: Creation, retrieval, and reported use will appear here once Slowave records activity in the selected period.
+            - generic "Visible series" [ref=f3e171]:
+              - button "Created 0" [pressed] [ref=f3e172] [cursor=pointer]:
+                - text: Created
+                - generic [ref=f3e174]: "0"
+              - button "Retrieved 0" [pressed] [ref=f3e175] [cursor=pointer]:
+                - text: Retrieved
+                - generic [ref=f3e177]: "0"
+              - button "Used 0" [pressed] [ref=f3e178] [cursor=pointer]:
+                - text: Used
+                - generic [ref=f3e180]: "0"
+      - generic [ref=f3e181]:
+        - strong [ref=f3e182]: No procedures created yet
+        - paragraph [ref=f3e183]: Normal sessions may close without producing a reusable procedure.

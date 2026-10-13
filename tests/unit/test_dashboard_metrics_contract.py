@@ -349,9 +349,18 @@ def test_numeric_memory_search_matches_inventory_and_table(fixture):
 def test_tool_telemetry_preserves_retrieval_population_and_cohort(fixture):
     from types import SimpleNamespace
 
+    from slowave.lifecycle import LIFECYCLE_VERSION
     from slowave.mcp.tools import _log_feedback_batch, _log_tool_response
 
     path, conn = fixture
+    # This test mixes fixture rows with newly logged tool responses. Keep them
+    # in the current cohort; other tests retain the historical v17 fixture.
+    for table in ("sessions", "context_recall_events"):
+        conn.execute(
+            f"UPDATE {table} SET lifecycle_version=? WHERE lifecycle_version='v17'",
+            (LIFECYCLE_VERSION,),
+        )
+    conn.commit()
     eng = SimpleNamespace(db=SimpleNamespace(connect=lambda: conn))
     qs = {"scope": ["project:one"], "from": ["100"], "to": ["400"]}
     before = projection(conn, qs)
@@ -392,15 +401,21 @@ def test_tool_telemetry_preserves_retrieval_population_and_cohort(fixture):
         "feedback",
         "commit",
     }
-    cohort = projection(conn, {**qs, "cohort": ["v17"]})
+    cohort = projection(conn, {**qs, "cohort": [LIFECYCLE_VERSION]})
     assert cohort["context_size"] == after["context_size"]
     # Previously recorded rows can inherit the session's lifecycle cohort.
     conn.execute(
         "UPDATE context_recall_events SET lifecycle_version=NULL WHERE context_id='tool_remember'"
     )
-    assert projection(conn, {**qs, "cohort": ["v17"]})["context_size"] == after["context_size"]
+    assert (
+        projection(conn, {**qs, "cohort": [LIFECYCLE_VERSION]})["context_size"]
+        == after["context_size"]
+    )
     listed = app._retrievals_payload(str(path), qs)
     assert listed["pagination"]["total"] == before["retrievals_total"]
+    conn.commit()
+    activity = app._activity_detail(str(path), "a")
+    assert {row["context_id"] for row in activity["retrievals"]} == {"r1", "r2"}
 
 
 def test_response_telemetry_failure_does_not_raise():

@@ -1,0 +1,50 @@
+- generic [ref=f7e3]:
+  - complementary [ref=f7e4]:
+    - navigation "Primary" [ref=f7e6]:
+      - link [ref=f7e7] [cursor=pointer]:
+        - /url: /
+      - link [ref=f7e11] [cursor=pointer]:
+        - /url: /memory
+      - link [ref=f7e15] [cursor=pointer]:
+        - /url: /procedures
+      - link [ref=f7e20] [cursor=pointer]:
+        - /url: /retrieval
+      - link [ref=f7e24] [cursor=pointer]:
+        - /url: /activity
+      - link [ref=f7e27] [cursor=pointer]:
+        - /url: /graph
+      - link [ref=f7e33] [cursor=pointer]:
+        - /url: /diagnostics
+    - generic [ref=f7e37]:
+      - link [ref=f7e38] [cursor=pointer]:
+        - /url: https://github.com/mrsalty/slowave
+      - link "Documentation" [ref=f7e43] [cursor=pointer]:
+        - /url: /docs
+    - 'button "Theme: system. Change theme" [ref=f7e49] [cursor=pointer]'
+  - main [ref=f7e53]:
+    - generic [ref=f7e54]:
+      - generic [ref=f7e55]:
+        - generic [ref=f7e56]:
+          - heading "Home" [level=1] [ref=f7e57]
+          - paragraph [ref=f7e58]: Readiness, actionable exceptions, and observed changes in the selected period.
+        - generic [ref=f7e59]:
+          - generic [ref=f7e61]:
+            - generic [ref=f7e62]: Time range
+            - combobox "Time range" [ref=f7e63] [cursor=pointer]:
+              - option "Last 3 hours"
+              - option "Last 12 hours"
+              - option "Last 24 hours"
+              - option "Last week"
+              - option "Last month"
+              - option "All times" [selected]
+          - generic [ref=f7e64]:
+            - generic [ref=f7e65]:
+              - generic [ref=f7e66]: Auto-refresh
+              - combobox "Auto-refresh" [ref=f7e67] [cursor=pointer]:
+                - option "5 sec" [selected]
+                - option "15 sec"
+                - option "30 sec"
+                - option "1 min"
+                - option "5 min"
+            - button "Refresh" [ref=f7e68] [cursor=pointer]
+      - generic "Loading" [ref=f7e71]

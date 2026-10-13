@@ -7,12 +7,13 @@ from slowave.mcp.activation_catalog import DEFAULT_MEMORY_PAGE_SIZE
 def test_all_clients_receive_compact_lifecycle_rules():
     for client in _clients():
         block = _lifecycle_block(client.lifecycle_agent)
-        # Keep global rules compact and below the pre-fix v13 block (3901 chars).
-        assert len(block) <= 3500
+        # V18 adds durable-guidance tasks, procedure detail recall and correction
+        # safeguards. Bound that intentional expansion to prevent further drift.
+        assert len(block) <= 5200
         assert "```json" not in block
         assert "schemas" in block and "conditional requirements" in block
         assert "**Cold start:** read one stable context document" in block
-        assert "Do not scan the whole codebase" in block
+        assert "Do not scan the entire information source" in block
         assert "including continuations and empty results" in block
         assert 'coverage="complete"' in block
         assert "each batch item's" in block
@@ -55,7 +56,7 @@ def test_compaction_preserves_lifecycle_behavior_and_safeguards():
         "Verify `feedback_status` and `verification_status`",
         "**Cold start:** read one stable context document",
         "remember selectively using",
-        "Do not scan the whole codebase",
+        "Do not scan the entire information source",
         "Account for every warning",
         "Preserve cursors exactly",
         "continue only when more context would help",

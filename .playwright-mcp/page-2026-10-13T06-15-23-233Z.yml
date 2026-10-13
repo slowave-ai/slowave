@@ -1,0 +1,642 @@
+- generic [ref=f5e1]:
+  - generic [ref=f5e3]:
+    - complementary [ref=f5e4]:
+      - navigation [ref=f5e575]:
+        - link [ref=f5e7] [cursor=pointer]:
+          - /url: /
+        - link [ref=f5e11] [cursor=pointer]:
+          - /url: /memory
+        - link [ref=f5e15] [cursor=pointer]:
+          - /url: /procedures
+        - link [ref=f5e20] [cursor=pointer]:
+          - /url: /retrieval
+        - link [ref=f5e24] [cursor=pointer]:
+          - /url: /activity
+        - link [ref=f5e27] [cursor=pointer]:
+          - /url: /graph
+        - link [ref=f5e33] [cursor=pointer]:
+          - /url: /diagnostics
+      - generic [ref=f5e37]:
+        - link [ref=f5e38] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+        - link [ref=f5e576] [cursor=pointer]:
+          - /url: /docs
+      - button [ref=f5e577] [cursor=pointer]
+    - main [ref=f5e53]:
+      - generic [ref=f5e578]:
+        - generic [ref=f5e579]:
+          - generic [ref=f5e580]:
+            - heading [level=1] [ref=f5e581]: Retrieval
+            - paragraph [ref=f5e582]: Context Slowave exposed for a task. Exposure is not proof it was used.
+          - generic [ref=f5e584]:
+            - generic [ref=f5e585]:
+              - generic [ref=f5e586]: Auto-refresh
+              - combobox [ref=f5e587] [cursor=pointer]
+            - button [ref=f5e588] [cursor=pointer]: Refresh
+        - generic [ref=f5e591]:
+          - generic [ref=f5e592]:
+            - generic [ref=f5e593]: Time range
+            - combobox [ref=f5e594] [cursor=pointer]
+          - generic [ref=f5e595]:
+            - text: Search
+            - textbox [ref=f5e596]:
+              - /placeholder: Search task/query…
+          - generic [ref=f5e597]:
+            - text: Type
+            - combobox [ref=f5e598] [cursor=pointer]
+          - generic [ref=f5e599]:
+            - text: Feedback
+            - combobox [ref=f5e600] [cursor=pointer]
+          - generic [ref=f5e601]:
+            - text: Scope
+            - combobox [ref=f5e602] [cursor=pointer]
+          - generic [ref=f5e603]:
+            - text: Contains
+            - combobox [ref=f5e604] [cursor=pointer]
+          - generic [ref=f5e605]:
+            - text: Observed since
+            - textbox [ref=f5e606]
+        - generic [ref=f5e607]:
+          - generic [ref=f5e608]:
+            - generic [ref=f5e609]:
+              - generic [ref=f5e610]: Retrievals
+              - button [ref=f5e612] [cursor=pointer]
+            - strong [ref=f5e617]: "27"
+          - generic [ref=f5e618]:
+            - generic [ref=f5e619]:
+              - generic [ref=f5e620]: Retrieval match rate
+              - button [ref=f5e622] [cursor=pointer]
+            - generic [ref=f5e627]:
+              - generic [ref=f5e628]: 81%
+              - generic [ref=f5e629]: 22 / 27
+          - generic [ref=f5e630]:
+            - generic [ref=f5e631]:
+              - generic [ref=f5e632]: Retrieval usage rate
+              - button [ref=f5e634] [cursor=pointer]
+            - generic [ref=f5e639]:
+              - generic [ref=f5e640]: 0%
+              - generic [ref=f5e641]: 0 / 22
+          - generic [ref=f5e642]:
+            - generic [ref=f5e643]:
+              - generic [ref=f5e644]: Feedback coverage
+              - button [ref=f5e646] [cursor=pointer]
+            - generic [ref=f5e651]:
+              - generic [ref=f5e652]: 100%
+              - generic [ref=f5e653]: 79 / 79
+          - generic [ref=f5e654]:
+            - generic [ref=f5e655]:
+              - generic [ref=f5e656]: Irrelevant context
+              - button [ref=f5e658] [cursor=pointer]
+            - generic [ref=f5e663]:
+              - generic [ref=f5e664]: 0%
+              - generic [ref=f5e665]: 0 / 79
+        - generic [ref=f5e666]:
+          - heading [level=2] [ref=f5e668]: Activity
+          - group [ref=f5e669]:
+            - button [pressed] [ref=f5e670] [cursor=pointer]: Memories
+            - button [ref=f5e671] [cursor=pointer]: Procedures
+          - generic [ref=f5e672]:
+            - img [ref=f5e674]:
+              - generic [ref=f5e675]: "80"
+              - generic [ref=f5e677]: "60"
+              - generic [ref=f5e679]: "40"
+              - generic [ref=f5e681]: "20"
+              - generic [ref=f5e683]: "0"
+              - generic [ref=f5e685]: 08:10 AM
+              - generic [ref=f5e687]: 08:15 AM
+            - generic [ref=f5e698]:
+              - button [pressed] [ref=f5e699] [cursor=pointer]:
+                - text: Retrieved
+                - generic [ref=f5e701]: "79"
+              - button [pressed] [ref=f5e702] [cursor=pointer]:
+                - text: Used
+                - generic [ref=f5e704]: "0"
+        - region [ref=f5e705]:
+          - table [ref=f5e706]:
+            - rowgroup [ref=f5e713]:
+              - row [ref=f5e714]:
+                - columnheader [ref=f5e715]:
+                  - button [ref=f5e716] [cursor=pointer]: When ↓
+                  - button [ref=f5e718] [cursor=pointer]
+                - columnheader [ref=f5e722]:
+                  - button [ref=f5e723] [cursor=pointer]: Task / query
+                  - button [ref=f5e725] [cursor=pointer]
+                - columnheader [ref=f5e729]:
+                  - button [ref=f5e730] [cursor=pointer]: Type
+                  - button [ref=f5e732] [cursor=pointer]
+                - columnheader [ref=f5e736]:
+                  - button [ref=f5e737] [cursor=pointer]: Context used
+                  - button [ref=f5e739] [cursor=pointer]
+                - columnheader [ref=f5e743]:
+                  - button [ref=f5e744] [cursor=pointer]: Feedback
+                  - button [ref=f5e746] [cursor=pointer]
+            - rowgroup [ref=f5e750]:
+              - row [ref=f5e751] [cursor=pointer]:
+                - cell [ref=f5e752]: 1m ago
+                - cell [ref=f5e753]:
+                  - generic [ref=f5e754]: Which Atlas customers must be excluded? What timestamp timezone is required? How are money totals rounded? May customer emails be logged? What CSV delimiter is required? Is a byte-order mark required? How must output be committed? What happens for a missing invoice_id?
+                  - generic [ref=f5e755]: project:atlas-evaluation
+                - cell [ref=f5e756]:
+                  - generic [ref=f5e757]: Recall
+                - cell [ref=f5e759]:
+                  - generic [ref=f5e761]:
+                    - generic [ref=f5e762]: Memories
+                    - generic [ref=f5e764]: 0/7
+                - cell [ref=f5e765]:
+                  - generic [ref=f5e766]: Complete
+              - row [ref=f5e768] [cursor=pointer]:
+                - cell [ref=f5e769]: 1m ago
+                - cell [ref=f5e770]:
+                  - generic [ref=f5e771]: May Atlas exports log customer email addresses?
+                  - generic [ref=f5e772]: project:atlas-evaluation
+                - cell [ref=f5e773]:
+                  - generic [ref=f5e774]: Recall
+                - cell [ref=f5e776]:
+                  - generic [ref=f5e778]:
+                    - generic [ref=f5e779]: Memories
+                    - generic [ref=f5e781]: 0/3
+                - cell [ref=f5e782]:
+                  - generic [ref=f5e783]: Complete
+              - row [ref=f5e785] [cursor=pointer]:
+                - cell [ref=f5e786]: 1m ago
+                - cell [ref=f5e787]:
+                  - generic [ref=f5e788]: What compression algorithm does Atlas require for exports?
+                  - generic [ref=f5e789]: project:atlas-evaluation
+                - cell [ref=f5e790]:
+                  - generic [ref=f5e791]: Recall
+                - cell [ref=f5e793]:
+                  - generic [ref=f5e795]:
+                    - generic [ref=f5e796]: Memories
+                    - generic [ref=f5e798]: 0/5
+                - cell [ref=f5e799]:
+                  - generic [ref=f5e800]: Complete
+              - row [ref=f5e802] [cursor=pointer]:
+                - cell [ref=f5e803]: 1m ago
+                - cell [ref=f5e804]:
+                  - generic [ref=f5e805]: What temperature should bread bake at?
+                  - generic [ref=f5e806]: project:atlas-evaluation
+                - cell [ref=f5e807]:
+                  - generic [ref=f5e808]: Recall
+                - cell [ref=f5e810]: "-"
+                - cell [ref=f5e811]:
+                  - generic [ref=f5e812]: Complete
+              - row [ref=f5e814] [cursor=pointer]:
+                - cell [ref=f5e815]: 1m ago
+                - cell [ref=f5e816]:
+                  - generic [ref=f5e817]: What compression algorithm does Atlas require for exports?
+                  - generic [ref=f5e818]: project:atlas-evaluation
+                - cell [ref=f5e819]:
+                  - generic [ref=f5e820]: Activation
+                - cell [ref=f5e822]:
+                  - generic [ref=f5e824]:
+                    - generic [ref=f5e825]: Memories
+                    - generic [ref=f5e827]: 0/1
+                - cell [ref=f5e828]:
+                  - generic [ref=f5e829]: Complete
+              - row [ref=f5e831] [cursor=pointer]:
+                - cell [ref=f5e832]: 1m ago
+                - cell [ref=f5e833]:
+                  - generic [ref=f5e834]: May Atlas exports log customer email addresses?
+                  - generic [ref=f5e835]: project:atlas-evaluation
+                - cell [ref=f5e836]:
+                  - generic [ref=f5e837]: Activation
+                - cell [ref=f5e839]:
+                  - generic [ref=f5e841]:
+                    - generic [ref=f5e842]: Memories
+                    - generic [ref=f5e844]: 0/1
+                - cell [ref=f5e845]:
+                  - generic [ref=f5e846]: Complete
+              - row [ref=f5e848] [cursor=pointer]:
+                - cell [ref=f5e849]: 1m ago
+                - cell [ref=f5e850]:
+                  - generic [ref=f5e851]: Which Atlas customers must be excluded? What timestamp timezone is required? How are money totals rounded? May customer emails be logged? What CSV delimiter is required? Is a byte-order mark required? How must output be committed? What happens for a missing invoice_id?
+                  - generic [ref=f5e852]: project:atlas-evaluation
+                - cell [ref=f5e853]:
+                  - generic [ref=f5e854]: Activation
+                - cell [ref=f5e856]:
+                  - generic [ref=f5e858]:
+                    - generic [ref=f5e859]: Memories
+                    - generic [ref=f5e861]: 0/7
+                - cell [ref=f5e862]:
+                  - generic [ref=f5e863]: Complete
+              - row [ref=f5e865] [cursor=pointer]:
+                - cell [ref=f5e866]: 1m ago
+                - cell [ref=f5e867]:
+                  - generic [ref=f5e868]: What temperature should bread bake at?
+                  - generic [ref=f5e869]: project:atlas-evaluation
+                - cell [ref=f5e870]:
+                  - generic [ref=f5e871]: Activation
+                - cell [ref=f5e873]: "-"
+                - cell [ref=f5e874]:
+                  - generic [ref=f5e875]: Complete
+              - row [ref=f5e877] [cursor=pointer]:
+                - cell [ref=f5e878]: 1m ago
+                - cell [ref=f5e879]:
+                  - generic [ref=f5e880]: For Atlas exports, what are the customer holds, timestamp timezone, monetary rounding, email privacy, CSV delimiter, encoding, atomic output and missing invoice handling requirements?
+                  - generic [ref=f5e881]: project:other-atlas-evaluation
+                - cell [ref=f5e882]:
+                  - generic [ref=f5e883]: Activation
+                - cell [ref=f5e885]:
+                  - generic [ref=f5e887]:
+                    - generic [ref=f5e888]: Memories
+                    - generic [ref=f5e890]: 0/2
+                - cell [ref=f5e891]:
+                  - generic [ref=f5e892]: Complete
+              - row [ref=f5e894] [cursor=pointer]:
+                - cell [ref=f5e895]: 1m ago
+                - cell [ref=f5e896]:
+                  - generic [ref=f5e897]: For Atlas exports, what are the customer holds, timestamp timezone, monetary rounding, email privacy, CSV delimiter, encoding, atomic output and missing invoice handling requirements?
+                  - generic [ref=f5e898]: project:atlas-evaluation
+                - cell [ref=f5e899]:
+                  - generic [ref=f5e900]: Recall
+                - cell [ref=f5e902]:
+                  - generic [ref=f5e904]:
+                    - generic [ref=f5e905]: Memories
+                    - generic [ref=f5e907]: 0/2
+                - cell [ref=f5e908]:
+                  - generic [ref=f5e909]: Complete
+              - row [ref=f5e911] [cursor=pointer]:
+                - cell [ref=f5e912]: 1m ago
+                - cell [ref=f5e913]:
+                  - generic [ref=f5e914]: What requirements must I follow when implementing Atlas exports?
+                  - generic [ref=f5e915]: project:atlas-evaluation
+                - cell [ref=f5e916]:
+                  - generic [ref=f5e917]: Recall
+                - cell [ref=f5e919]:
+                  - generic [ref=f5e921]:
+                    - generic [ref=f5e922]: Memories
+                    - generic [ref=f5e924]: 0/7
+                - cell [ref=f5e925]:
+                  - generic [ref=f5e926]: Complete
+              - row [ref=f5e928] [cursor=pointer]:
+                - cell [ref=f5e929]: 1m ago
+                - cell [ref=f5e930]:
+                  - generic [ref=f5e931]: What temperature should bread bake at?
+                  - generic [ref=f5e932]: project:atlas-evaluation
+                - cell [ref=f5e933]:
+                  - generic [ref=f5e934]: Recall
+                - cell [ref=f5e936]: "-"
+                - cell [ref=f5e937]:
+                  - generic [ref=f5e938]: Complete
+              - row [ref=f5e940] [cursor=pointer]:
+                - cell [ref=f5e941]: 1m ago
+                - cell [ref=f5e942]:
+                  - generic [ref=f5e943]: Record unrelated Atlas operational facts.
+                  - generic [ref=f5e944]: project:atlas-evaluation
+                - cell [ref=f5e945]:
+                  - generic [ref=f5e946]: Activation
+                - cell [ref=f5e948]:
+                  - generic [ref=f5e950]:
+                    - generic [ref=f5e951]: Memories
+                    - generic [ref=f5e953]: 0/2
+                - cell [ref=f5e954]:
+                  - generic [ref=f5e955]: Complete
+              - row [ref=f5e957] [cursor=pointer]:
+                - cell [ref=f5e958]: 1m ago
+                - cell [ref=f5e959]:
+                  - generic [ref=f5e960]: For Atlas exports, what are the customer holds, timestamp timezone, monetary rounding, email privacy, CSV delimiter, encoding, atomic output and missing invoice handling requirements?
+                  - generic [ref=f5e961]: project:atlas-evaluation
+                - cell [ref=f5e962]:
+                  - generic [ref=f5e963]: Activation
+                - cell [ref=f5e965]:
+                  - generic [ref=f5e967]:
+                    - generic [ref=f5e968]: Memories
+                    - generic [ref=f5e970]: 0/2
+                - cell [ref=f5e971]:
+                  - generic [ref=f5e972]: Complete
+              - row [ref=f5e974] [cursor=pointer]:
+                - cell [ref=f5e975]: 1m ago
+                - cell [ref=f5e976]:
+                  - generic [ref=f5e977]: What temperature should bread bake at?
+                  - generic [ref=f5e978]: project:atlas-evaluation
+                - cell [ref=f5e979]:
+                  - generic [ref=f5e980]: Activation
+                - cell [ref=f5e982]: "-"
+                - cell [ref=f5e983]:
+                  - generic [ref=f5e984]: Complete
+              - row [ref=f5e986] [cursor=pointer]:
+                - cell [ref=f5e987]: 1m ago
+                - cell [ref=f5e988]:
+                  - generic [ref=f5e989]: What requirements must I follow when implementing Atlas exports?
+                  - generic [ref=f5e990]: project:atlas-evaluation
+                - cell [ref=f5e991]:
+                  - generic [ref=f5e992]: Activation
+                - cell [ref=f5e994]:
+                  - generic [ref=f5e996]:
+                    - generic [ref=f5e997]: Memories
+                    - generic [ref=f5e999]: 0/3
+                - cell [ref=f5e1000]:
+                  - generic [ref=f5e1001]: Complete
+              - row [ref=f5e1003] [cursor=pointer]:
+                - cell [ref=f5e1004]: 1m ago
+                - cell [ref=f5e1005]:
+                  - generic [ref=f5e1006]: For Atlas exports, what are the customer holds, timestamp timezone, monetary rounding, email privacy, CSV delimiter, encoding, atomic output and missing invoice handling requirements?
+                  - generic [ref=f5e1007]: project:atlas-evaluation
+                - cell [ref=f5e1008]:
+                  - generic [ref=f5e1009]: Recall
+                - cell [ref=f5e1011]:
+                  - generic [ref=f5e1013]:
+                    - generic [ref=f5e1014]: Memories
+                    - generic [ref=f5e1016]: 0/2
+                - cell [ref=f5e1017]:
+                  - generic [ref=f5e1018]: Complete
+              - row [ref=f5e1020] [cursor=pointer]:
+                - cell [ref=f5e1021]: 1m ago
+                - cell [ref=f5e1022]:
+                  - generic [ref=f5e1023]: May Atlas exports log customer email addresses?
+                  - generic [ref=f5e1024]: project:atlas-evaluation
+                - cell [ref=f5e1025]:
+                  - generic [ref=f5e1026]: Recall
+                - cell [ref=f5e1028]:
+                  - generic [ref=f5e1030]:
+                    - generic [ref=f5e1031]: Memories
+                    - generic [ref=f5e1033]: 0/2
+                - cell [ref=f5e1034]:
+                  - generic [ref=f5e1035]: Complete
+              - row [ref=f5e1037] [cursor=pointer]:
+                - cell [ref=f5e1038]: 1m ago
+                - cell [ref=f5e1039]:
+                  - generic [ref=f5e1040]: What requirements must I follow when implementing Atlas exports?
+                  - generic [ref=f5e1041]: project:atlas-evaluation
+                - cell [ref=f5e1042]:
+                  - generic [ref=f5e1043]: Recall
+                - cell [ref=f5e1045]:
+                  - generic [ref=f5e1047]:
+                    - generic [ref=f5e1048]: Memories
+                    - generic [ref=f5e1050]: 0/7
+                - cell [ref=f5e1051]:
+                  - generic [ref=f5e1052]: Complete
+              - row [ref=f5e1054] [cursor=pointer]:
+                - cell [ref=f5e1055]: 1m ago
+                - cell [ref=f5e1056]:
+                  - generic [ref=f5e1057]: What compression algorithm does Atlas require for exports?
+                  - generic [ref=f5e1058]: project:atlas-evaluation
+                - cell [ref=f5e1059]:
+                  - generic [ref=f5e1060]: Recall
+                - cell [ref=f5e1062]:
+                  - generic [ref=f5e1064]:
+                    - generic [ref=f5e1065]: Memories
+                    - generic [ref=f5e1067]: 0/5
+                - cell [ref=f5e1068]:
+                  - generic [ref=f5e1069]: Complete
+              - row [ref=f5e1071] [cursor=pointer]:
+                - cell [ref=f5e1072]: 1m ago
+                - cell [ref=f5e1073]:
+                  - generic [ref=f5e1074]: Which Atlas customers must be excluded? What timestamp timezone is required? How are money totals rounded? May customer emails be logged? What CSV delimiter is required? Is a byte-order mark required? How must output be committed? What happens for a missing invoice_id?
+                  - generic [ref=f5e1075]: project:atlas-evaluation
+                - cell [ref=f5e1076]:
+                  - generic [ref=f5e1077]: Recall
+                - cell [ref=f5e1079]:
+                  - generic [ref=f5e1081]:
+                    - generic [ref=f5e1082]: Memories
+                    - generic [ref=f5e1084]: 0/7
+                - cell [ref=f5e1085]:
+                  - generic [ref=f5e1086]: Complete
+              - row [ref=f5e1088] [cursor=pointer]:
+                - cell [ref=f5e1089]: 1m ago
+                - cell [ref=f5e1090]:
+                  - generic [ref=f5e1091]: May Atlas exports log customer email addresses?
+                  - generic [ref=f5e1092]: project:atlas-evaluation
+                - cell [ref=f5e1093]:
+                  - generic [ref=f5e1094]: Activation
+                - cell [ref=f5e1096]:
+                  - generic [ref=f5e1098]:
+                    - generic [ref=f5e1099]: Memories
+                    - generic [ref=f5e1101]: 0/1
+                - cell [ref=f5e1102]:
+                  - generic [ref=f5e1103]: Complete
+              - row [ref=f5e1105] [cursor=pointer]:
+                - cell [ref=f5e1106]: 1m ago
+                - cell [ref=f5e1107]:
+                  - generic [ref=f5e1108]: What compression algorithm does Atlas require for exports?
+                  - generic [ref=f5e1109]: project:atlas-evaluation
+                - cell [ref=f5e1110]:
+                  - generic [ref=f5e1111]: Activation
+                - cell [ref=f5e1113]:
+                  - generic [ref=f5e1115]:
+                    - generic [ref=f5e1116]: Memories
+                    - generic [ref=f5e1118]: 0/1
+                - cell [ref=f5e1119]:
+                  - generic [ref=f5e1120]: Complete
+              - row [ref=f5e1122] [cursor=pointer]:
+                - cell [ref=f5e1123]: 1m ago
+                - cell [ref=f5e1124]:
+                  - generic [ref=f5e1125]: For Atlas exports, what are the customer holds, timestamp timezone, monetary rounding, email privacy, CSV delimiter, encoding, atomic output and missing invoice handling requirements?
+                  - generic [ref=f5e1126]: project:atlas-evaluation
+                - cell [ref=f5e1127]:
+                  - generic [ref=f5e1128]: Activation
+                - cell [ref=f5e1130]:
+                  - generic [ref=f5e1132]:
+                    - generic [ref=f5e1133]: Memories
+                    - generic [ref=f5e1135]: 0/2
+                - cell [ref=f5e1136]:
+                  - generic [ref=f5e1137]: Complete
+              - row [ref=f5e1139] [cursor=pointer]:
+                - cell [ref=f5e1140]: 1m ago
+                - cell [ref=f5e1141]:
+                  - generic [ref=f5e1142]: Which Atlas customers must be excluded? What timestamp timezone is required? How are money totals rounded? May customer emails be logged? What CSV delimiter is required? Is a byte-order mark required? How must output be committed? What happens for a missing invoice_id?
+                  - generic [ref=f5e1143]: project:atlas-evaluation
+                - cell [ref=f5e1144]:
+                  - generic [ref=f5e1145]: Activation
+                - cell [ref=f5e1147]:
+                  - generic [ref=f5e1149]:
+                    - generic [ref=f5e1150]: Memories
+                    - generic [ref=f5e1152]: 0/7
+                - cell [ref=f5e1153]:
+                  - generic [ref=f5e1154]: Complete
+              - row [ref=f5e1156] [cursor=pointer]:
+                - cell [ref=f5e1157]: 1m ago
+                - cell [ref=f5e1158]:
+                  - generic [ref=f5e1159]: What requirements must I follow when implementing Atlas exports?
+                  - generic [ref=f5e1160]: project:atlas-evaluation
+                - cell [ref=f5e1161]:
+                  - generic [ref=f5e1162]: Activation
+                - cell [ref=f5e1164]:
+                  - generic [ref=f5e1166]:
+                    - generic [ref=f5e1167]: Memories
+                    - generic [ref=f5e1169]: 0/3
+                - cell [ref=f5e1170]:
+                  - generic [ref=f5e1171]: Complete
+              - row [ref=f5e1173] [cursor=pointer]:
+                - cell [ref=f5e1174]: 1m ago
+                - cell [ref=f5e1175]:
+                  - generic [ref=f5e1176]: Record eight Atlas export requirements for a retrieval experiment.
+                  - generic [ref=f5e1177]: project:atlas-evaluation
+                - cell [ref=f5e1178]:
+                  - generic [ref=f5e1179]: Activation
+                - cell [ref=f5e1181]: "-"
+                - cell [ref=f5e1182]:
+                  - generic [ref=f5e1183]: Complete
+        - generic [ref=f5e1185]:
+          - generic [ref=f5e1186]: 27 results · page 1 of 1
+          - generic [ref=f5e1187]:
+            - button [disabled] [ref=f5e1188]: Previous
+            - button [disabled] [ref=f5e1189]: Next
+  - dialog "Retrieval" [active] [ref=f5e1191]:
+    - banner [ref=f5e1192]:
+      - generic [ref=f5e1193]:
+        - generic [ref=f5e1194]: Retrieval
+        - strong [ref=f5e1195]: What compression algorithm does Atlas require for exports?
+        - generic [ref=f5e1196]:
+          - button "rec_daa154553992 Copy ID" [ref=f5e1197] [cursor=pointer]:
+            - code [ref=f5e1198]: rec_daa154553992
+            - generic [ref=f5e1202]: Copy ID
+          - generic [ref=f5e1203]: Feedback complete
+      - button "Close detail" [ref=f5e1205] [cursor=pointer]
+    - navigation "On this record" [ref=f5e1208]:
+      - link "Request" [ref=f5e1209] [cursor=pointer]:
+        - /url: "#retrieval-request"
+      - link "Returned context" [ref=f5e1210] [cursor=pointer]:
+        - /url: "#retrieval-context"
+      - link "Feedback" [ref=f5e1211] [cursor=pointer]:
+        - /url: "#retrieval-feedback"
+      - link "Technical details" [ref=f5e1212] [cursor=pointer]:
+        - /url: "#retrieval-technical"
+    - generic [ref=f5e1213]:
+      - generic [ref=f5e1214]:
+        - heading "Request" [level=2] [ref=f5e1216]
+        - heading "What compression algorithm does Atlas require for exports?" [level=2] [ref=f5e1217]
+        - generic [ref=f5e1218]:
+          - term [ref=f5e1219]: Source
+          - definition [ref=f5e1220]: Recall
+          - term [ref=f5e1221]: Observed
+          - definition [ref=f5e1222]: 13/10/2026, 08:14:09
+          - term [ref=f5e1223]: Scope
+          - definition [ref=f5e1224]: project:atlas-evaluation
+          - term [ref=f5e1225]: Response size
+          - definition [ref=f5e1226]: 1604 characters
+          - term [ref=f5e1227]: Activity
+          - definition [ref=f5e1228]:
+            - link "sess_f35ff8f62820" [ref=f5e1229] [cursor=pointer]:
+              - /url: /activity/sess_f35ff8f62820
+          - term [ref=f5e1230]:
+            - text: Task outcome
+            - button "Task outcome definition" [ref=f5e1232] [cursor=pointer]
+          - definition [ref=f5e1236]:
+            - generic [ref=f5e1237]: Success
+        - generic "0 of 5 retrieved memories reported used. Grey means not reported used." [ref=f5e1241]:
+          - generic [ref=f5e1242]: Memories
+          - generic [ref=f5e1244]: 0/5
+        - paragraph [ref=f5e1245]: Reported used / returned. Grey includes items without a reported use; a dash means feedback is pending.
+      - generic [ref=f5e1246]:
+        - heading "Returned context" [level=2] [ref=f5e1248]
+        - paragraph [ref=f5e1249]: Items are shown in the recorded order. “Stored snapshot” is the content delivered at the time; a fallback means only current library content remains available.
+        - generic [ref=f5e1250]:
+          - heading "Direct" [level=3] [ref=f5e1251]
+          - generic [ref=f5e1252]:
+            - generic [ref=f5e1253]:
+              - strong [ref=f5e1254]: Atlas exports must round monetary totals only after aggregation, using decimal arithmetic.
+              - generic [ref=f5e1255]: schema · active
+              - generic [ref=f5e1256]: Matched the active task/query.
+              - generic [ref=f5e1257]: Current library fallback · focus
+              - generic [ref=f5e1258]:
+                - text: "Assessment:"
+                - generic [ref=f5e1259]: not used
+            - generic [ref=f5e1261]:
+              - generic [ref=f5e1262]: Active
+              - link "Open" [ref=f5e1264] [cursor=pointer]:
+                - /url: /memory/sch_3
+            - group [ref=f5e1265]:
+              - generic "Stored pathway metadata" [ref=f5e1266] [cursor=pointer]
+          - generic [ref=f5e1267]:
+            - generic [ref=f5e1268]:
+              - strong [ref=f5e1269]: Atlas exports must use semicolons as CSV delimiters for the finance importer.
+              - generic [ref=f5e1270]: schema · active
+              - generic [ref=f5e1271]: Matched the active task/query.
+              - generic [ref=f5e1272]: Current library fallback · focus
+              - generic [ref=f5e1273]:
+                - text: "Assessment:"
+                - generic [ref=f5e1274]: not used
+            - generic [ref=f5e1276]:
+              - generic [ref=f5e1277]: Active
+              - link "Open" [ref=f5e1279] [cursor=pointer]:
+                - /url: /memory/sch_5
+            - group [ref=f5e1280]:
+              - generic "Stored pathway metadata" [ref=f5e1281] [cursor=pointer]
+          - generic [ref=f5e1282]:
+            - generic [ref=f5e1283]:
+              - strong [ref=f5e1284]: Atlas exports must include a UTF-8 byte-order mark for the finance importer.
+              - generic [ref=f5e1285]: schema · active
+              - generic [ref=f5e1286]: Matched the active task/query.
+              - generic [ref=f5e1287]: Current library fallback · focus
+              - generic [ref=f5e1288]:
+                - text: "Assessment:"
+                - generic [ref=f5e1289]: not used
+            - generic [ref=f5e1291]:
+              - generic [ref=f5e1292]: Active
+              - link "Open" [ref=f5e1294] [cursor=pointer]:
+                - /url: /memory/sch_6
+            - group [ref=f5e1295]:
+              - generic "Stored pathway metadata" [ref=f5e1296] [cursor=pointer]
+          - generic [ref=f5e1297]:
+            - generic [ref=f5e1298]:
+              - strong [ref=f5e1299]: Atlas exports must reject rows with a missing invoice_id rather than silently skipping them.
+              - generic [ref=f5e1300]: schema · active
+              - generic [ref=f5e1301]: Matched the active task/query.
+              - generic [ref=f5e1302]: Current library fallback · focus
+              - generic [ref=f5e1303]:
+                - text: "Assessment:"
+                - generic [ref=f5e1304]: not used
+            - generic [ref=f5e1306]:
+              - generic [ref=f5e1307]: Active
+              - link "Open" [ref=f5e1309] [cursor=pointer]:
+                - /url: /memory/sch_8
+            - group [ref=f5e1310]:
+              - generic "Stored pathway metadata" [ref=f5e1311] [cursor=pointer]
+          - generic [ref=f5e1312]:
+            - generic [ref=f5e1313]:
+              - strong [ref=f5e1314]: Atlas exports must write to a temporary file and atomically rename after successful completion.
+              - generic [ref=f5e1315]: schema · active
+              - generic [ref=f5e1316]: Matched the active task/query.
+              - generic [ref=f5e1317]: Current library fallback · focus
+              - generic [ref=f5e1318]:
+                - text: "Assessment:"
+                - generic [ref=f5e1319]: not used
+            - generic [ref=f5e1321]:
+              - generic [ref=f5e1322]: Active
+              - link "Open" [ref=f5e1324] [cursor=pointer]:
+                - /url: /memory/sch_7
+            - group [ref=f5e1325]:
+              - generic "Stored pathway metadata" [ref=f5e1326] [cursor=pointer]
+      - generic [ref=f5e1327]:
+        - heading "Feedback" [level=2] [ref=f5e1329]
+        - paragraph [ref=f5e1330]: Effective feedback is shown beside each returned item. This audit retains accepted and rejected submissions separately.
+        - generic [ref=f5e1331]:
+          - generic [ref=f5e1332]:
+            - generic [ref=f5e1333]:
+              - strong [ref=f5e1334]: memory · sch_3
+              - generic [ref=f5e1335]: accepted
+            - paragraph [ref=f5e1337]: not used
+            - generic [ref=f5e1338]: 13/10/2026, 08:14:09 · complete coverage
+          - generic [ref=f5e1339]:
+            - generic [ref=f5e1340]:
+              - strong [ref=f5e1341]: memory · sch_5
+              - generic [ref=f5e1342]: accepted
+            - paragraph [ref=f5e1344]: not used
+            - generic [ref=f5e1345]: 13/10/2026, 08:14:09 · complete coverage
+          - generic [ref=f5e1346]:
+            - generic [ref=f5e1347]:
+              - strong [ref=f5e1348]: memory · sch_6
+              - generic [ref=f5e1349]: accepted
+            - paragraph [ref=f5e1351]: not used
+            - generic [ref=f5e1352]: 13/10/2026, 08:14:09 · complete coverage
+          - generic [ref=f5e1353]:
+            - generic [ref=f5e1354]:
+              - strong [ref=f5e1355]: memory · sch_8
+              - generic [ref=f5e1356]: accepted
+            - paragraph [ref=f5e1358]: not used
+            - generic [ref=f5e1359]: 13/10/2026, 08:14:09 · complete coverage
+          - generic [ref=f5e1360]:
+            - generic [ref=f5e1361]:
+              - strong [ref=f5e1362]: memory · sch_7
+              - generic [ref=f5e1363]: accepted
+            - paragraph [ref=f5e1365]: not used
+            - generic [ref=f5e1366]: 13/10/2026, 08:14:09 · complete coverage
+          - generic [ref=f5e1367]:
+            - generic [ref=f5e1368]:
+              - strong [ref=f5e1369]: retrieval · rec_daa154553992
+              - generic [ref=f5e1370]: accepted
+            - paragraph [ref=f5e1372]: Coverage observation only
+            - generic [ref=f5e1373]: 13/10/2026, 08:14:09 · complete coverage
+      - group [ref=f5e1374]:
+        - generic "Technical details" [ref=f5e1375] [cursor=pointer]

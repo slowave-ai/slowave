@@ -1,0 +1,73 @@
+- generic [ref=f11e1]:
+  - generic [ref=f11e3]:
+    - complementary [ref=f11e4]:
+      - navigation [ref=f11e6]:
+        - link [ref=f11e7] [cursor=pointer]:
+          - /url: /
+        - link [ref=f11e11] [cursor=pointer]:
+          - /url: /memory
+        - link [ref=f11e15] [cursor=pointer]:
+          - /url: /procedures
+        - link [ref=f11e20] [cursor=pointer]:
+          - /url: /retrieval
+        - link [ref=f11e24] [cursor=pointer]:
+          - /url: /activity
+        - link [ref=f11e27] [cursor=pointer]:
+          - /url: /graph
+        - link [ref=f11e33] [cursor=pointer]:
+          - /url: /diagnostics
+      - generic [ref=f11e37]:
+        - link [ref=f11e38] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+        - link [ref=f11e43] [cursor=pointer]:
+          - /url: /docs
+      - button [ref=f11e49] [cursor=pointer]
+    - main [ref=f11e53]:
+      - generic [ref=f11e54]:
+        - generic [ref=f11e55]:
+          - generic [ref=f11e56]:
+            - heading [level=1] [ref=f11e57]: Memories
+            - paragraph [ref=f11e58]: Durable context Slowave can use in future retrieval. The list shows memories updated in the selected period; inventory totals describe the current library.
+          - generic [ref=f11e60]:
+            - generic [ref=f11e61]:
+              - generic [ref=f11e62]: Auto-refresh
+              - combobox [ref=f11e63] [cursor=pointer]
+            - button [ref=f11e64] [cursor=pointer]: Refresh
+        - generic [ref=f11e67]:
+          - generic [ref=f11e68]:
+            - generic [ref=f11e69]: Time range
+            - combobox [ref=f11e70] [cursor=pointer]
+          - generic [ref=f11e71]:
+            - text: Search
+            - generic [ref=f11e72]: memory text
+            - textbox [ref=f11e73]:
+              - /placeholder: Search memory text…
+          - generic [ref=f11e74]:
+            - text: State
+            - combobox [ref=f11e75] [cursor=pointer]
+          - generic [ref=f11e76]:
+            - text: Scope
+            - combobox [ref=f11e77] [cursor=pointer]
+          - generic [ref=f11e78]:
+            - text: Saved since
+            - textbox [ref=f11e79]
+  - dialog "Memory" [active] [ref=f11e89]:
+    - banner [ref=f11e90]:
+      - generic [ref=f11e91]:
+        - generic [ref=f11e92]: Memory
+        - button "sch_523 Copy ID" [ref=f11e94] [cursor=pointer]:
+          - code [ref=f11e95]: sch_523
+          - generic [ref=f11e99]: Copy ID
+      - button "Close detail" [ref=f11e100] [cursor=pointer]
+    - navigation "On this record" [ref=f11e103]:
+      - link "Memory" [ref=f11e104] [cursor=pointer]:
+        - /url: "#memory-detail"
+      - link "Use history" [ref=f11e105] [cursor=pointer]:
+        - /url: "#memory-history"
+      - link "Sources" [ref=f11e106] [cursor=pointer]:
+        - /url: "#memory-sources"
+      - link "Connections" [ref=f11e107] [cursor=pointer]:
+        - /url: "#memory-connections"
+      - link "Technical details" [ref=f11e108] [cursor=pointer]:
+        - /url: "#memory-technical"
+    - generic "Loading" [ref=f11e110]

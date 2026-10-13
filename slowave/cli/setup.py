@@ -948,6 +948,11 @@ _LIFECYCLE_BLOCK_TEMPLATE = f"""\
 Use this loop once per user task; follow the connected MCP tools' schemas and
 descriptions for fields and conditional requirements.
 Retrieval uses meaning and specific terms; state subjects and context clearly.
+A user message establishing or changing durable guidance is a task even when
+no other action is requested. Save the claim and complete this cycle before
+acknowledging completion; saving guidance is part of completing the task.
+Answer-only tasks also require feedback for every retrieval and commit.
+Remember and recall remain conditional.
 
 1. **Activate before your first response.** Call `slowave_activate` once with the
    verbatim task, concise action-led `initial_goal`, and stable scope. For coding,
@@ -961,8 +966,20 @@ Retrieval uses meaning and specific terms; state subjects and context clearly.
    Save standalone facts, preferences, decisions, constraints,
    or lessons; skip duplicates, speculation, progress notes, pending steps,
    and temporary task state.
+   Remember confirmed policies, requirements, and decisions that will govern
+   future tasks. Preserve their intended scope and exceptions. An outcome summary
+   is not a substitute for a standalone claim about a new durable requirement.
 3. **Recall deliberately.** Use `slowave_recall` for materially new questions or
-   needed history absent from activation. Both require the
+   needed history absent from activation. Activation procedures are previews;
+   when a relevant precedent could materially affect your plan, recall its
+   steps, context, outcome, and caveats before deciding whether to apply it.
+   To expand a preview, name its original goal and the relevant conditions in
+   the recall query; procedure admission checks applicability to that goal.
+   Check applicability against current evidence; adapt useful methods rather
+   than copying them. Do not fetch details merely to report procedure use.
+   If a consequential decision depends on applicable guidance not yet established,
+   recall that specific question; an empty result does not establish absence.
+   Both require the
    active `session_id` and matching scope. `page_size`: activation/fresh recall
    only; integer 1–10, maximum memories/page (not guaranteed).
    Omit for server default ({DEFAULT_MEMORY_PAGE_SIZE});
@@ -973,18 +990,24 @@ Retrieval uses meaning and specific terms; state subjects and context clearly.
    `used` requires actual influence, not reading or topical similarity;
    `not_used` is neutral, `irrelevant` means task mismatch. Lost usage evidence:
    use `unassessable` with a reason; follow the tool's conditional rules.
+   When authoritative new information or verified evidence replaces a retrieved
+   claim, remember the corrected claim first, then assess the old claim as stale
+   with the appropriate reason and replacement ID when required. Do not infer
+   contradiction from topical similarity or retire an unexposed memory.
 5. **Commit before the final response.** First save any missed useful claims via
    `slowave_remember`; if none qualify, no write is needed. `slowave_commit`
    requires `session_id`, `final_goal`, actual `outcome`,
    standalone `outcome_summary`, and `verification`.
    Include a procedure for an attempted reusable multi-step method with at least
-   two ordered task actions; omit it for trivial/answer-only work. Keep trajectory
+   two ordered task actions; omit it for trivial/answer-only work and methods
+   consisting only of memory lifecycle bookkeeping. Include the conditions and
+   caveats needed to judge future applicability. Keep trajectory
    entries task-only. Report `partial` or `failure` honestly. Write outcome and
    procedure summaries as specific, standalone future-facing knowledge.
    Verify `feedback_status` and `verification_status`.
 
 **Cold start:** read one stable context document; remember selectively using
-step 2. Do not scan the whole codebase.
+step 2. Do not scan the entire information source.
 
 Account for every warning before relying on a retrieval. Preserve cursors exactly
 and continue only when more context would help. A continuation sends only

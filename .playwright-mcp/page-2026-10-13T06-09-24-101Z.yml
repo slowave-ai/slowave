@@ -1,0 +1,281 @@
+- generic [ref=f1e1]:
+  - generic [ref=f1e3]:
+    - complementary [ref=f1e4]:
+      - navigation [ref=f1e469]:
+        - link [ref=f1e7] [cursor=pointer]:
+          - /url: /
+        - link [ref=f1e11] [cursor=pointer]:
+          - /url: /memory
+        - link [ref=f1e15] [cursor=pointer]:
+          - /url: /procedures
+        - link [ref=f1e20] [cursor=pointer]:
+          - /url: /retrieval
+        - link [ref=f1e24] [cursor=pointer]:
+          - /url: /activity
+        - link [ref=f1e27] [cursor=pointer]:
+          - /url: /graph
+        - link [ref=f1e33] [cursor=pointer]:
+          - /url: /diagnostics
+      - generic [ref=f1e37]:
+        - link [ref=f1e38] [cursor=pointer]:
+          - /url: https://github.com/mrsalty/slowave
+        - link [ref=f1e470] [cursor=pointer]:
+          - /url: /docs
+      - button [ref=f1e471] [cursor=pointer]
+    - main [ref=f1e53]:
+      - generic [ref=f1e472]:
+        - generic [ref=f1e473]:
+          - generic [ref=f1e474]:
+            - heading [level=1] [ref=f1e475]: Procedures
+            - paragraph [ref=f1e476]: Execution-backed procedure records created in the selected period. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook.
+          - generic [ref=f1e478]:
+            - generic [ref=f1e479]:
+              - generic [ref=f1e480]: Auto-refresh
+              - combobox [ref=f1e481] [cursor=pointer]
+            - button [ref=f1e482] [cursor=pointer]: Refresh
+        - generic [ref=f1e485]:
+          - generic [ref=f1e486]:
+            - generic [ref=f1e487]: Time range
+            - combobox [ref=f1e488] [cursor=pointer]
+          - generic [ref=f1e489]:
+            - text: View
+            - combobox [ref=f1e490] [cursor=pointer]
+          - generic [ref=f1e491]:
+            - text: Outcome
+            - combobox [ref=f1e492] [cursor=pointer]
+          - generic [ref=f1e493]:
+            - text: Verification
+            - combobox [ref=f1e494] [cursor=pointer]
+          - generic [ref=f1e495]:
+            - text: Exposure
+            - combobox [ref=f1e496] [cursor=pointer]
+          - generic [ref=f1e497]:
+            - text: Created since
+            - textbox [ref=f1e498]
+        - generic [ref=f1e499]:
+          - generic [ref=f1e500]:
+            - link [ref=f1e501] [cursor=pointer]:
+              - /url: /procedures?hours=all
+              - generic [ref=f1e502]:
+                - generic [ref=f1e503]:
+                  - generic [ref=f1e504]: Saved procedures
+                  - button [ref=f1e506]
+                - strong [ref=f1e511]: "2"
+            - link [ref=f1e512] [cursor=pointer]:
+              - /url: /procedures?hours=all
+              - generic [ref=f1e513]:
+                - generic [ref=f1e514]:
+                  - generic [ref=f1e515]: Procedure retrieval coverage
+                  - button [ref=f1e517]
+                - generic [ref=f1e522]:
+                  - generic [ref=f1e523]: 50%
+                  - generic [ref=f1e524]: 1 / 2
+            - link [ref=f1e525] [cursor=pointer]:
+              - /url: /procedures?hours=all
+              - generic [ref=f1e526]:
+                - generic [ref=f1e527]:
+                  - generic [ref=f1e528]: Procedure usage rate
+                  - button [ref=f1e530]
+                - generic [ref=f1e535]:
+                  - generic [ref=f1e536]: 100%
+                  - generic [ref=f1e537]: 1 / 1
+            - generic [ref=f1e538]:
+              - generic [ref=f1e539]:
+                - generic [ref=f1e540]: Feedback coverage · occasions
+                - button [ref=f1e542] [cursor=pointer]
+              - generic [ref=f1e547]:
+                - generic [ref=f1e548]: 100%
+                - generic [ref=f1e549]: 1 / 1
+          - generic [ref=f1e550]:
+            - generic [ref=f1e551]:
+              - generic [ref=f1e552]:
+                - generic [ref=f1e553]: Helpful rate · uses
+                - button [ref=f1e555] [cursor=pointer]
+              - generic [ref=f1e560]:
+                - generic [ref=f1e561]: 100%
+                - generic [ref=f1e562]: 1 / 1
+            - generic [ref=f1e563]:
+              - generic [ref=f1e564]:
+                - generic [ref=f1e565]: Harmful rate · uses
+                - button [ref=f1e567] [cursor=pointer]
+              - generic [ref=f1e572]:
+                - generic [ref=f1e573]: 0%
+                - generic [ref=f1e574]: 0 / 1
+          - generic [ref=f1e575]:
+            - heading [level=2] [ref=f1e577]: Activity
+            - generic [ref=f1e578]:
+              - img [ref=f1e580]:
+                - generic [ref=f1e581]: "1"
+                - generic [ref=f1e583]: "0.5"
+                - generic [ref=f1e585]: "0"
+                - generic [ref=f1e587]: 10:55 PM
+                - generic [ref=f1e589]: 12:45 AM
+                - generic [ref=f1e591]: 02:35 AM
+                - generic [ref=f1e593]: 04:25 AM
+                - generic [ref=f1e595]: 06:15 AM
+                - generic [ref=f1e597]: 08:05 AM
+              - generic [ref=f1e609]:
+                - button [pressed] [ref=f1e610] [cursor=pointer]:
+                  - text: Created
+                  - generic [ref=f1e612]: "2"
+                - button [pressed] [ref=f1e613] [cursor=pointer]:
+                  - text: Retrieved
+                  - generic [ref=f1e615]: "1"
+                - button [pressed] [ref=f1e616] [cursor=pointer]:
+                  - text: Used
+                  - generic [ref=f1e618]: "1"
+        - region [ref=f1e619]:
+          - table [ref=f1e620]:
+            - rowgroup [ref=f1e621]:
+              - row [ref=f1e622]:
+                - columnheader [ref=f1e623]:
+                  - button [ref=f1e624] [cursor=pointer]: Procedure
+                - columnheader [ref=f1e625]:
+                  - button [ref=f1e626] [cursor=pointer]: Scope
+                  - button [ref=f1e628] [cursor=pointer]
+                - columnheader [ref=f1e632]:
+                  - button [ref=f1e633] [cursor=pointer]: Outcome
+                  - button [ref=f1e635] [cursor=pointer]
+                - columnheader [ref=f1e639]:
+                  - button [ref=f1e640] [cursor=pointer]: Verification
+                  - button [ref=f1e642] [cursor=pointer]
+                - columnheader [ref=f1e646]:
+                  - button [ref=f1e647] [cursor=pointer]: Created ↓
+                - columnheader [ref=f1e648]:
+                  - button [ref=f1e649] [cursor=pointer]: Retrieved
+                  - button [ref=f1e651] [cursor=pointer]
+                - columnheader [ref=f1e655]:
+                  - button [ref=f1e656] [cursor=pointer]: Used
+                  - button [ref=f1e658] [cursor=pointer]
+                - columnheader [ref=f1e662]:
+                  - text: Effect
+                  - button [ref=f1e664] [cursor=pointer]
+                - columnheader [ref=f1e668]:
+                  - button [ref=f1e669] [cursor=pointer]: Last used
+            - rowgroup [ref=f1e670]:
+              - row [ref=f1e671] [cursor=pointer]:
+                - cell [ref=f1e672]:
+                  - generic [ref=f1e673]: Reproduce a refund incident, implement idempotency using current provider identity and revision semantics, and validate refund-specific and repository checks.
+                - cell [ref=f1e674]: project:relaydesk
+                - cell [ref=f1e675]:
+                  - generic [ref=f1e676]: Success
+                - cell [ref=f1e678]:
+                  - generic [ref=f1e679]: Verified
+                - cell [ref=f1e681]: 9h ago
+                - cell [ref=f1e682]: "0"
+                - cell [ref=f1e683]: "0"
+                - cell [ref=f1e684]:
+                  - generic [ref=f1e685]: Unknown
+                - cell [ref=f1e687]: —
+              - row [ref=f1e688] [cursor=pointer]:
+                - cell [ref=f1e689]:
+                  - generic [ref=f1e690]: Reproduce, fix, and verify a webhook dedupe incident in relaydesk
+                - cell [ref=f1e691]: project:relaydesk
+                - cell [ref=f1e692]:
+                  - generic [ref=f1e693]: Success
+                - cell [ref=f1e695]:
+                  - generic [ref=f1e696]: Verified
+                - cell [ref=f1e698]: 9h ago
+                - cell [ref=f1e699]: "1"
+                - cell [ref=f1e700]: "1"
+                - cell [ref=f1e701]:
+                  - generic [ref=f1e702]: Helpful
+                - cell [ref=f1e704]: 9h ago
+        - generic [ref=f1e705]:
+          - generic [ref=f1e706]: 2 results · page 1 of 1
+          - generic [ref=f1e707]:
+            - button [disabled] [ref=f1e708]: Previous
+            - button [disabled] [ref=f1e709]: Next
+  - dialog "Procedure" [active] [ref=f1e711]:
+    - banner [ref=f1e712]:
+      - generic [ref=f1e713]:
+        - generic [ref=f1e714]: Procedure
+        - strong [ref=f1e715]: Reproduce, fix, and verify a webhook dedupe incident in relaydesk
+        - generic [ref=f1e716]:
+          - button "proc_sess_fc6b5dc43d36 Copy ID" [ref=f1e717] [cursor=pointer]:
+            - code [ref=f1e718]: proc_sess_fc6b5dc43d36
+            - generic [ref=f1e722]: Copy ID
+          - generic [ref=f1e723]: Success
+      - button "Close detail" [ref=f1e725] [cursor=pointer]
+    - navigation "On this record" [ref=f1e728]:
+      - link "Method" [ref=f1e729] [cursor=pointer]:
+        - /url: "#procedure-method"
+      - link "Use history" [ref=f1e730] [cursor=pointer]:
+        - /url: "#procedure-history"
+      - link "Source task" [ref=f1e731] [cursor=pointer]:
+        - /url: "#procedure-source"
+      - link "Technical details" [ref=f1e732] [cursor=pointer]:
+        - /url: "#procedure-technical"
+    - generic [ref=f1e733]:
+      - generic [ref=f1e734]:
+        - generic [ref=f1e735]:
+          - heading "Method" [level=2] [ref=f1e736]
+          - button "Delete" [ref=f1e737] [cursor=pointer]
+        - heading "Reproduce, fix, and verify a webhook dedupe incident in relaydesk" [level=2] [ref=f1e738]
+        - paragraph [ref=f1e739]: Captured from one completed task. Later retrieval and feedback show whether it helped; creation alone does not prove it is a general playbook.
+        - generic [ref=f1e740]:
+          - term [ref=f1e741]: Scope
+          - definition [ref=f1e742]: project:relaydesk
+          - term [ref=f1e743]: Source outcome
+          - definition [ref=f1e744]:
+            - generic [ref=f1e745]: Success
+            - text: Reported for the source task
+          - term [ref=f1e747]: Source verification
+          - definition [ref=f1e748]:
+            - generic [ref=f1e749]: Verified
+        - heading "Applicability" [level=3] [ref=f1e751]
+        - paragraph [ref=f1e752]: No applicability context recorded.
+        - heading "Steps" [level=3] [ref=f1e753]
+        - list [ref=f1e754]:
+          - listitem [ref=f1e755]: Replay the captured incident with replay.py to reproduce the reported behavior
+          - listitem [ref=f1e756]: Identify the dedupe key used by the target component and compare against the provider's uniqueness guarantee
+          - listitem [ref=f1e757]: Change the dedupe key to the globally unique business event identifier, keeping changes scoped to the requested component
+          - listitem [ref=f1e758]: Add a standalone regression check script that replays the incident data and asserts dedupe behavior, including that distinct events still count
+          - listitem [ref=f1e759]: Run the regression check plus ruff check . and mypy . with the v18-venv python to verify
+        - heading "Caveats" [level=3] [ref=f1e760]
+        - list [ref=f1e761]:
+          - listitem [ref=f1e762]: Provider guarantees globally unique event IDs; this fix relies on that guarantee and would be unsafe if event IDs were only per-merchant unique.
+          - listitem [ref=f1e763]: refunds.py intentionally keeps delivery_id dedupe semantics; its incident data contains the same event_id across different merchants/accounts/revisions.
+      - generic [ref=f1e764]:
+        - heading "Use history" [level=2] [ref=f1e766]
+        - paragraph [ref=f1e767]: Lifetime use and effect are agent-reported feedback.
+        - generic [ref=f1e768]:
+          - term [ref=f1e769]: Retrieved
+          - definition [ref=f1e770]: 1 retrievals
+          - term [ref=f1e771]: Assessed
+          - definition [ref=f1e772]: 1 of 1 retrieved · 0 unassessed
+          - term [ref=f1e773]: Reported used
+          - definition [ref=f1e774]: 1 of 1 assessed retrievals (100%)
+          - term [ref=f1e775]: Reported effect among uses
+          - definition [ref=f1e776]:
+            - generic [ref=f1e777]: Helpful · 1
+            - generic [ref=f1e779]: No effect · 0
+            - generic [ref=f1e781]: Harmful · 0
+            - generic [ref=f1e783]: Unknown · 0
+          - term [ref=f1e785]: Last retrieved
+          - definition [ref=f1e786]: 12/10/2026, 22:59:30
+        - link [ref=f1e788] [cursor=pointer]:
+          - /url: /retrieval/ctx_6d57f93b16b1
+          - generic [ref=f1e789]:
+            - strong [ref=f1e790]: 12/10/2026, 22:59:30 · Activation
+            - text: project:relaydesk
+          - generic [ref=f1e791]:
+            - generic [ref=f1e792]: Used
+            - generic [ref=f1e794]: Helpful
+      - generic [ref=f1e796]:
+        - heading "Source task" [level=2] [ref=f1e798]
+        - generic [ref=f1e799]:
+          - term [ref=f1e800]: Goal
+          - definition [ref=f1e801]: Fix duplicate payment processing in relaydesk by deduping captured-payment deliveries on event_id, verified via a regression check plus ruff and mypy.
+          - term [ref=f1e802]: Created
+          - definition [ref=f1e803]: 12/10/2026, 22:58:52
+          - term [ref=f1e804]: Source activity
+          - definition [ref=f1e805]:
+            - link "sess_fc6b5dc43d36" [ref=f1e806] [cursor=pointer]:
+              - /url: /activity/sess_fc6b5dc43d36
+        - group [ref=f1e807]:
+          - generic "Outcome summary" [ref=f1e808] [cursor=pointer]
+        - group [ref=f1e809]:
+          - generic "Verification summary" [ref=f1e810] [cursor=pointer]
+      - group [ref=f1e811]:
+        - generic "Technical details" [ref=f1e812] [cursor=pointer]

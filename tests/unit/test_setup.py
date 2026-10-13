@@ -385,6 +385,41 @@ class TestDetectLifecycleVersion:
         assert "connected MCP tools' schemas" in block
         assert "conditional requirements" in block
 
+    def test_generated_block_explains_precedent_details_and_corrections(self):
+        block = _lifecycle_block("codex")
+        assert "Activation procedures are previews" in block
+        assert "could materially affect your plan" in block
+        assert "name its original goal" in block
+        assert "Remember confirmed policies, requirements, and decisions" in block
+        assert "is not a substitute for a standalone claim" in block
+        assert "durable guidance is a task even when" in block
+        assert "saving guidance is part of completing the task" in block
+        assert "Do not fetch details merely to report procedure use" in block
+        assert "remember the corrected claim first" in block
+        assert "retire an unexposed memory" in block
+        assert "consisting only of memory lifecycle bookkeeping" in block
+
+    def test_durable_guidance_rules_are_domain_independent(self):
+        for client in _setup_mod._clients():
+            block = _lifecycle_block(client.lifecycle_agent)
+            assert "no other action is requested" in block
+            assert "Answer-only tasks also require feedback for every retrieval" in block
+            assert "Preserve their intended scope and exceptions" in block
+            assert "applicable guidance not yet established" in block
+            for demo_or_domain_phrase in (
+                "project policies",
+                "project guidance",
+                "project file edits",
+                "implemented in code",
+                "current edit",
+                "email",
+                "exports",
+                "invoice",
+                "subscription",
+                "RelayDesk",
+            ):
+                assert demo_or_domain_phrase not in block
+
     def test_generated_block_hardens_client_memory_responsibilities(self):
         block = _lifecycle_block("claude-code")
         assert "Use this loop once per user task" in block
