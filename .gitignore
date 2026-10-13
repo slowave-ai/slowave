@@ -95,3 +95,4 @@ node_modules/
 
 docs/iterations/
 episodic.faiss
+.playwright-mcp/

@@ -245,8 +245,20 @@ PageSize = Annotated[
 
 class ActivateArguments(_StrictMCPModel):
     page_size: PageSize = DEFAULT_MEMORY_PAGE_SIZE
-    task: Annotated[str, Field(min_length=1)]
-    initial_goal: Annotated[str, Field(min_length=1)]
+    task: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Copy the user request verbatim. Do not rewrite, translate, or substitute the inferred goal.",
+        ),
+    ]
+    initial_goal: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Concise action-led interpretation; helps discovery but cannot independently justify admission.",
+        ),
+    ]
     scope: Annotated[str, Field(min_length=3)]
     continuity_id: str | None = None
     task_context: dict[str, JsonValue] | None = None
@@ -407,6 +419,10 @@ class FeedbackArguments(_StrictMCPModel):
     @model_validator(mode="after")
     def _validate_shape(self) -> "FeedbackArguments":
         if self.items is not None:
+            if "coverage" in self.model_fields_set:
+                raise ValueError(
+                    "items is mutually exclusive with scalar fields; coverage belongs inside each item in batch mode"
+                )
             if (
                 any(
                     value is not None
@@ -455,7 +471,82 @@ def _publish_schema(mcp: FastMCP, name: str, model: type[BaseModel]) -> None:
     tool = mcp._tool_manager.get_tool(name)
     if tool is None:  # pragma: no cover - registration immediately precedes this call.
         raise RuntimeError(f"{name} was not registered")
-    tool.parameters = model.model_json_schema()
+    tool.parameters = _tool_schema(model.model_json_schema(), name)
+
+
+def _tool_schema(schema: dict[str, Any], name: str) -> dict[str, Any]:
+    examples = {
+        "slowave_remember": [
+            {
+                "session_id": "<active>",
+                "scope": "project:<repo>",
+                "memories": [{"content": "A standalone claim", "type": "fact"}],
+            }
+        ],
+        "slowave_feedback": [
+            {
+                "items": [
+                    {
+                        "retrieval_id": "<returned>",
+                        "coverage": "complete",
+                        "memory_feedback": [{"memory_id": "<returned>", "assessment": "not_used"}],
+                    }
+                ]
+            }
+        ],
+    }
+    if name in examples:
+        schema["examples"] = examples[name]
+    if name == "slowave_remember":
+        schema["oneOf"] = [
+            {
+                "title": "Scalar claim",
+                "required": ["content", "type"],
+                "not": {"required": ["memories"]},
+            },
+            {
+                "title": "Batch claims",
+                "required": ["memories"],
+                "not": {
+                    "anyOf": [
+                        {"required": ["content"]},
+                        {"required": ["type"]},
+                        {"required": ["occurred_at"]},
+                    ]
+                },
+            },
+        ]
+    if name == "slowave_feedback":
+        schema["oneOf"] = [
+            {
+                "title": "Scalar feedback",
+                "required": ["retrieval_id"],
+                "not": {"required": ["items"]},
+            },
+            {
+                "title": "Feedback batch",
+                "required": ["items"],
+                "not": {
+                    "anyOf": [
+                        {"required": ["retrieval_id"]},
+                        {"required": ["memory_feedback"]},
+                        {"required": ["procedure_feedback"]},
+                        {"required": ["retrieval_quality"]},
+                        {"required": ["missing"]},
+                        {"required": ["coverage"]},
+                    ]
+                },
+            },
+        ]
+    if name == "slowave_feedback":
+        schema["properties"]["items"][
+            "description"
+        ] = "Batch mode: send items alone. Put coverage inside each item; omit every scalar feedback field."
+    elif name == "slowave_remember":
+        schema["properties"]["memories"][
+            "description"
+        ] = "Batch mode: omit outer content, type and occurred_at; each entry supplies its own claim fields."
+    return schema
 
 
 def _validate_scope(scope: str) -> None:
@@ -896,7 +987,7 @@ def _authorize_continuation_exposure(
 
 
 def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str, Any]:
-    """Return the minimum safe activation preview for a procedure."""
+    """Return an execution-ready method without its detailed reuse history."""
     full = _canonical_procedure(item, scope)
     preview = {
         "procedure_id": full["procedure_id"],
@@ -904,6 +995,8 @@ def _compact_activation_procedure(item: dict[str, Any], scope: str) -> dict[str,
         "summary": full.get("summary", ""),
         "outcome": full.get("outcome", "unknown"),
         "outcome_summary": full.get("outcome_summary", ""),
+        "context": full.get("context", {}),
+        "steps": full.get("steps", []),
     }
     # Safety caveats are never silently shortened.  A procedure that cannot
     # fit as an honest preview is left for deliberate recall.
@@ -1501,12 +1594,10 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             saving guidance is part of completing the task.
             Answer-only tasks also require retrieval feedback and commit before
             the final response; remember and recall are conditional.
-            Procedures here are previews, not their complete methods. When a
-            relevant precedent could materially affect the plan, use deliberate
-            slowave_recall to inspect its steps, context, outcome, and caveats
-            before deciding whether to adapt it to the current evidence.
-            Name the preview's original goal and relevant conditions in that
-            query; procedure admission checks applicability to the source goal.
+            Procedures include complete steps, applicability context, outcomes,
+            and caveats. Inspect these against current evidence before adapting
+            a method. Recall only when needed history or details are absent;
+            name the original goal and relevant conditions in that query.
 
             The cognitive cycle:
                 1. slowave_activate(task, initial_goal, scope)      <- start here
@@ -1518,7 +1609,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 5. slowave_commit(session_id, final_goal, outcome, outcome_summary, verification)         <- close the task
 
             Args:
-                task: verbatim task description (required, nonblank).
+                task: copy the user request exactly (required, nonblank); do not
+                    rewrite or translate it. Put interpretation in initial_goal.
                 initial_goal: concise action-led provisional objective (required, nonblank).
                 scope: required retrieval boundary in ``kind:id`` form.
                 continuity_id: omit on the first client-conversation activation;
@@ -1532,9 +1624,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 session_id: required by recall and commit.
                 memory_state: cold_start or available for the resolved scope.
                 memories: canonical [{memory_id, content, pathway, provenance?}].
-                procedures: execution-backed previews with ID, goal, summary,
-                    outcome, outcome_summary, and safety caveats. Deliberate
-                    recall returns full steps, context, and reuse evidence.
+                procedures: execution-ready methods with ID, goal, summary, steps,
+                    context, outcome, outcome_summary, and safety caveats.
+                    Deliberate recall additionally returns detailed reuse evidence.
                 warnings: stable structured safety warnings.
                 continuity_id: server-issued opaque client-conversation token.
                 continuity_state: started on omission, continued on valid reuse.
@@ -2060,7 +2152,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
         procedure_feedback: Any = None,
         retrieval_quality: Any = None,
         missing: Any = None,
-        coverage: Any = "partial",
+        coverage: Any = None,
         items: Any = None,
     ) -> dict[str, Any]:
         """Record append-only evidence about retrieved memories and procedures.
@@ -2132,7 +2224,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     "procedure_feedback": procedure_feedback,
                     "retrieval_quality": retrieval_quality,
                     "missing": missing,
-                    "coverage": coverage,
+                    **({"coverage": coverage} if coverage is not None else {}),
                     "items": items,
                 }
             )

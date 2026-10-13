@@ -27,4 +27,4 @@ is re-run) -- `slowave doctor` reports the latter.
 
 from __future__ import annotations
 
-LIFECYCLE_VERSION = "v18"
+LIFECYCLE_VERSION = "v19"

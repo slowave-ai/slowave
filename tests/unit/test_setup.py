@@ -387,7 +387,7 @@ class TestDetectLifecycleVersion:
 
     def test_generated_block_explains_precedent_details_and_corrections(self):
         block = _lifecycle_block("codex")
-        assert "Activation procedures are previews" in block
+        assert "Activation procedures include complete" in block
         assert "could materially affect your plan" in block
         assert "name its original goal" in block
         assert "Remember confirmed policies, requirements, and decisions" in block

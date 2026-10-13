@@ -955,7 +955,8 @@ Answer-only tasks also require feedback for every retrieval and commit.
 Remember and recall remain conditional.
 
 1. **Activate before your first response.** Call `slowave_activate` once with the
-   verbatim task, concise action-led `initial_goal`, and stable scope. For coding,
+   verbatim task (never rewrite or translate it), concise action-led `initial_goal`,
+   and stable scope. For coding,
    scope is `project:<repository-root-name>`: use the workspace or nearest Git
    root, falling back to `project:<basename(cwd)>`. Save `session_id`,
    `retrieval_id`, and returned `continuity_id`; omit continuity on the first
@@ -970,11 +971,10 @@ Remember and recall remain conditional.
    future tasks. Preserve their intended scope and exceptions. An outcome summary
    is not a substitute for a standalone claim about a new durable requirement.
 3. **Recall deliberately.** Use `slowave_recall` for materially new questions or
-   needed history absent from activation. Activation procedures are previews;
-   when a relevant precedent could materially affect your plan, recall its
-   steps, context, outcome, and caveats before deciding whether to apply it.
-   To expand a preview, name its original goal and the relevant conditions in
-   the recall query; procedure admission checks applicability to that goal.
+   needed history absent from activation. Activation procedures include complete
+   steps, context, outcome, and caveats. Inspect these before adapting a method
+   that could materially affect your plan. Recall missing details or history;
+   name its original goal and relevant conditions in the recall query.
    Check applicability against current evidence; adapt useful methods rather
    than copying them. Do not fetch details merely to report procedure use.
    If a consequential decision depends on applicable guidance not yet established,
@@ -1017,6 +1017,7 @@ Do not invent IDs, scope, continuity, cursors, or success.
 
 Treat `{{"ok":false,...}}` as failure. Also inspect `rejected` and `outstanding`
 on feedback responses and each batch item's `ok`/data; outer success is insufficient.
+Choose scalar OR batch arguments, never both.
 For feedback batches use `items` alone, with coverage inside each item. Correct
 rejected/outstanding feedback before committing; on `incomplete_feedback`, submit
 missing assessments with complete coverage and retry. After upgrading, rerun setup
