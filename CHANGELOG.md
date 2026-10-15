@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.2...slowave-v0.22.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* latency improvements ([#197](https://github.com/slowave-ai/slowave/issues/197)) ([a4d54b9](https://github.com/slowave-ai/slowave/commit/a4d54b98700a07f8a8532939a6feea889646af57))
+
 ## [0.22.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.1...slowave-v0.22.2) (2026-10-13)
 
 
