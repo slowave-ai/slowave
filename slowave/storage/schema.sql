@@ -718,3 +718,69 @@ CREATE TABLE IF NOT EXISTS generalization_sweep_state (
 -- tables are dropped via _apply_post_migrations() in sqlite_db.py for existing DBs.
 -- New installs never create them. See docs/iterations/20260625_procedural_phase1_plan.md
 -- ============================================================================
+
+-- Search-vector projections: additive migration, independent of raw-event replay.
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS storage_migrations (
+  version TEXT NOT NULL PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS embedding_encoders (
+  encoder_id TEXT NOT NULL PRIMARY KEY CHECK(length(encoder_id)=64 AND encoder_id NOT GLOB '*[^0-9a-f]*'),
+  spec_json TEXT NOT NULL CHECK(json_valid(spec_json)),
+  dim INTEGER NOT NULL CHECK(dim>0),
+  created_at INTEGER NOT NULL,
+  UNIQUE(encoder_id,dim)
+);
+CREATE TRIGGER IF NOT EXISTS embedding_encoder_immutable
+BEFORE UPDATE ON embedding_encoders BEGIN
+  SELECT RAISE(ABORT,'embedding encoder specifications are immutable');
+END;
+CREATE TABLE IF NOT EXISTS procedure_embeddings (
+  procedure_id TEXT NOT NULL REFERENCES procedure_search_documents(procedure_id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK(role IN ('applicability','strategy')),
+  encoder_id TEXT NOT NULL,
+  source_hash TEXT NOT NULL CHECK(length(source_hash)=64 AND source_hash NOT GLOB '*[^0-9a-f]*'),
+  dim INTEGER NOT NULL CHECK(dim>0),
+  vector BLOB NOT NULL CHECK(typeof(vector)='blob' AND length(vector)=4*dim),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(procedure_id,role,encoder_id),
+  FOREIGN KEY(encoder_id,dim) REFERENCES embedding_encoders(encoder_id,dim)
+);
+CREATE INDEX IF NOT EXISTS idx_procedure_embeddings_encoder_owner ON procedure_embeddings(encoder_id,procedure_id,role);
+CREATE TABLE IF NOT EXISTS schema_passage_embeddings (
+  schema_id INTEGER NOT NULL REFERENCES schemas(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'passage' CHECK(role='passage'),
+  encoder_id TEXT NOT NULL,
+  source_hash TEXT NOT NULL CHECK(length(source_hash)=64 AND source_hash NOT GLOB '*[^0-9a-f]*'),
+  dim INTEGER NOT NULL CHECK(dim>0),
+  vector BLOB NOT NULL CHECK(typeof(vector)='blob' AND length(vector)=4*dim),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(schema_id,role,encoder_id),
+  FOREIGN KEY(encoder_id,dim) REFERENCES embedding_encoders(encoder_id,dim)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_passage_encoder_owner ON schema_passage_embeddings(encoder_id,schema_id,role);
+CREATE TABLE IF NOT EXISTS search_projection_revisions (
+  domain TEXT NOT NULL PRIMARY KEY CHECK(domain IN ('schemas')),
+  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0)
+);
+INSERT OR IGNORE INTO search_projection_revisions(domain) VALUES('schemas');
+CREATE TRIGGER IF NOT EXISTS schema_search_insert AFTER INSERT ON schemas BEGIN
+  UPDATE search_projection_revisions SET revision=revision+1 WHERE domain='schemas';
+END;
+CREATE TRIGGER IF NOT EXISTS schema_search_update AFTER UPDATE ON schemas BEGIN
+  UPDATE search_projection_revisions SET revision=revision+1 WHERE domain='schemas';
+END;
+CREATE TRIGGER IF NOT EXISTS schema_search_delete AFTER DELETE ON schemas BEGIN
+  UPDATE search_projection_revisions SET revision=revision+1 WHERE domain='schemas';
+END;
+CREATE TABLE IF NOT EXISTS search_backfill_state (
+  job TEXT NOT NULL PRIMARY KEY CHECK(job='search-vectors-v1'),
+  owner TEXT NOT NULL,
+  lease_until INTEGER NOT NULL,
+  completed_at INTEGER,
+  error TEXT
+);
+INSERT OR IGNORE INTO storage_migrations(version,applied_at)
+VALUES('search-vectors-v1',CAST(strftime('%s','now') AS INTEGER));
+COMMIT;

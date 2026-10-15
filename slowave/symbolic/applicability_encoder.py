@@ -6,20 +6,27 @@ private text sent to model hosting. Model downloads are separate from scoring.
 
 from __future__ import annotations
 
+import os
 import platform
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 
 import numpy as np
 
 MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 REVISION = "1427fd652930e4ba29e8149678df786c240d8825"
+_BACKEND_LOCK = RLock()
+
+
+def _backend():
+    with _BACKEND_LOCK:
+        return _cached_backend()
 
 
 @lru_cache(maxsize=1)
-def _backend():
+def _cached_backend():
     import onnxruntime as ort
     from huggingface_hub import hf_hub_download, snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -52,11 +59,18 @@ def _backend():
         path = str(Path(root) / filename)
         tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
     options = ort.SessionOptions()
-    options.intra_op_num_threads = 2
+    options.intra_op_num_threads = int(
+        os.environ.get("SLOWAVE_SCORING_THREADS", str(min(4, os.cpu_count() or 2)))
+    )
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     session = ort.InferenceSession(path, sess_options=options, providers=["CPUExecutionProvider"])
     return tokenizer, session
+
+
+# Preserve the existing test/diagnostic cache reset surface while serializing
+# first-load misses (functools.lru_cache alone permits concurrent misses).
+setattr(_backend, "cache_clear", _cached_backend.cache_clear)
 
 
 class ApplicabilityEncoder:
@@ -65,6 +79,7 @@ class ApplicabilityEncoder:
     def __init__(self) -> None:
         self._cache: OrderedDict[tuple[str, str], float] = OrderedDict()
         self._lock = Lock()
+        self._windows: OrderedDict[str, list[str]] = OrderedDict()
 
     def score(self, queries: list[str], memories: list[str]) -> np.ndarray:
         with self._lock:
@@ -85,11 +100,18 @@ class ApplicabilityEncoder:
                     missing.append((column, query))
             if not missing:
                 continue
-            tokens = tokenizer.encode(memory, add_special_tokens=False)
-            windows = [tokens[start : start + 256] for start in range(0, max(1, len(tokens)), 192)]
+            windows = self._windows.get(memory)
+            if windows is None:
+                tokens = tokenizer.encode(memory, add_special_tokens=False)
+                windows = [
+                    tokenizer.decode(tokens[start : start + 256])
+                    for start in range(0, max(1, len(tokens)), 192)
+                ]
+                self._windows[memory] = windows
+            self._windows.move_to_end(memory)
             for column, query in missing:
                 for window in windows:
-                    pairs.append((index, column, query, tokenizer.decode(window)))
+                    pairs.append((index, column, query, window))
         # Length grouping avoids padding every short fact to a long document.
         pairs.sort(key=lambda pair: len(pair[2]) + len(pair[3]))
         required = {entry.name for entry in session.get_inputs()}
@@ -115,4 +137,6 @@ class ApplicabilityEncoder:
                 self._cache.move_to_end((query, memory))
         while len(self._cache) > 8192:
             self._cache.popitem(last=False)
+        while len(self._windows) > 4096:
+            self._windows.popitem(last=False)
         return scores

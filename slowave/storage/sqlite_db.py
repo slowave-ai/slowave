@@ -61,7 +61,13 @@ class SQLiteDB:
         # pre-pass, executing the script against an old DB would fail
         # on the CREATE INDEX before the migrations had a chance to run.
         self._apply_pre_migrations()
-        conn.executescript(sql)
+        try:
+            conn.executescript(sql)
+        except Exception:
+            # In particular, an interrupted additive search migration must
+            # not leave its BEGIN IMMEDIATE transaction/lock open.
+            conn.rollback()
+            raise
         conn.commit()
         # Post-migrations: anything that needs the new schema script to
         # have run first (table rebuilds for PK changes, index refresh).

@@ -1626,7 +1626,30 @@ _DAEMON_HEALTH_TIMEOUT = DAEMON_HEALTH_TIMEOUT
 
 def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) -> bool:
     """Verify the same daemon identity and deadline used by start/restart."""
-    return wait_for_daemon_health(port, timeout) is None
+    return wait_for_daemon_health(port, timeout, require_retrieval_ready=True) is None
+
+
+def _prepare_search_vectors(database: str) -> None:
+    """Provision derived search state without holding a migration transaction."""
+    from slowave.core.config import SlowaveConfig
+    from slowave.core.engine import SlowaveEngine
+
+    engine = SlowaveEngine(SlowaveConfig(db_path=database))
+    try:
+        result = engine.prepare_retrieval(
+            progress=lambda message: _ok(message), wait=True, timeout=_DAEMON_HEALTH_TIMEOUT
+        )
+        if not result["ready"]:
+            raise click.ClickException(
+                f"Search preparation incomplete: {result.get('reason')}. Run slowave setup again."
+            )
+        _ok("Search embeddings ready")
+    except Exception as exc:
+        raise click.ClickException(
+            f"Search preparation failed: {exc}. Run slowave setup again."
+        ) from exc
+    finally:
+        engine.close()
 
 
 def _build_summary(
@@ -1893,6 +1916,12 @@ def setup_cmd(
     paths = runtime_paths()
     selected_daemon_port = daemon_port(paths) if dry_run else assign_daemon_port(paths)
     mcp_url = f"http://127.0.0.1:{selected_daemon_port}/mcp"
+    _section("Preparing retrieval")
+    if dry_run:
+        _ok("Would prepare missing or outdated search embeddings")
+    else:
+        paths.root.mkdir(parents=True, exist_ok=True)
+        _prepare_search_vectors(str(paths.database))
 
     # 1. Binaries
     _section("1. Locating binaries")

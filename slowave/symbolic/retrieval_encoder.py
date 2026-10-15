@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 
 import numpy as np
 
@@ -50,18 +52,51 @@ class RetrievalEncoder:
     def __init__(self) -> None:
         root = model_root()
         self.backend = _RetrievalONNX(root)
-        self._passages: dict[str, np.ndarray] = {}
+        self._passages: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._lock = RLock()
 
     def passages(self, texts: list[str]) -> np.ndarray:
+        with self._lock:
+            return self._cached_passages(texts)
+
+    def _cached_passages(self, texts: list[str]) -> np.ndarray:
         missing = list(dict.fromkeys(text for text in texts if text not in self._passages))
+        current = {text: self._passages[text] for text in texts if text in self._passages}
         for index in range(0, len(missing), 16):
             batch = missing[index : index + 16]
             vectors = self.backend.encode_many(["passage: " + text for text in batch])
-            self._passages.update(zip(batch, vectors))
-        result = np.array([self._passages[text] for text in texts], dtype=np.float32)
-        if len(self._passages) > 4096:
-            self._passages.clear()
-        return result
+            current.update(zip(batch, vectors))
+        for text in texts:
+            self._passages[text] = current[text]
+            self._passages.move_to_end(text)
+        while len(self._passages) > 4096:
+            self._passages.popitem(last=False)
+        return (
+            np.asarray([current[text] for text in texts], dtype=np.float32)
+            .reshape(len(texts), 384)
+            .copy()
+        )
+
+    @property
+    def dim(self) -> int:
+        return self.backend.dim
+
+    def encode_many(self, texts: list[str]) -> np.ndarray:
+        return self.backend.encode_many(["passage: " + text for text in texts])
+
+    def embedding_spec(self) -> dict:
+        self.backend._ensure_loaded()
+        return {
+            "model": MODEL,
+            "revision": REVISION,
+            "tokenizer_revision": REVISION,
+            "pooling": "attention-mean",
+            "normalization": True,
+            "max_length": 512,
+            "prefix": "passage: ",
+            "format": "float32-le",
+            "version": 1,
+        }
 
     def query(self, text: str) -> np.ndarray:
         return self.backend.encode("query: " + text)

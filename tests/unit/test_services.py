@@ -56,6 +56,37 @@ def test_daemon_readiness_allows_slow_startup_with_bounded_deadline(
     assert all(start + timeout <= 120.0 for start, timeout in requests)
 
 
+def test_retrieval_readiness_waits_after_daemon_is_live(monkeypatch):
+    import io
+    import json
+    import time
+    import urllib.request
+
+    from slowave import __version__
+    from slowave.core.paths import runtime_paths
+
+    clock = [0.0]
+    calls = []
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def request(*args, **kwargs):
+        calls.append(clock[0])
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "version": __version__,
+                    "db": str(runtime_paths().database),
+                    "retrieval_ready": clock[0] >= 1.0,
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", request)
+    assert services.wait_for_daemon_health(8766, timeout=2, require_retrieval_ready=True) is None
+    assert calls == [0.0, 0.5, 1.0]
+
+
 @pytest.mark.parametrize(
     "body, message",
     [

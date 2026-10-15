@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
+import time
 import uuid
 from typing import Any
 
@@ -152,6 +153,8 @@ class SlowaveEngine:
         substrate, symbolic layer, services.
         """
         self.cfg = cfg or SlowaveConfig()
+        self.retrieval_ready = False
+        self.retrieval_preparation_error: str | None = None
         self._init_stores_and_migration(shared_encoder)
         self._init_latent_substrate()
         self._init_symbolic_layer()
@@ -751,6 +754,19 @@ class SlowaveEngine:
         except KeyError:
             created_schema = None
 
+        if self.retrieval_ready and created_schema is not None:
+            try:
+                from slowave.storage.embedding_store import EmbeddingStore
+                from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
+
+                EmbeddingStore(self.db).vectors(
+                    "schema",
+                    [(new_schema_id, "passage", created_schema.content_text or "")],
+                    get_retrieval_encoder(),
+                )
+            except Exception:
+                log.warning("Passage embedding pending; will retry on retrieval", exc_info=True)
+
         return RememberResult(
             event_id,
             schema_id=new_schema_id,
@@ -847,6 +863,35 @@ class SlowaveEngine:
 
     def close(self) -> None:
         self.db.close()
+
+    def prepare_retrieval(
+        self, progress: Any = None, *, wait: bool = False, timeout: float = 120
+    ) -> dict[str, Any]:
+        from slowave.core.services.search_preparation import prepare_search
+        from slowave.storage.embedding_store import SearchSourceChanged
+
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    result = prepare_search(self, progress)
+                except SearchSourceChanged:
+                    result = {"ready": False, "reason": "source_changed"}
+                self.retrieval_ready = bool(result["ready"])
+                self.retrieval_preparation_error = result.get("reason")
+                if (
+                    self.retrieval_ready
+                    or not wait
+                    or result.get("reason") not in {"preparation_in_progress", "source_changed"}
+                ):
+                    return result
+                if time.monotonic() >= deadline:
+                    return result
+                time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+        except Exception as exc:
+            self.retrieval_ready = False
+            self.retrieval_preparation_error = str(exc)
+            raise
 
     def record_retrieval(self, **kwargs: Any) -> None:
         self._feedback.record_retrieval(**kwargs)

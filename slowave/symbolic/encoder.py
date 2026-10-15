@@ -10,7 +10,11 @@ pay the cost of loading model weights.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import OrderedDict
 from dataclasses import dataclass
+from threading import RLock
 from typing import Optional
 
 import numpy as np
@@ -37,8 +41,14 @@ class TextEncoder:
         self.cfg = cfg or EncoderConfig()
         self._backend = None  # Lazy-loaded encoder instance
         self._dim: int | None = None
+        self._vectors: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._cache_lock = RLock()
 
     def _ensure_loaded(self) -> None:
+        with self._cache_lock:
+            self._load()
+
+    def _load(self) -> None:
         """Initialize the encoding backend on first use."""
         if self._backend is not None:
             return
@@ -53,12 +63,13 @@ class TextEncoder:
         try:
             from slowave.symbolic.onnx_encoder import ONNXTextEncoder
 
-            self._backend = ONNXTextEncoder(
+            backend = ONNXTextEncoder(
                 model_name=self.cfg.model_name,
                 cache_dir=self.cfg.cache_dir,
             )
-            self._backend._ensure_loaded()
-            self._dim = self._backend.dim
+            backend._ensure_loaded()
+            self._dim = backend.dim
+            self._backend = backend
         except ImportError as e:
             # If ONNX libraries are missing, give a helpful error
             raise ImportError(
@@ -122,31 +133,67 @@ class TextEncoder:
         return self._dim
 
     def encode(self, text: str) -> np.ndarray:
-        """Embed a single string. Returns float32 [dim] (L2-normalized by default)."""
-        self._ensure_loaded()
-        assert self._backend is not None
-
-        if hasattr(self._backend, "encode"):
-            # ONNX backend or sentence-transformers with .encode()
-            return self._backend.encode(text)
-        else:
-            # Fallback for any other backend
-            return self._backend.encode([text])[0].astype(np.float32)
+        """Embed one text; return a copy so callers cannot mutate the cache."""
+        return self.encode_many([text])[0]
 
     def encode_many(self, texts: list[str]) -> np.ndarray:
-        """Embed a batch. Returns float32 [N, dim]."""
-        self._ensure_loaded()
-        assert self._backend is not None
-
-        if hasattr(self._backend, "encode_many"):
-            # ONNX backend with explicit encode_many()
-            return self._backend.encode_many(texts)
-        else:
-            # sentence-transformers with .encode() for batches
-            vecs = self._backend.encode(
-                texts,
-                normalize_embeddings=self.cfg.normalize,
-                convert_to_numpy=True,
-                show_progress_bar=False,
+        """Batch cache misses, retaining bounded exact-text inference reuse."""
+        with self._cache_lock:
+            self._ensure_loaded()
+            assert self._backend is not None
+            missing = list(dict.fromkeys(text for text in texts if text not in self._vectors))
+            current = {text: self._vectors[text] for text in texts if text in self._vectors}
+            for offset in range(0, len(missing), 16):
+                batch = missing[offset : offset + 16]
+                if hasattr(self._backend, "encode_many"):
+                    vectors = self._backend.encode_many(batch)
+                else:
+                    vectors = self._backend.encode(
+                        batch,
+                        normalize_embeddings=self.cfg.normalize,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                    )
+                for text, vector in zip(batch, vectors):
+                    current[text] = np.asarray(vector, dtype=np.float32).copy()
+            for text in texts:
+                self._vectors[text] = current[text]
+                self._vectors.move_to_end(text)
+            while len(self._vectors) > 4096:
+                self._vectors.popitem(last=False)
+            return (
+                np.asarray([current[text] for text in texts], dtype=np.float32)
+                .reshape(len(texts), self.dim)
+                .copy()
             )
-            return vecs.astype(np.float32)
+
+    def embedding_spec(self) -> dict:
+        """Identity includes resolved weights/tokenizer and encoding semantics."""
+        self._ensure_loaded()
+        if not hasattr(self, "_embedding_spec"):
+            backend = self._backend
+            tokenizer = getattr(backend, "_tokenizer", None)
+            native = getattr(tokenizer, "backend_tokenizer", None)
+            if native is not None:
+                tokenizer_spec = json.loads(native.to_str())
+                # Tokenizer runtime padding/truncation changes between calls;
+                # encoding semantics are explicitly versioned below instead.
+                tokenizer_spec.pop("padding", None)
+                tokenizer_spec.pop("truncation", None)
+                tokenizer_hash = hashlib.sha256(
+                    json.dumps(tokenizer_spec, sort_keys=True).encode()
+                ).hexdigest()
+            else:
+                tokenizer_hash = self.cfg.model_name
+            self._embedding_spec = {
+                "model": self.cfg.model_name,
+                "revision": getattr(backend, "model_revision", self.cfg.model_name),
+                "tokenizer": tokenizer_hash,
+                "backend": "onnx" if self.cfg.use_onnx else "sentence-transformers",
+                "pooling": "attention-mean",
+                "normalization": self.cfg.normalize,
+                "max_length": 512,
+                "format": "float32-le",
+                "version": 1,
+            }
+        return dict(self._embedding_spec)

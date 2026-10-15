@@ -25,6 +25,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "19876")
     monkeypatch.setattr(setup.shutil, "which", lambda name: None)
     monkeypatch.setattr(setup, "_find_slowave_binary", lambda: "/fake/slowave")
+    monkeypatch.setattr(setup, "_prepare_search_vectors", lambda database: None)
     monkeypatch.setattr(setup.subprocess, "run", lambda *a, **kw: None)
     return tmp_path
 

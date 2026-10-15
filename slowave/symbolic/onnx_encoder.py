@@ -7,9 +7,11 @@ passing model_name to ONNXTextEncoder or EncoderConfig.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
+from threading import RLock
 from typing import Optional
 
 import numpy as np
@@ -38,8 +40,13 @@ class ONNXTextEncoder:
         self._session = None
         self._tokenizer = None
         self._dim = 384
+        self._load_lock = RLock()
 
     def _ensure_loaded(self) -> None:
+        with self._load_lock:
+            self._load()
+
+    def _load(self) -> None:
         """Lazy load ONNX session and tokenizer on first use."""
         if self._session is not None:
             return
@@ -68,19 +75,37 @@ class ONNXTextEncoder:
             try:
                 # Download and cache ONNX model
                 model_path = self._get_onnx_model_path()
+                resolved = model_path.resolve()
+                if "snapshots" in model_path.parts:
+                    self.model_revision = model_path.parts[model_path.parts.index("snapshots") + 1]
+                else:
+                    digest = hashlib.sha256()
+                    with resolved.open("rb") as weights:
+                        for chunk in iter(lambda: weights.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    self.model_revision = digest.hexdigest()
 
                 # Create ONNX Runtime session with CPU optimization
                 sess_options = ort.SessionOptions()
                 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                sess_options.intra_op_num_threads = os.cpu_count() or 4
+                sess_options.intra_op_num_threads = int(
+                    os.environ.get("SLOWAVE_EMBEDDING_THREADS", str(min(4, os.cpu_count() or 4)))
+                )
+                sess_options.inter_op_num_threads = 1
 
-                self._session = ort.InferenceSession(
+                session = ort.InferenceSession(
                     str(model_path),
                     sess_options=sess_options,
                     providers=["CPUExecutionProvider"],
                 )
 
-                self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_name, local_files_only=True
+                    )
+                except OSError:
+                    tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                self._session, self._tokenizer = session, tokenizer
 
             except (RuntimeError, ModuleNotFoundError, OSError) as e:
                 raise RuntimeError(
@@ -113,6 +138,16 @@ class ONNXTextEncoder:
         # Repo name is derived from the model's short name (last path component).
         xenova_repo = "Xenova/" + self.model_name.split("/")[-1]
         try:
+            try:
+                model_file = hf_hub_download(
+                    repo_id=xenova_repo,
+                    filename="onnx/model.onnx",
+                    cache_dir=str(cache_dir),
+                    local_files_only=True,
+                )
+                return Path(model_file)
+            except (OSError, ValueError):
+                pass
             model_file = hf_hub_download(
                 repo_id=xenova_repo,
                 filename="onnx/model.onnx",
