@@ -427,6 +427,7 @@ def retrieve_procedures(
     retrieval_context: dict[str, Any] | None = None,
     lexical_candidates: dict[str, ProcedureLexicalCandidate] | None = None,
     encoder: Any = None,
+    vector_store: Any = None,
     limit: int = 3,
     min_similarity: float = _DENSE_RELEVANCE_FLOOR,
     suppression_trace: list[dict[str, str]] | None = None,
@@ -447,13 +448,39 @@ def retrieve_procedures(
     lexical_candidates = lexical_candidates or {}
     cue_terms = set(re.findall(r"\w+", cue.casefold()))
     query_vector = encoder.encode(cue) if encoder is not None else None
+    stored_vectors = None
+    if (
+        query_vector is not None
+        and vector_store is not None
+        and hasattr(encoder, "embedding_spec")
+        and getattr(getattr(encoder, "cfg", None), "use_onnx", True)
+    ):
+        entries = [
+            (item["id"], role, str(item.get(field) or item[fallback]))
+            for item in procedures
+            for role, field, fallback in [
+                ("applicability", "applicability_text", "goal"),
+                ("strategy", "strategy_text", "summary"),
+            ]
+        ]
+        stored_vectors = vector_store.vectors("procedure", entries, encoder)
     scored: list[tuple[dict[str, Any], float, float]] = []
-    for item in procedures:
+    for index, item in enumerate(procedures):
         applicability = str(item.get("applicability_text") or item["goal"])
         strategy = str(item.get("strategy_text") or item["summary"])
         if query_vector is not None:
-            applicability_score = max(0.0, float(query_vector.dot(encoder.encode(applicability))))
-            strategy_score = max(0.0, float(query_vector.dot(encoder.encode(strategy))))
+            applicability_vector = (
+                stored_vectors[2 * index]
+                if stored_vectors is not None
+                else encoder.encode(applicability)
+            )
+            strategy_vector = (
+                stored_vectors[2 * index + 1]
+                if stored_vectors is not None
+                else encoder.encode(strategy)
+            )
+            applicability_score = max(0.0, float(query_vector.dot(applicability_vector)))
+            strategy_score = max(0.0, float(query_vector.dot(strategy_vector)))
         else:
             applicability_score = _lexical_overlap(cue_terms, applicability)
             strategy_score = _lexical_overlap(cue_terms, strategy)

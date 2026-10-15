@@ -174,6 +174,29 @@ def _upsert(
     document, source_context_id = payload
     context = _json_object(_json_object(row["metadata_json"]).get("procedure", {}).get("context"))
     verification = _json_object(row["verification_json"])
+    existing = conn.execute(
+        "SELECT source_session_id,source_context_id,scope_id,completed_at,applicability_text,strategy_text,context_json,outcome,verification_status FROM procedure_search_documents WHERE procedure_id=?",
+        (document.procedure_id,),
+    ).fetchone()
+    values = (
+        row["session_id"],
+        source_context_id,
+        document.scope_id,
+        row["completed_at"],
+        document.applicability_text,
+        document.strategy_text,
+        json.dumps(context, ensure_ascii=False, sort_keys=True),
+        _text(row["outcome"]) or "unknown",
+        _text(verification.get("status")) or "unverified",
+    )
+    if existing is not None and tuple(existing) == values:
+        if (
+            not update_fts
+            or conn.execute(
+                "SELECT 1 FROM procedure_search_fts WHERE procedure_id=?", (document.procedure_id,)
+            ).fetchone()
+        ):
+            return
     conn.execute(
         "INSERT INTO procedure_search_documents "
         "(procedure_id, source_session_id, source_context_id, scope_id, completed_at, "

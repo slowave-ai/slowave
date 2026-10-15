@@ -161,7 +161,9 @@ def control(action: str, kinds: tuple[str, ...] = KINDS) -> None:
         click.echo(f"{kind}: {action}")
 
 
-def wait_for_daemon_health(port: int, timeout: float = DAEMON_HEALTH_TIMEOUT) -> str | None:
+def wait_for_daemon_health(
+    port: int, timeout: float = DAEMON_HEALTH_TIMEOUT, *, require_retrieval_ready: bool = False
+) -> str | None:
     """Return None when the expected daemon is healthy, or the last failure.
 
     Use one wall-clock budget for setup/start/restart on every OS. Connection
@@ -192,6 +194,8 @@ def wait_for_daemon_health(port: int, timeout: float = DAEMON_HEALTH_TIMEOUT) ->
                 last = "health response has no database path"
             elif Path(data["db"]).resolve() != expected_db:
                 last = f"running database {data.get('db')}, expected {expected_db}"
+            elif require_retrieval_ready and data.get("retrieval_ready") is not True:
+                last = "daemon is live but retrieval preparation is incomplete"
             else:
                 return None
         except (OSError, ValueError, http.client.HTTPException) as exc:
@@ -206,7 +210,7 @@ def verify_daemon() -> None:
     from slowave import __version__
     from slowave.core.paths import daemon_port
 
-    failure = wait_for_daemon_health(daemon_port())
+    failure = wait_for_daemon_health(daemon_port(), require_retrieval_ready=True)
     if failure is not None:
         raise click.ClickException(
             f"Daemon verification failed after {DAEMON_HEALTH_TIMEOUT:g}s: {failure}. "

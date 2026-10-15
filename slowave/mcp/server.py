@@ -47,6 +47,7 @@ import atexit
 import logging
 import signal
 import sys
+import threading
 import time
 from typing import Any
 
@@ -76,6 +77,7 @@ def _server_paths() -> RuntimePaths:
 # Engine singleton cache
 # ---------------------------------------------------------------------------
 _ENGINES: dict[tuple[bool], SlowaveEngine] = {}
+_ENGINE_LOCK = threading.RLock()
 
 
 def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
@@ -90,23 +92,24 @@ def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
     encoder-free engine (e.g. for stats) and sometimes a full latent engine.
     All engines share the same SQLite DB so writes are visible across them.
     """
-    key = (disable_encoder,)
-    eng = _ENGINES.get(key)
-    if eng is not None:
+    with _ENGINE_LOCK:
+        key = (disable_encoder,)
+        eng = _ENGINES.get(key)
+        if eng is not None:
+            return eng
+        database = str(_server_paths().database)
+        db_dir = os.path.dirname(os.path.abspath(database))
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        cfg = SlowaveConfig(
+            db_path=database,
+            dim=384,
+            encoder=EncoderConfig(),
+            disable_encoder=disable_encoder,
+        )
+        eng = SlowaveEngine(cfg)
+        _ENGINES[key] = eng
         return eng
-    database = str(_server_paths().database)
-    db_dir = os.path.dirname(os.path.abspath(database))
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir, exist_ok=True)
-    cfg = SlowaveConfig(
-        db_path=database,
-        dim=384,
-        encoder=EncoderConfig(),
-        disable_encoder=disable_encoder,
-    )
-    eng = SlowaveEngine(cfg)
-    _ENGINES[key] = eng
-    return eng
 
 
 # ---------------------------------------------------------------------------

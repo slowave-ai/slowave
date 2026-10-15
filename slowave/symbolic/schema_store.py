@@ -404,6 +404,7 @@ class SchemaStore:
         self.last_create_reinforced_existing_id: int | None = None
         self._gen_cfg: GeneralizationConfig = gen_cfg or _DEFAULT_GEN_CFG
         self.scope_registry = ScopeRegistry(db)
+        self._dense_cache: dict[tuple, tuple[int, list[int], np.ndarray, np.ndarray]] = {}
 
     def create(
         self,
@@ -1640,6 +1641,19 @@ class SchemaStore:
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         qn = float(np.linalg.norm(q)) + 1e-12
         conn = self.db.connect()
+        revision = int(
+            conn.execute(
+                "SELECT revision FROM search_projection_revisions WHERE domain='schemas'"
+            ).fetchone()[0]
+        )
+        key = (scope_id, include_inactive, q.size)
+        cached = self._dense_cache.get(key)
+        if cached is not None and cached[0] == revision:
+            _, ids, matrix, norms = cached
+            scores = (matrix @ q) / (qn * (norms + 1e-12))
+            return sorted(zip(ids, map(float, scores)), key=lambda pair: pair[1], reverse=True)[
+                : int(limit)
+            ]
         sql = "SELECT id, embedding, dim FROM schemas WHERE embedding IS NOT NULL"
         args: list[Any] = []
         if scope_id is not None:
@@ -1651,14 +1665,24 @@ class SchemaStore:
         if not include_inactive:
             sql += " AND status IN ('active', 'needs_review')"
         rows = conn.execute(sql, tuple(args)).fetchall()
-        scored: List[tuple[int, float]] = []
+        ids = []
+        vectors = []
         for r in rows:
             try:
                 v = unpack_f32(r["embedding"], int(r["dim"]))
             except Exception:
                 continue
-            score = float(q.dot(v) / (qn * (float(np.linalg.norm(v)) + 1e-12)))
-            scored.append((int(r["id"]), score))
+            if v.size != q.size:
+                continue
+            ids.append(int(r["id"]))
+            vectors.append(v)
+        matrix = np.asarray(vectors, dtype=np.float32).reshape(len(ids), q.size)
+        norms = np.linalg.norm(matrix, axis=1)
+        if len(self._dense_cache) >= 16:
+            self._dense_cache.clear()
+        self._dense_cache[key] = (revision, ids, matrix, norms)
+        scores = (matrix @ q) / (qn * (norms + 1e-12))
+        scored = list(zip(ids, map(float, scores)))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[: int(limit)]
 

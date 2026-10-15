@@ -551,6 +551,8 @@ def fake_home(tmp_path, monkeypatch):
     """Redirect _home() to tmp_path in both setup and cleanup modules."""
     monkeypatch.setattr(_setup_mod, "_home", lambda: tmp_path)
     monkeypatch.setattr(_cleanup_mod, "_home", lambda: tmp_path)
+    # These are configuration tests; search preparation has separate tests.
+    monkeypatch.setattr(_setup_mod, "_prepare_search_vectors", lambda database: None)
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
     real_which = _setup_mod.shutil.which
     monkeypatch.setattr(
@@ -1288,13 +1290,13 @@ def test_setup_uses_shared_readiness_budget(monkeypatch):
 
     calls = []
 
-    def wait(port, timeout):
-        calls.append((port, timeout))
+    def wait(port, timeout, *, require_retrieval_ready=False):
+        calls.append((port, timeout, require_retrieval_ready))
         return None
 
     monkeypatch.setattr(_setup_mod, "wait_for_daemon_health", wait)
     assert _setup_mod._verify_daemon_health(12345)
-    assert calls == [(12345, DAEMON_HEALTH_TIMEOUT)]
+    assert calls == [(12345, DAEMON_HEALTH_TIMEOUT, True)]
 
 
 def test_setup_reenables_windows_backup_without_running_it(monkeypatch):

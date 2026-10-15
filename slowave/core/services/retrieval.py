@@ -329,6 +329,7 @@ class RetrievalService:
         self._retrieval_cfg = retrieval_cfg
         self._applicability_config = applicability_config or ApplicabilityConfig()
         self._applicability_scorer: PairScorer | None = None
+        self._passage_indexes: dict[tuple, tuple[int, dict]] = {}
 
     def _delivery_facets(self, schema: Any) -> dict[str, Any]:
         """Facets enriched with the delivery-relevant episode-derived marker.
@@ -466,8 +467,25 @@ class RetrievalService:
             )
             return None
         scope_id = normalize_scope(scope=scope)
+        conn = self.db.connect()
+        revision = int(
+            conn.execute(
+                "SELECT revision FROM search_projection_revisions WHERE domain='schemas'"
+            ).fetchone()[0]
+        )
+        key = (scope_id, mode)
+        cached = self._passage_indexes.get(key)
+        if cached is not None and cached[0] == revision:
+            return cached[1]
+        sql = "SELECT * FROM schemas"
+        params: tuple = ()
+        if scope_id is not None:
+            sql += " WHERE scope_id=? OR scope_id IS NULL OR scope_id IN ('global','user') OR generalization_stage>=2"
+            params = (scope_id,)
+        sql += " ORDER BY salience DESC,last_updated_ts DESC"
         universe: list = []
-        for schema in self.schemas.list(limit=100000):
+        for row in conn.execute(sql, params).fetchall():
+            schema = self.schemas._row_to_schema(row)
             if not (
                 scope_id is None
                 or schema.scope_id in (scope_id, None, "global", "user")
@@ -483,14 +501,33 @@ class RetrievalService:
                 universe.append(schema)
         if not universe:
             return None
-        vectors = encoder.passages([schema.content_text or "" for schema in universe])
+        from slowave.storage.embedding_store import EmbeddingStore
+
+        vectors = (
+            EmbeddingStore(self.db).vectors(
+                "schema",
+                [(schema.id, "passage", schema.content_text or "") for schema in universe],
+                encoder,
+            )
+            if hasattr(encoder, "embedding_spec")
+            else encoder.passages([schema.content_text or "" for schema in universe])
+        )
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         vectors = vectors / np.clip(norms, 1e-12, None)
-        return {
+        index = {
             "encoder": encoder,
             "ids": np.array([schema.id for schema in universe], dtype=np.int64),
             "vectors": vectors,
         }
+        if len(self._passage_indexes) >= 16:
+            self._passage_indexes.clear()
+        if revision == int(
+            conn.execute(
+                "SELECT revision FROM search_projection_revisions WHERE domain='schemas'"
+            ).fetchone()[0]
+        ):
+            self._passage_indexes[key] = (revision, index)
+        return index
 
     def _baseline_catalog(
         self, request: SharedRequest, scope: str | None, mode: str

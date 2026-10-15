@@ -59,6 +59,7 @@ from slowave.mcp.tools import register_tools
 from slowave.symbolic.encoder import EncoderConfig
 
 log = logging.getLogger(__name__)
+_ENGINE_LOCK = threading.RLock()
 
 DEFAULT_HOST = os.environ.get("SLOWAVE_MCP_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("SLOWAVE_MCP_HTTP_PORT", "8766"))
@@ -86,23 +87,24 @@ def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
     FAISS index, DB connection) is loaded once at first use and reused for
     the lifetime of the process across all connected clients.
     """
-    key = (disable_encoder,)
-    eng = _ENGINES.get(key)
-    if eng is not None:
+    with _ENGINE_LOCK:
+        key = (disable_encoder,)
+        eng = _ENGINES.get(key)
+        if eng is not None:
+            return eng
+        database = str(_server_paths().database)
+        db_dir = os.path.dirname(os.path.abspath(database))
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        cfg = SlowaveConfig(
+            db_path=database,
+            dim=384,
+            encoder=EncoderConfig(),
+            disable_encoder=disable_encoder,
+        )
+        eng = SlowaveEngine(cfg)
+        _ENGINES[key] = eng
         return eng
-    database = str(_server_paths().database)
-    db_dir = os.path.dirname(os.path.abspath(database))
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir, exist_ok=True)
-    cfg = SlowaveConfig(
-        db_path=database,
-        dim=384,
-        encoder=EncoderConfig(),
-        disable_encoder=disable_encoder,
-    )
-    eng = SlowaveEngine(cfg)
-    _ENGINES[key] = eng
-    return eng
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +213,9 @@ def _make_app():
                 "db": str(_server_paths().database),
                 "active_sessions": len([s for s in sessions.values() if s.get("fresh")]),
                 "engines_loaded": list(_ENGINES.keys()),
+                "retrieval_ready": any(
+                    getattr(eng, "retrieval_ready", False) for eng in _ENGINES.values()
+                ),
             }
         )
 
@@ -309,7 +314,9 @@ def main(
     # Scheduler cold-starts (see _verify_daemon_health in cli/setup.py).
     def _warm_engine() -> None:
         try:
-            _build_engine()
+            eng = _build_engine()
+            if not eng.prepare_retrieval(wait=True)["ready"]:
+                raise RuntimeError("Retrieval preparation is incomplete")
             log.info("Engine warmed up; DB ready at %s", paths.database)
         except Exception:
             log.warning(

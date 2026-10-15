@@ -2097,6 +2097,15 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     response_data={"ok": True, "data": result},
                 )
                 return {"ok": True, "data": result}
+            # Scalar writes retain independent batch-item error reporting;
+            # prepare inference in batches once rather than twice per item.
+            if eng.encoder is not None and hasattr(eng.encoder, "encode_many"):
+                try:
+                    eng.encoder.encode_many(
+                        list(dict.fromkeys(item["content"] for item in normalized))
+                    )
+                except Exception:
+                    log.warning("Batch encoding unavailable; retrying per memory", exc_info=True)
             results: list[dict[str, Any]] = []
             for index, item in enumerate(normalized):
                 try:

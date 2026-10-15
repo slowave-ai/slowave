@@ -55,7 +55,9 @@ slowave doctor
 
 Setup configures detected clients, restarts daemon/worker, and enables the daily
 backup schedule. Complete the manual instruction paste when prompted for
-Claude Desktop or Cursor, then restart/reload your MCP clients.
+Claude Desktop or Cursor, then restart/reload your MCP clients. Keep an internet
+connection available until setup finishes; see [Local retrieval models](#local-retrieval-models)
+for offline use.
 
 If `slowave` is not found, run `pipx ensurepath` and reopen the terminal. Use
 `pipx list` to confirm the installation. Do not install a second copy just to
@@ -253,16 +255,18 @@ upgrading to replace older task actions. Custom Python installations without
 
 ### Local retrieval models
 
-The embedding model and the pinned multilingual applicability model run locally.
-Missing applicability assets are downloaded from Hugging Face on first use;
-cached installations reuse them without a network request. Only model assets
-are downloaded: task and memory text stays on your computer. The initial
-request can take longer while assets are downloaded and loaded.
+`slowave setup` downloads the models Slowave needs and prepares existing
+memories and procedures for faster search. Keep an internet connection available
+and wait for setup to finish before restarting your MCP clients. The first setup,
+or setup after an upgrade, may take longer while this work completes.
 
-For an offline installation, provision the model cache beforehand. Set
-`HF_HUB_OFFLINE=1` to prohibit downloads. If applicability assets are missing
-or unavailable, retrieval uses lexical/semantic fallback and returns an
-`applicability_unavailable` warning; relevance can differ in that mode.
+If setup is interrupted, run `slowave setup` again to resume. Only model files
+are downloaded; your task and memory text stays on your computer.
+
+Before using Slowave offline, complete `slowave setup` on that computer while
+connected to the internet. Slowave then reuses the downloaded models offline.
+Set `HF_HUB_OFFLINE=1` to prevent model downloads. If setup reports missing
+models, remove that setting, reconnect to the internet and rerun `slowave setup`.
 
 ### Per-client setup
 

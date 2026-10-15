@@ -11,6 +11,7 @@ tasks for performance, but the contract shape is identical.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, replace
@@ -33,6 +34,7 @@ from slowave.core.services.retrieval_access import canonical_cue_text
 from slowave.core.shared_retrieval import POLICY_VERSION as SHARED_POLICY_VERSION
 from slowave.core.shared_retrieval import SharedRequest
 from slowave.core.shared_retrieval import enabled as shared_retrieval_enabled
+from slowave.storage.embedding_store import EmbeddingStore
 from slowave.symbolic.procedural_memory import (
     load_procedures,
     normalize_facets,
@@ -797,6 +799,7 @@ def activate(
                 eng.db.connect(), query=procedure_query, scope=scope_id
             ),
             encoder=getattr(eng, "encoder", None),
+            vector_store=EmbeddingStore(eng.db),
             suppression_trace=procedure_suppressions,
         )
         if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
@@ -1196,6 +1199,7 @@ def recall(
                 eng.db.connect(), query=procedure_query, scope=scope
             ),
             encoder=getattr(eng, "encoder", None),
+            vector_store=EmbeddingStore(eng.db),
             suppression_trace=procedure_suppressions,
         )
         if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
@@ -1474,6 +1478,15 @@ def commit(
                 content=step_text.strip(),
             )
     if normalized_trajectory and not already_ended:
+        if eng.encoder is not None and hasattr(eng.encoder, "encode_many"):
+            try:
+                eng.encoder.encode_many(
+                    list(dict.fromkeys(item["summary"].strip() for item in normalized_trajectory))
+                )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Trajectory batch encoding unavailable; retrying per event", exc_info=True
+                )
         for index, item in enumerate(normalized_trajectory):
             eng.event_append(
                 session_id=session_id,
@@ -1552,6 +1565,40 @@ def commit(
         verification=verification,
         feedback_status=final_feedback_status,
     )
+    if (
+        normalized_procedure is not None
+        and eng.encoder is not None
+        and hasattr(eng.encoder, "embedding_spec")
+        and getattr(getattr(eng.encoder, "cfg", None), "use_onnx", True)
+    ):
+        try:
+            backfill_procedure_search(eng.db.connect(), session_id=session_id)
+            document = (
+                eng.db.connect()
+                .execute(
+                    "SELECT procedure_id,applicability_text,strategy_text FROM procedure_search_documents WHERE source_session_id=?",
+                    (session_id,),
+                )
+                .fetchone()
+            )
+            if document is not None:
+                EmbeddingStore(eng.db).vectors(
+                    "procedure",
+                    [
+                        (document["procedure_id"], role, document[column])
+                        for role, column in [
+                            ("applicability", "applicability_text"),
+                            ("strategy", "strategy_text"),
+                        ]
+                    ],
+                    eng.encoder,
+                )
+        except Exception:
+            # The committed canonical procedure is durable; startup/retrieval
+            # retries this independently rebuildable projection.
+            logging.getLogger(__name__).warning(
+                "Procedure embeddings pending; will retry", exc_info=True
+            )
     out: dict[str, Any] = {
         "session_id": session_id,
         "episodes_formed": result.get("episodes_formed", 0),
