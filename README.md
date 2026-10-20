@@ -20,9 +20,8 @@
 
 
 ---
-Your coding agent have a large context window, but that context ends with your current session.
-
-Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, thinking process. Over and over.
+AI agents have large context windows, but that context ends with your current session.
+Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, over and over.
 
 Slowave gives your agents one local, shared memory, without requiring a separate LLM for memory maintenance.
 
@@ -83,28 +82,42 @@ use `slowave status --services` and `slowave doctor` to diagnose problems.
 See [Troubleshooting](docs/troubleshooting.md) for recovery and logs, or run
 `slowave docs troubleshooting` to open it from your terminal.
 
-## What changes in your workflow?
+## Workflow
 
-Slowave is transparent to your work. You keep working with your agent as usual. 
+You keep working with your agent as usual, nothing changes in your workflow. You can switch agents or start new sessions. 
 
-Slowave is strictly connected to your agent in both directions:
+Slowave enriches your agent context with relevant memories and procedures. Your agent feedbacks Slwoave on what was useful and what was not. Slowave keeps building relevant context for your agents in the background.
 
-- **Agent → Slowave**: When your agent encounters a durable fact, decision, or procedure the installed lifecycle directs it to preserve that claim into Slowave.
-- **Slowave → Agent**: At the beginning of each task Slowave may return a compact, scoped set of relevant recorded memories or procedures to your agent, so that it can act upon its own memories. 
 
-What you will see while working with your agent:
-- your agent activating Slowave for the current task and goal, 
-- Slowave retrieving relevant context to your agent, 
-- your agent sending feedback to Slowave on what was retrieved.
-- your agent committing a Slowave session.
 
-Optionally you will see:
-- your agent invoking Slowave to remember durable facts.
-- your agent invoking Slowave to recall something critical for the current task or goal.
+```mermaid
+sequenceDiagram
+    actor User as You
+    participant Agent as Your Agent<br/>(Claude Code, Codex, etc.)
+    participant Slowave
+    participant Worker as Slowave Worker
 
-Slowave does not decide whether a claim is true or important. Your agent makes
-that judgment and reports whether retrieved memory helped, was irrelevant, or
-became stale. Slowave maintains the resulting local memory.
+    User->>Agent: Prompt
+    Agent->>Slowave: Activate: Start task (set goal)
+    Slowave-->>Agent: Relevant memories and procedures
+
+    opt 
+        Agent->>Slowave: Remember: Save new knowledge
+    end
+
+    opt 
+        Agent->>Slowave: Recall: Look up more context
+        Slowave-->>Agent: Matching memories and procedures
+    end
+
+    Agent->>Agent: Reason upon enriched context, work on the task
+    Agent->>Slowave: Feedback: Assess retrieved context
+    Agent->>Slowave: Commit: Record outcome
+    Slowave-->>Agent: Task outcome saved, session closed
+    Agent-->>User: Deliver the result
+
+    Worker->>Slowave: Consolidate, reinforce, decay memories
+```
 
 
 ## Dashboard
