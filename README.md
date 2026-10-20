@@ -88,7 +88,7 @@ You keep working with your agent as usual.
 
 You can switch agents or start new sessions. 
 
-Slowave enriches your agent context with relevant memories and procedures. Your agent feedbacks Slwoave on what was useful. Slowave keeps building relevant context for your agents in the background.
+Slowave enriches your agents context with relevant memories and procedures. Your agent feedbacks Slowave on what was useful. Slowave keeps building relevant context for your agents in the background.
 
 
 
