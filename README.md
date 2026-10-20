@@ -84,9 +84,11 @@ See [Troubleshooting](docs/troubleshooting.md) for recovery and logs, or run
 
 ## Workflow
 
-You keep working with your agent as usual, nothing changes in your workflow. You can switch agents or start new sessions. 
+You keep working with your agent as usual. 
 
-Slowave enriches your agent context with relevant memories and procedures. Your agent feedbacks Slwoave on what was useful and what was not. Slowave keeps building relevant context for your agents in the background.
+You can switch agents or start new sessions. 
+
+Slowave enriches your agent context with relevant memories and procedures. Your agent feedbacks Slwoave on what was useful. Slowave keeps building relevant context for your agents in the background.
 
 
 
