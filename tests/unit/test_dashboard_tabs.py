@@ -50,7 +50,7 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "metric-rate-percent" in source
     styles = (UI_SOURCE / "styles.css").read_text()
     assert ".retrieval-table td.retrieval-task-cell" in styles
-    assert "Context used" in source
+    assert '["used", "Usage"]' in source
     assert "used / retrieved" in source
     assert "text-transform: uppercase" in styles
     assert "numerator === denominator" in source

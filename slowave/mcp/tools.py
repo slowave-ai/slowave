@@ -17,12 +17,15 @@ existing two.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
 import math
+import os
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Literal
 
@@ -54,10 +57,67 @@ log = logging.getLogger(__name__)
 _bg_tasks: set[asyncio.Task] = set()
 
 
+# Event loop that serves MCP requests. Tool bodies run on worker threads (see
+# ``_off_event_loop``), so fire-and-forget coroutines are handed back to it.
+_tool_loop: asyncio.AbstractEventLoop | None = None
+_bg_futures: set[Any] = set()
+
+
 def _spawn_bg_task(coro: Any) -> None:
-    task = asyncio.create_task(coro)
+    try:
+        task = asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        # Called from a tool worker thread: schedule on the serving loop.
+        loop = _tool_loop
+        if loop is None or loop.is_closed():
+            coro.close()
+            return
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        _bg_futures.add(future)
+        future.add_done_callback(_bg_futures.discard)
+        return
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
+
+
+def _tool_worker_count() -> int:
+    """Bound tool concurrency: each worker owns a SQLite connection (page cache).
+
+    Small by design so 8 GB machines pay at most a few connections; inference
+    is additionally serialised by the scorer lock, so more workers add memory
+    but no throughput.
+    """
+    try:
+        configured = int(os.environ.get("SLOWAVE_TOOL_WORKERS", ""))
+    except ValueError:
+        configured = 0
+    return configured if configured > 0 else max(2, min(4, os.cpu_count() or 2))
+
+
+_TOOL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_tool_worker_count(), thread_name_prefix="slowave-tool"
+)
+
+
+def _off_event_loop(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a blocking tool body on a worker thread, keeping the event loop free.
+
+    Tool bodies are synchronous (SQLite, ONNX inference) and can take seconds.
+    Executing them on the event loop stalled every concurrent request, health
+    probe and dashboard call behind a single activation. SQLite connections are
+    per-thread (``SQLiteDB._local``) and WAL-mode, so worker threads are safe. The pool is
+    bounded (``SLOWAVE_TOOL_WORKERS``) to cap per-thread connection memory.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        global _tool_loop
+        _tool_loop = asyncio.get_running_loop()
+        return await _tool_loop.run_in_executor(
+            _TOOL_EXECUTOR, functools.partial(fn, *args, **kwargs)
+        )
+
+    return wrapper
 
 
 # Keys stored in schema facets that are internal to the retrieval engine.
@@ -1570,7 +1630,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
     """
 
     @mcp.tool(name="slowave_activate")
-    async def slowave_activate(
+    @_off_event_loop
+    def slowave_activate(
         ctx: Context,
         page_size: Any = DEFAULT_MEMORY_PAGE_SIZE,
         task: Any = None,
@@ -1784,7 +1845,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             }
 
     @mcp.tool(name="slowave_recall")
-    async def slowave_recall(
+    @_off_event_loop
+    def slowave_recall(
         ctx: Context,
         session_id: Any = None,
         scope: Any = None,
@@ -1967,7 +2029,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             }
 
     @mcp.tool(name="slowave_remember")
-    async def slowave_remember(
+    @_off_event_loop
+    def slowave_remember(
         ctx: Context,
         scope: Any = None,
         session_id: Any = None,
@@ -2154,7 +2217,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             }
 
     @mcp.tool(name="slowave_feedback")
-    async def slowave_feedback(
+    @_off_event_loop
+    def slowave_feedback(
         ctx: Context,
         retrieval_id: Any = None,
         memory_feedback: Any = None,
@@ -2361,7 +2425,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
             return {"ok": False, "error": {"code": code, "message": str(e), "retryable": False}}
 
     @mcp.tool(name="slowave_commit")
-    async def slowave_commit(
+    @_off_event_loop
+    def slowave_commit(
         ctx: Context,
         session_id: Any = None,
         final_goal: Any = None,

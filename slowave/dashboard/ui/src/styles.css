@@ -37,6 +37,10 @@
   --accent-memory: #25815f;
   --accent-procedure: #7652a8;
   --accent-usage: #7652a8;
+  --chart-created: #a34f40;
+  --chart-retrieved: #2563b0;
+  --chart-used: #147d73;
+  --chart-rate: #956b1c;
   --accent-neutral: #687684;
   --critical: var(--danger);
   --surface-0: var(--canvas);
@@ -73,6 +77,10 @@
   --accent-memory: #64c99a;
   --accent-procedure: #b39ae3;
   --accent-usage: #b39ae3;
+  --chart-created: #e18e79;
+  --chart-retrieved: #5b9cf5;
+  --chart-used: #55bba8;
+  --chart-rate: #d8b877;
   --silver-shine: linear-gradient(
     165deg,
     #ffffff 0%,
@@ -404,6 +412,7 @@ main {
   scroll-margin-top: 16px;
 }
 .section:not(:first-of-type) { padding-top: 4px; }
+.focused-activity { margin-bottom: 26px; }
 .section-header h2::before { content: ""; display: inline-block; width: 5px; height: 21px; margin: 0 10px -2px 0; border-radius: 4px; background: var(--silver-shine); box-shadow: var(--shine-bar-shadow); }
 .section-header {
   display: flex;
@@ -849,8 +858,8 @@ main {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 8px 24px;
+  margin-top: 12px;
 }
 .knowledge-activity-tabs {
   display: flex;
@@ -874,41 +883,41 @@ main {
 .formation-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  border: 1px solid color-mix(in srgb, currentColor 45%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  padding: 4px 11px;
+  gap: 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 5px 4px;
   color: var(--muted);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: opacity 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: opacity 140ms ease;
 }
+.formation-legend-item:hover { background: var(--surface-background-hover); }
 .formation-legend-item i {
-  width: 9px;
-  height: 9px;
+  width: 18px;
+  height: 2px;
   flex: none;
-  border-radius: 50%;
+  border-radius: 1px;
   background: currentColor;
-  box-shadow: 0 0 8px currentColor;
 }
-.formation-legend-item b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.formation-legend-item b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
 .formation-legend-item[aria-pressed="false"] { opacity: 0.4; }
 .formation-legend-schemas,
-.formation-legend-procedures { color: var(--success); }
+.formation-legend-procedures { color: var(--chart-created); }
 .formation-legend-memory_retrievals,
-.formation-legend-procedure_retrievals { color: var(--accent-activity); }
+.formation-legend-procedure_retrievals { color: var(--chart-retrieved); }
 .formation-legend-used_memories,
-.formation-legend-used_procedures { color: var(--accent-usage); }
+.formation-legend-used_procedures { color: var(--chart-used); }
 .formation-chart { position: relative; }
 .formation-chart svg {
   display: block;
   width: 100%;
-  min-width: 760px;
+  min-width: 0;
   overflow: visible;
 }
-.formation-gridline { stroke: var(--border-muted); stroke-dasharray: 3 5; opacity: 0.7; }
+.formation-gridline { stroke: var(--border-muted); stroke-width: 0.7; opacity: 0.55; }
 .formation-baseline,
 .formation-tick { stroke: var(--border); }
 .formation-axis-label {
@@ -920,42 +929,40 @@ main {
   stroke: color-mix(in srgb, var(--link) 55%, transparent);
   stroke-dasharray: 2 3;
 }
-.formation-area { opacity: 0; animation: formation-rise 700ms ease-out forwards; }
+.formation-area { opacity: 1; }
 .formation-line {
   fill: none;
-  stroke-width: 2.2;
+  stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: formation-draw 900ms ease-out forwards;
+  vector-effect: non-scaling-stroke;
 }
 .formation-dot { opacity: 0.85; transition: r 120ms ease, opacity 120ms ease; }
 .formation-dot-active { opacity: 1; }
 .formation-series-schemas .formation-line,
-.formation-series-procedures .formation-line { stroke: var(--success); }
+.formation-series-procedures .formation-line { stroke: var(--chart-created); }
 .formation-series-memory_retrievals .formation-line,
-.formation-series-procedure_retrievals .formation-line { stroke: var(--accent-activity); }
+.formation-series-procedure_retrievals .formation-line { stroke: var(--chart-retrieved); }
 .formation-series-used_memories .formation-line,
-.formation-series-used_procedures .formation-line { stroke: var(--accent-usage); }
+.formation-series-used_procedures .formation-line { stroke: var(--chart-used); }
 .formation-series-schemas .formation-dot,
-.formation-series-procedures .formation-dot { fill: var(--success); }
+.formation-series-procedures .formation-dot { fill: var(--chart-created); }
 .formation-series-memory_retrievals .formation-dot,
-.formation-series-procedure_retrievals .formation-dot { fill: var(--accent-activity); }
+.formation-series-procedure_retrievals .formation-dot { fill: var(--chart-retrieved); }
 .formation-series-used_memories .formation-dot,
-.formation-series-used_procedures .formation-dot { fill: var(--accent-usage); }
+.formation-series-used_procedures .formation-dot { fill: var(--chart-used); }
 .formation-stop-top.formation-stop-schemas,
-.formation-stop-top.formation-stop-procedures { stop-color: var(--success); stop-opacity: 0.24; }
+.formation-stop-top.formation-stop-procedures { stop-color: var(--chart-created); stop-opacity: 0.07; }
 .formation-stop-bottom.formation-stop-schemas,
-.formation-stop-bottom.formation-stop-procedures { stop-color: var(--success); stop-opacity: 0; }
+.formation-stop-bottom.formation-stop-procedures { stop-color: var(--chart-created); stop-opacity: 0; }
 .formation-stop-top.formation-stop-memory_retrievals,
-.formation-stop-top.formation-stop-procedure_retrievals { stop-color: var(--accent-activity); stop-opacity: 0.24; }
+.formation-stop-top.formation-stop-procedure_retrievals { stop-color: var(--chart-retrieved); stop-opacity: 0.07; }
 .formation-stop-bottom.formation-stop-memory_retrievals,
-.formation-stop-bottom.formation-stop-procedure_retrievals { stop-color: var(--accent-activity); stop-opacity: 0; }
+.formation-stop-bottom.formation-stop-procedure_retrievals { stop-color: var(--chart-retrieved); stop-opacity: 0; }
 .formation-stop-top.formation-stop-used_memories,
-.formation-stop-top.formation-stop-used_procedures { stop-color: var(--accent-usage); stop-opacity: 0.24; }
+.formation-stop-top.formation-stop-used_procedures { stop-color: var(--chart-used); stop-opacity: 0.07; }
 .formation-stop-bottom.formation-stop-used_memories,
-.formation-stop-bottom.formation-stop-used_procedures { stop-color: var(--accent-usage); stop-opacity: 0; }
+.formation-stop-bottom.formation-stop-used_procedures { stop-color: var(--chart-used); stop-opacity: 0; }
 .formation-hit-area { fill: transparent; pointer-events: all; }
 .formation-tooltip {
   position: absolute;
@@ -986,14 +993,14 @@ main {
   flex: none;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 6px currentColor;
+  box-shadow: none;
 }
 .formation-tooltip-schemas,
-.formation-tooltip-procedures { color: var(--success) !important; }
+.formation-tooltip-procedures { color: var(--chart-created) !important; }
 .formation-tooltip-memory_retrievals,
-.formation-tooltip-procedure_retrievals { color: var(--accent-activity) !important; }
+.formation-tooltip-procedure_retrievals { color: var(--chart-retrieved) !important; }
 .formation-tooltip-used_memories,
-.formation-tooltip-used_procedures { color: var(--accent-usage) !important; }
+.formation-tooltip-used_procedures { color: var(--chart-used) !important; }
 @keyframes formation-draw {
   to { stroke-dashoffset: 0; }
 }
@@ -2316,3 +2323,188 @@ pre, .detail-pre { border-radius: 5px; background: var(--subtle); font-size: 11.
 @media (max-width: 760px) {
   .home-header .page-actions { grid-template-columns: minmax(0, 1fr) 76px auto; }
 }
+
+.formation-caption { margin: 4px 0 0; color: var(--muted); font-size: 11px; text-align: center; }
+.formation-hit-area:focus-visible { outline: 1px solid var(--focus); }
+
+.formation-legend-item { color: var(--muted); }
+.formation-legend-schemas i, .formation-legend-procedures i { color: var(--chart-created); }
+.formation-legend-memory_retrievals i, .formation-legend-procedure_retrievals i { color: var(--chart-retrieved); }
+.formation-legend-used_memories i, .formation-legend-used_procedures i { color: var(--chart-used); }
+.formation-tooltip { min-width: 174px; padding: 10px 12px; border-radius: 6px; gap: 6px; }
+.formation-tooltip strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.formation-tooltip small { color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.formation-tooltip > span { display: grid; grid-template-columns: 8px 1fr auto; gap: 8px; }
+.formation-tooltip > span > span { color: var(--muted); }
+.formation-tooltip b { color: var(--text); font-weight: 600; }
+
+.formation-footer { display: flex; flex-direction: row-reverse; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 28px 0 56px; }
+.formation-footer .formation-legend { justify-content: flex-start; margin-top: 0; gap: 20px; }
+.formation-footer .formation-caption { margin: 0; white-space: nowrap; font-size: 10px; }
+@media (max-width: 640px) {
+  .formation-footer { padding: 8px 0 0; flex-wrap: wrap; flex-direction: column-reverse; align-items: flex-start; gap: 4px; }
+  .formation-footer .formation-legend { gap: 12px; }
+}
+
+/* Activity lanes separate record creation from repeat delivery occasions. */
+.activity-lane-title { fill: var(--muted); font: 600 8px var(--font); letter-spacing: .08em; }
+.activity-lane-unit { fill: var(--muted); font: 8px var(--font); }
+.activity-creation-bar { fill: var(--chart-created); opacity: .55; }
+.activity-creation-bar.is-active { opacity: 1; }
+.activity-bar-legend i { height: 8px; width: 10px; border-radius: 1px; }
+.activity-tooltip-coverage { border-top: 1px solid var(--border-muted); padding-top: 7px; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.activity-day-detail { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 12px 28px 0 56px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); }
+.activity-day-detail > div:first-child { display: grid; gap: 4px; }
+.activity-day-detail strong { font-size: 12px; }
+.activity-day-detail span { color: var(--muted); font-size: 11px; }
+.activity-day-links { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+.activity-day-links button { border: 0; background: transparent; color: var(--muted); font-size: 20px; padding: 0 4px; cursor: pointer; }
+@media (max-width: 640px) { .activity-day-detail { margin: 12px 0 0; } }
+
+.activity-rate-line { stroke: var(--chart-rate); stroke-dasharray: none; stroke-width: 1.6; }
+.activity-rate-dot { fill: var(--chart-rate); }
+.activity-rate-axis { fill: var(--chart-rate); font: 8px var(--font); font-variant-numeric: tabular-nums; }
+.activity-rate-legend i { background: var(--chart-rate); }
+.formation-tooltip-use-rate { color: var(--chart-rate) !important; }
+
+/* ---- Pro instrument styling (v2): flat cards, solid numerals, quiet charts ---- */
+.formation-hit-area, .formation-hit-area:focus, .formation-hit-area:focus-visible { outline: none; }
+.activity-rate-gap { stroke-dasharray: 2 3; opacity: .35; }
+.activity-creation-bar { opacity: .8; }
+.formation-axis-label, .activity-lane-unit { font-size: 9.5px; }
+.activity-lane-title { font-size: 9.5px; }
+
+.metric-card-grid { gap: 12px; }
+.effectiveness-card, .memory-health-summary .summary-badge {
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--raised);
+  padding: 14px 16px;
+  gap: 10px;
+  position: relative;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.metric-card-link:hover .effectiveness-card { border-color: color-mix(in srgb, var(--metric-accent, var(--link)) 55%, var(--border)); background: var(--surface-background-hover); }
+.effectiveness-card-title { gap: 8px; font-size: 11px; letter-spacing: .06em; }
+.effectiveness-card-title::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--metric-accent, var(--accent-neutral)); flex: none; }
+.effectiveness-card strong,
+.metric-rate-percent {
+  color: var(--text); background: none; -webkit-background-clip: border-box; background-clip: border-box; text-shadow: none;
+  font-size: 28px; font-weight: 600; letter-spacing: -.02em; line-height: 1.05;
+}
+.metric-rate-ratio { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.section-header h2::before { display: none; }
+.section-header h2 { font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+
+/* v2.1: numerals, semantic accents, token bar, availability strip */
+.metric-card .metric-rate-percent, .metric-card .effectiveness-card-value > strong { font-size: 28px; font-weight: 600; }
+.metric-card .token-total { font-size: 24px; }
+.metric-memory { --metric-accent: var(--accent-memory); }
+.metric-procedure { --metric-accent: var(--accent-procedure); }
+.metric-retrieval { --metric-accent: var(--chart-retrieved); }
+.distribution-card .distribution-bar { height: 8px; gap: 2px; border-radius: 4px; overflow: hidden; background: var(--subtle); }
+.distribution-card .distribution-bar > span { border-radius: 2px; }
+.availability-strip { border-radius: 8px; overflow: hidden; background: var(--raised); }
+.availability-cell, .availability-state-available, .availability-state-needs_attention, .availability-state-unknown { border-top: 0 !important; background: transparent; padding: 14px 16px; }
+.availability-state-available::before, .availability-state-needs_attention::before, .availability-state-unknown::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--success); }
+.availability-state-needs_attention::before { background: var(--warning); }
+.availability-state-unknown::before { background: var(--muted); }
+
+/* v3: Usage / Creation views — Retrieved bars with nested Used bars */
+.activity-view-tabs { display: inline-flex; gap: 2px; margin: 0 0 8px 56px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); }
+.activity-view-tabs button { border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 500; padding: 4px 14px; cursor: pointer; }
+.activity-view-tabs button[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+.activity-bar-retrieved { fill: var(--chart-retrieved); opacity: .30; }
+.activity-bar-retrieved.is-active { opacity: .5; }
+.activity-bar-used { fill: var(--chart-used); opacity: .95; }
+.activity-bar-used.is-active { opacity: 1; }
+.formation-tooltip-memory_retrievals i, .formation-tooltip-procedure_retrievals i { border-radius: 2px; }
+.formation-legend-memory_retrievals.activity-bar-legend i, .formation-legend-procedure_retrievals.activity-bar-legend i { opacity: .55; }
+span.formation-legend-item { cursor: default; }
+
+/* v3.1: one palette. Roles: Created=terracotta, Retrieved=blue, Used=teal, Rate/feedback=amber; entities: memory=green, procedure=purple. */
+:root {
+  --accent-activity: var(--chart-retrieved);
+  --accent-retrieval: var(--chart-retrieved);
+  --accent-usage: var(--chart-used);
+  --accent-episode: var(--chart-rate);
+}
+:root[data-theme="dark"] {
+  --accent-activity: var(--chart-retrieved);
+  --accent-retrieval: var(--chart-retrieved);
+  --accent-usage: var(--chart-used);
+  --accent-episode: var(--chart-rate);
+}
+.metric-used { --metric-accent: var(--chart-used); }
+.metric-rate { --metric-accent: var(--chart-rate); }
+.activity-bar-retrieved { opacity: .42; }
+.activity-bar-retrieved.is-active { opacity: .62; }
+
+/* v3.1: filters — one control language */
+.filter-bar { gap: 12px; padding: 12px 14px; border-radius: 8px; align-items: flex-end; }
+.filter-bar label { gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.filter-bar input:not([type="checkbox"]), .filter-bar select, .filter-menu > summary {
+  height: 34px; min-height: 34px; border: 1px solid var(--border); border-radius: 6px; background-color: var(--canvas);
+  color: var(--text); font-size: 12.5px; letter-spacing: 0; text-transform: none; padding: 0 10px;
+}
+.filter-bar input:not([type="checkbox"]):hover, .filter-bar select:hover, .filter-menu > summary:hover { border-color: color-mix(in srgb, var(--text) 30%, var(--border)); }
+.filter-bar input:not([type="checkbox"]):focus-visible, .filter-bar select:focus-visible, .filter-menu > summary:focus-visible { outline: 0; border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
+.filter-bar input[type="search"], .filter-bar input[placeholder*="earch"] {
+  padding-left: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b98a6' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: 10px 50%;
+}
+:root[data-theme="dark"] .filter-bar input[type="date"] { color-scheme: dark; }
+
+/* v3.2: filter layout without orphan rows; top-aligned metric cards */
+.filter-bar > label { flex: 0 1 auto; min-width: 120px; }
+.filter-bar > label:first-child { flex: 0 1 190px; }
+.filter-bar > label:has(input[placeholder*="earch"]) { flex: 1 1 240px; }
+.filter-bar > label select { min-width: 0; width: 100%; }
+.metric-card { justify-content: flex-start; }
+.effectiveness-card-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.effectiveness-card-title > :last-child { margin-left: auto; }
+.filter-bar > label, .filter-bar > label:first-child { flex: 1 1 140px; max-width: 240px; min-width: 110px; }
+.filter-bar > label:has(input[placeholder*="earch"]) { flex: 2 1 220px; max-width: none; }
+.filter-bar > label:has(select option[value="active"]) { flex: 0 1 120px; }
+.use-rate-bar.bar-neutral .use-rate-bar-fill { background: var(--accent-neutral); }
+.use-rate-bar.bar-retrieved .use-rate-bar-fill { background: var(--chart-retrieved); }
+span.formation-legend-item:hover { background: transparent; }
+.activity-rate-line { stroke-width: 1.8; }
+.activity-rate-mid { stroke-dasharray: none; opacity: .35; }
+
+/* v4: Availability — one status strip when healthy; cards only when needed */
+.availability-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+.availability-headline { display: inline-flex; align-items: center; gap: 9px; color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; text-decoration: none; }
+.availability-headline:hover { text-decoration: none; color: var(--link); }
+.availability-headline i { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent); }
+.availability-tone-warn .availability-headline i { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent); }
+.availability-tone-bad .availability-headline i { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent); }
+.availability-tone-bad { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.availability-facts { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 4px 22px; min-width: 0; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.availability-facts em { color: var(--muted); font-style: normal; margin-right: 4px; }
+.availability-toggle { margin-left: auto; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 4px 6px; border-radius: 4px; }
+.availability-toggle:hover { color: var(--text); background: var(--surface-background-hover); }
+.availability-summary + .availability-strip { margin-top: 10px; }
+
+/* v5: one Usage language on Retrieval, Memories and Procedures */
+.retrieval-usage-track > span { background: var(--chart-used); }
+.retrieval-usage-track { background: color-mix(in srgb, var(--chart-used) 18%, var(--border)); height: 4px; }
+.retrieval-usage-single { grid-template-columns: minmax(48px, 1fr) auto; min-width: 110px; }
+.retrieval-usage-single .retrieval-usage-track { grid-column: 1; grid-row: 1; }
+
+/* v6: Memories/Procedures tables — the text column takes all spare width, other columns hug content */
+.library-table { width: 100%; table-layout: auto; }
+.library-table th:not(:first-child), .library-table td:not(:first-child) { width: 1%; white-space: nowrap; }
+.library-table th:first-child, .library-table td:first-child { min-width: 320px; white-space: normal; }
+.library-table th.numeric, .library-table td.numeric { text-align: left; }
+.library-table td.badge-stack { display: table-cell; }
+
+/* v7: quiet trend line; Retrieval Usage bars use entity colours (memories green) */
+.activity-rate-line { stroke-width: 1; opacity: .55; }
+.activity-rate-dot { r: 2.5; opacity: .8; }
+.retrieval-usage-memory .retrieval-usage-track > span { background: var(--accent-memory); }
+.retrieval-usage-procedure .retrieval-usage-track > span { background: var(--accent-procedure); }
+.retrieval-usage-memory .retrieval-usage-track { background: color-mix(in srgb, var(--accent-memory) 16%, var(--border)); }
+.retrieval-usage-procedure .retrieval-usage-track { background: color-mix(in srgb, var(--accent-procedure) 16%, var(--border)); }

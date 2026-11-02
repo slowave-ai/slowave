@@ -131,7 +131,13 @@ def test_inventory_delivery_feedback_and_effect_units(fixture):
         m["memory_assessed"],
         m["memory_used"],
         m["memory_unknown"],
-    ) == (5, 3, 3, 1, 0)
+    ) == (
+        5,
+        5,
+        5,
+        3,
+        0,
+    )  # retired deliveries count
     assert (
         m["procedure_total"],
         m["procedure_exposed"],
@@ -187,8 +193,8 @@ def test_identical_home_libraries_requests_and_list_filters(fixture, monkeypatch
 def test_request_time_corrections_history_and_finalization(fixture):
     path, conn = fixture
     m = projection(conn, {"scope": ["project:one"], "from": ["110"], "to": ["110"]})
-    assert m["memory_used"] == 0  # latest r1 not_used and inactive used records excluded
-    assert m["memory_feedback"] == 2 and m["memory_deliveries"] == 2
+    assert m["memory_used"] == 2  # latest r1 not_used excluded; retired used records count
+    assert m["memory_feedback"] == 4 and m["memory_deliveries"] == 4
     assert (
         sum(b["n"] for b in m["chart"]["channels"]["used_memories"]) == 2
     )  # historical retired deliveries retained
@@ -249,13 +255,13 @@ def test_projection_reconciles_against_independent_sql(fixture):
     exposed = conn.execute(f"""WITH d AS ({delivered}) SELECT COUNT(DISTINCT d.memory_id) FROM d
         JOIN context_recall_events r ON r.context_id=d.context_id
         JOIN schemas s ON d.kind='memory' AND d.memory_id='sch_'||s.id
-        WHERE d.kind='memory' AND s.status='active' AND s.scope_id='project:one'
+        WHERE d.kind='memory' AND s.scope_id='project:one'
         AND r.created_at BETWEEN 100 AND 400""").fetchone()[0]
     used = conn.execute(f"""WITH d AS ({delivered}), latest AS (
           SELECT f.*,ROW_NUMBER() OVER(PARTITION BY retrieval_id,target_kind,target_id
           ORDER BY created_at DESC,rowid DESC) n FROM feedback_events f WHERE status='accepted')
         SELECT COUNT(DISTINCT d.memory_id) FROM d JOIN context_recall_events r ON r.context_id=d.context_id
-        JOIN schemas s ON d.memory_id='sch_'||s.id AND s.status='active' AND s.scope_id='project:one'
+        JOIN schemas s ON d.memory_id='sch_'||s.id AND s.scope_id='project:one'
         JOIN latest f ON f.retrieval_id=d.context_id AND f.target_kind=d.kind
           AND f.target_id=d.memory_id AND f.n=1 AND f.assessment='used'
         WHERE d.kind='memory' AND r.created_at BETWEEN 100 AND 400""").fetchone()[0]
@@ -487,3 +493,77 @@ def test_procedure_and_activity_periods_filter_rows_and_summaries(fixture, monke
     assert {row["id"] for row in activity["activities"]} == {"a", "b", "ongoing"}
     summary = app._activity_payload(str(path), {**qs, "summary_only": ["true"]})
     assert activity["summary"] == summary["summary"]
+
+
+def test_daily_chart_boundaries_deduplication_and_late_corrections(fixture):
+    _, conn = fixture
+    day = 86400
+    for rid, ts in [
+        ("r1", 2 * day - 1),
+        ("r2", 2 * day),
+        ("r3", 2 * day + 1),
+        ("r4", 10 * day + 1),
+    ]:
+        conn.execute("UPDATE context_recall_events SET created_at=? WHERE context_id=?", (ts, rid))
+    # A retried delivery must not add another occasion.
+    conn.execute(
+        "INSERT OR IGNORE INTO context_recall_items(context_id,memory_id,memory_type,rank,admitted,created_at) "
+        "VALUES ('r1','sch_1','related',1,1,?)",
+        [2 * day],
+    )
+    # Feedback arriving on a later day revises the original retrieval day.
+    conn.execute(
+        "INSERT INTO feedback_events(event_id,retrieval_id,target_kind,target_id,assessment,status,coverage,source_contract,created_at) "
+        "VALUES ('late-correction','r2','memory','sch_1','not_used','accepted','complete','slowave_feedback:v19',?)",
+        [4 * day],
+    )
+    result = projection(conn, {"from": [str(day)], "to": [str(9 * day)], "hours": ["all"]})
+    chart = result["chart"]
+    assert chart["bucket_minutes"] == 1440
+    channels = {key: {b["ts"]: b["n"] for b in rows} for key, rows in chart["channels"].items()}
+    zeros = {i * day: 0 for i in range(1, 10)}
+    assert channels["memory_retrievals"] == {**zeros, day: 4, 2 * day: 3}
+    assert channels["used_memories"] == {**zeros, day: 2, 2 * day: 1}
+    assert channels["procedure_retrievals"] == {**zeros, day: 1, 2 * day: 2}
+    assert channels["used_procedures"] == {**zeros, day: 1, 2 * day: 1}
+    assert sum(channels["schemas"].values()) == 0
+    assert sum(channels["procedures"].values()) == 0
+
+
+def test_procedure_chart_respects_library_filters(fixture):
+    _, conn = fixture
+    for filters in [
+        {"outcome": ["failure"]},
+        {"verification": ["verified"]},
+        {"saved_from": ["100"]},
+    ]:
+        result = projection(conn, {"library": ["procedure"], "hours": ["all"], **filters})
+        assert result["procedure_total"] == 0
+        for key in ("procedures", "procedure_retrievals", "used_procedures"):
+            assert sum(b["n"] for b in result["chart"]["channels"][key]) == 0
+
+
+def test_chart_assessment_coverage_matches_delivery_population(fixture):
+    _, conn = fixture
+    result = projection(conn, {"hours": ["all"]})
+    channels = result["chart"]["channels"]
+    for kind, suffix in [("memory", "memories"), ("procedure", "procedures")]:
+        assert sum(b["n"] for b in channels[f"assessed_{suffix}"]) == result[f"{kind}_feedback"]
+        assert all(
+            assessed_bucket["n"] <= retrieved_bucket["n"]
+            for assessed_bucket, retrieved_bucket in zip(
+                channels[f"assessed_{suffix}"], channels[f"{kind}_retrievals"]
+            )
+        )
+
+
+def test_created_period_drilldown_has_inclusive_saved_upper_bound(fixture):
+    path, conn = fixture
+    memory = projection(conn, {"hours": ["all"], "library": ["memory"], "saved_to": ["29"]})
+    assert memory["memory_total"] == 0
+    assert sum(b["n"] for b in memory["chart"]["channels"]["schemas"]) == 0
+    before = app._schemas_payload(str(path), {"hours": ["all"], "saved_to": ["29"]})
+    assert before["pagination"]["total"] == 0
+    procedure = projection(conn, {"hours": ["all"], "library": ["procedure"], "saved_to": ["19"]})
+    assert procedure["procedure_total"] == 0
+    assert sum(b["n"] for b in procedure["chart"]["channels"]["procedure_retrievals"]) == 0

@@ -202,9 +202,9 @@ def test_schemas_payload_reports_exposure_and_usage_columns(tmp_path: Path) -> N
     memories = _schemas_payload(str(path), {"states": ["active"]})
     assert memories["summary"] == {
         "active": 3,
-        "assessed_active": 2,
-        "retrieved_active": 3,
-        "used_active": 1,
+        "assessed": 2,
+        "retrieved": 3,
+        "used": 1,
     }
     by_content = {m["content"]: m for m in memories["schemas"]}
     used = by_content["memory 1"]
@@ -402,7 +402,7 @@ def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> N
     assert memory["times_used"] == 0
     assert memory["times_irrelevant"] == 1
     assert memory["last_used_ts"] is None
-    assert memories["summary"]["used_active"] == 0
+    assert memories["summary"]["used"] == 0
     detail = _retrieval_detail(str(path), "ctx_visible")
     by_id = {item["memory_id"]: item for item in detail["items"]}
     assert by_id["sch_1"]["assessment"] == "irrelevant"

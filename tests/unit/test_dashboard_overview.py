@@ -72,10 +72,13 @@ def test_react_home_separates_service_observations_and_activity_lanes() -> None:
 
 
 def test_react_activity_chart_reserves_space_for_y_axis_labels() -> None:
-    source = (Path(__file__).parents[2] / "slowave/dashboard/ui/src/pages.tsx").read_text()
+    source = (
+        Path(__file__).parents[2] / "slowave/dashboard/ui/src/ActivityTimeline.tsx"
+    ).read_text()
 
-    assert "left = 56" in source
-    assert "right-aligned Y-axis labels remain inside the SVG viewport" in source
+    # Y-axis labels are right-aligned at LEFT - 10, so a 56px gutter keeps them inside the SVG viewport.
+    assert "LEFT = 56" in source
+    assert "x={LEFT - 10}" in source
 
 
 def test_pulse_includes_procedures_in_its_timeline(tmp_path: Path, monkeypatch) -> None:

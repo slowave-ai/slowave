@@ -692,14 +692,16 @@ export function Section({
   actions,
   children,
   id,
+  className,
 }: {
   title?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   id?: string;
+  className?: string;
 }) {
   return (
-    <section className="section" id={id}>
+    <section className={className ? `section ${className}` : "section"} id={id}>
       {(title || actions) && (
         <div className="section-header">
           <h2>{title}</h2>

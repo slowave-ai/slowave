@@ -126,11 +126,22 @@ def projection(
     # Text and Saved since define a library, exposure/use controls do not.
     query = value(qs, "q").strip().lower() if value(qs, "library") == "memory" else ""
     saved_since = int(value(qs, "saved_from", "0") or 0)
+    saved_until = int(value(qs, "saved_to", "0") or 0) or 2**63 - 1
     memories = {
         k: r
         for k, r in memories.items()
         if (not query or _memory_matches(k, r, query))
-        and int(r["first_formed_ts"] or 0) >= saved_since
+        and saved_since <= int(r["first_formed_ts"] or 0) <= saved_until
+    }
+    # Retrieved memories count even after they became stale; the inventory card stays active-only.
+    delivered_ids = {i["target_id"] for i in items if i["target_kind"] == "memory"}
+    retired = {
+        f"sch_{r['id']}": dict(r)
+        for r in conn.execute("SELECT * FROM schemas WHERE status!='active'")
+        if f"sch_{r['id']}" in delivered_ids
+        and (not scope or r["scope_id"] == scope)
+        and (not query or _memory_matches(f"sch_{r['id']}", dict(r), query))
+        and saved_since <= int(r["first_formed_ts"] or 0) <= saved_until
     }
     procedures = {str(p["id"]): p for p in load_procedures(conn, scope=scope or None)}
     if value(qs, "library") == "procedure":
@@ -142,7 +153,7 @@ def projection(
                 not value(qs, "verification")
                 or p["verification_status"] == value(qs, "verification")
             )
-            and int(p["created_at"] or 0) >= saved_since
+            and saved_since <= int(p["created_at"] or 0) <= saved_until
         }
     result: dict[str, Any] = {
         "available": True,
@@ -150,7 +161,7 @@ def projection(
         "scope": scope,
         "window": {"from": start, "to": end},
     }
-    for kind, inventory in [("memory", memories), ("procedure", procedures)]:
+    for kind, inventory in [("memory", {**memories, **retired}), ("procedure", procedures)]:
         selected = [i for i in items if i["target_kind"] == kind and i["target_id"] in inventory]
         exposed = {i["target_id"] for i in selected}
         known = {
@@ -174,7 +185,8 @@ def projection(
                 tasks[i["target_id"]].add(i["session_id"])
         result.update(
             {
-                f"{kind}_total": len(inventory),
+                f"{kind}_total": len(memories if kind == "memory" else inventory),
+                f"{kind}_universe": len(inventory),
                 f"{kind}_exposed": len(exposed),
                 f"{kind}_assessed": len(known),
                 f"{kind}_used": len(used),
@@ -310,7 +322,9 @@ def chart(
             [scope] if scope else [],
         )
     ]
-    if value(qs, "library") == "memory" and (value(qs, "q") or value(qs, "saved_from")):
+    if value(qs, "library") == "memory" and (
+        value(qs, "q") or value(qs, "saved_from") or value(qs, "saved_to")
+    ):
         historical = {
             f"sch_{r['id']}": dict(r)
             for r in conn.execute(
@@ -323,11 +337,19 @@ def chart(
             k: r
             for k, r in historical.items()
             if (not query or _memory_matches(k, r, query))
-            and int(r["first_formed_ts"] or 0) >= int(value(qs, "saved_from", "0") or 0)
+            and int(value(qs, "saved_from", "0") or 0)
+            <= int(r["first_formed_ts"] or 0)
+            <= (int(value(qs, "saved_to", "0") or 0) or 2**63 - 1)
         }
         saved = [(int(r["first_formed_ts"]), "schemas") for r in memories.values()]
         items = [i for i in items if i["target_kind"] != "memory" or i["target_id"] in memories]
     saved += [(int(p["created_at"] or 0), "procedures") for p in procedures.values()]
+    if value(qs, "library") == "procedure" and any(
+        value(qs, key) for key in ("outcome", "verification", "saved_from", "saved_to")
+    ):
+        items = [
+            i for i in items if i["target_kind"] != "procedure" or i["target_id"] in procedures
+        ]
     if not start:
         start = min([end, *[ts for ts, _ in saved], *[i["request_ts"] for i in items]])
     window = max(1, end - start)
@@ -346,6 +368,8 @@ def chart(
             "procedure_retrievals",
             "used_memories",
             "used_procedures",
+            "assessed_memories",
+            "assessed_procedures",
         ]
     }
     for ts, channel in saved:
@@ -354,6 +378,10 @@ def chart(
     for i in items:
         ts = i["request_ts"] // bucket * bucket
         channels[f"{i['target_kind']}_retrievals"][ts] += 1
+        if assessed(i):
+            channels[
+                "assessed_memories" if i["target_kind"] == "memory" else "assessed_procedures"
+            ][ts] += 1
         if i["assessment"] == "used":
             channels["used_memories" if i["target_kind"] == "memory" else "used_procedures"][
                 ts
