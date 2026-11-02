@@ -20,10 +20,11 @@
 
 
 ---
-AI agents have large context windows, but that context ends with your current session.
-Open a new session, switch from Claude Code to Codex, and you have to restate the same decisions, constraints, over and over.
+Slowave is a local MCP memory server that carries your decisions, constraints and procedures across your coding sessions and tools.
 
-Slowave gives your agents one local, shared memory, without requiring a separate LLM for memory maintenance.
+Slowave adapts through your usage, building over time compounding reusable context for your agent so that it can learn from experience.
+
+It runs on your machine. No separate LLM for memory maintenance. With the local dashboard you can inspect what your agent remembers and reports valuable from memory.
 
 At the core Slowave is built around a simple concept:
 
@@ -39,9 +40,9 @@ graph LR
     MEM -->|Adapt| MEM
 ```
 
-Slowave retains what helps agents achieve their goals, weakens what does not, and continuously adapts based on use. It does this through a continuous feedback loop between your agent and its memory:
+Slowave retains what helps agents achieve their goals, weakens what does not, and continuously adapts based on use. It does this through a continuous feedback loop between your agent and its memory. It works on 5 simple MCP endpoints:
 
-> **remember → recall → use → feedback → reinforce / weaken → decay**
+> **activate → remember → recall → feedback → commit**
 
 
 Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
