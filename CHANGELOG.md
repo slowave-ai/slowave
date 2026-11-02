@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.3...slowave-v0.22.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* dashboard improvementd ([#217](https://github.com/slowave-ai/slowave/issues/217)) ([a73cbc0](https://github.com/slowave-ai/slowave/commit/a73cbc0d713c68a20975e7ccd94007af92c17912))
+
 ## [0.22.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.2...slowave-v0.22.3) (2026-10-15)
 
 
