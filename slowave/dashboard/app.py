@@ -1360,9 +1360,9 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             "metrics": metrics,
             "summary": {
                 "active": metrics.get("memory_total"),
-                "retrieved_active": metrics.get("memory_exposed"),
-                "used_active": metrics.get("memory_used"),
-                "assessed_active": metrics.get("memory_assessed"),
+                "retrieved": metrics.get("memory_exposed"),
+                "used": metrics.get("memory_used"),
+                "assessed": metrics.get("memory_assessed"),
             },
         }
     finally:
@@ -4079,6 +4079,7 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         verification_filter = (qs.get("verification") or [""])[0].strip()
         retrieved_filter = (qs.get("retrieved") or [""])[0].strip()
         from_ts = _qs_int(qs, "saved_from", 0)
+        saved_to_ts = _qs_int(qs, "saved_to", 0)
         if outcome_filter:
             precedents = [item for item in precedents if item.get("outcome") == outcome_filter]
         if verification_filter:
@@ -4094,6 +4095,11 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         if from_ts:
             precedents = [
                 item for item in precedents if int(item.get("created_at") or 0) >= from_ts
+            ]
+
+        if saved_to_ts:
+            precedents = [
+                item for item in precedents if int(item.get("created_at") or 0) <= saved_to_ts
             ]
 
         if period_from or (qs.get("to") or [""])[0]:

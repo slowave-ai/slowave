@@ -1,3 +1,4 @@
+import { ActivityChartPanel } from "./ActivityTimeline";
 import {
   Fragment,
   lazy,
@@ -59,6 +60,7 @@ const sharedColumnHelp = {
   verification: "How strongly the recorded outcome was checked: verified, partially verified, or unverified.",
   retrieved: "How many distinct retrieval events returned this record.",
   used: "How many retrieval events explicitly assessed this record as used.",
+  usage: "Used / retrieved delivery occasions for this record. The bar shows the share reported used; grey includes occasions without usage feedback, and a dash means feedback is pending.",
   effect: "The reported downstream effect of using this procedure: Helpful, No effect, Harmful, or Unknown. Unknown means no effect assessment was recorded.",
 };
 const formatBytes = (value: unknown) => {
@@ -200,23 +202,55 @@ function Availability({ home }: { home: Json }) {
       href: "/diagnostics#maintenance",
     },
   ];
+  const [expanded, setExpanded] = useState(false);
+  const problems = cells.filter((c) => c.state !== "Available");
+  const healthy = problems.length === 0;
+  const tone = healthy ? "ok" : problems.some((c) => c.state === "Needs attention") ? "bad" : "warn";
+  const headline = healthy
+    ? "All systems operational"
+    : `${problems.length} of ${cells.length} need attention`;
   return (
     <Section title="Availability">
-      <div className="availability-strip">
-        {cells.map((cell) => (
-          <Link to={cell.href} className={`availability-cell availability-state-${String(cell.state).toLowerCase().replaceAll(" ", "_")}`} key={cell.label}>
-            <div>
-              <strong>{cell.label}</strong>
-              <StatusBadge value={cell.state} />
-            </div>
-            <p>{cell.detail}</p>
-            <small>
-              {cell.source} ·{" "}
-              {cell.observed ? relativeDate(cell.observed) : "not observed"}
-            </small>
-          </Link>
-        ))}
+      <div className={`availability-summary availability-tone-${tone}`}>
+        <Link to="/diagnostics" className="availability-headline">
+          <i aria-hidden="true" />
+          {headline}
+        </Link>
+        <div className="availability-facts">
+          {cells.map((cell) => (
+            <span key={cell.label} title={`${cell.source} · ${cell.observed ? relativeDate(cell.observed) : "not observed"}`}>
+              <em>{cell.label}</em> {cell.detail}
+            </span>
+          ))}
+        </div>
+        {healthy && (
+          <button
+            type="button"
+            className="availability-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {expanded ? "Hide details" : "Details"}
+          </button>
+        )}
       </div>
+      {(expanded || !healthy) && (
+        <div className="availability-strip">
+          {cells.map((cell) => (
+            <Link to={cell.href} className={`availability-cell availability-state-${String(cell.state).toLowerCase().replaceAll(" ", "_")}`} key={cell.label}>
+              <div>
+                <strong>{cell.label}</strong>
+                <StatusBadge value={cell.state} />
+              </div>
+              <p>{cell.detail}</p>
+              <small>
+                {cell.source} ·{" "}
+                {cell.observed ? relativeDate(cell.observed) : "not observed"}
+              </small>
+            </Link>
+          ))}
+        </div>
+      )}
     </Section>
   );
 }
@@ -232,290 +266,6 @@ const procedureActivitySeries = [
   { key: "procedure_retrievals", label: "Retrieved" },
   { key: "used_procedures", label: "Used" },
 ] as const;
-
-const clampNumber = (value: number, min: number, max: number) =>
-  Math.min(Math.max(value, min), max);
-
-/** Smooth cubic path through the points, clamped so it never overshoots. */
-function smoothFormationPath(points: { x: number; y: number }[]): string {
-  if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  let path = `M ${points[0].x} ${points[0].y}`;
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const previous = points[index - 1] || points[index];
-    const current = points[index];
-    const next = points[index + 1];
-    const after = points[index + 2] || next;
-    const tension = 0.18;
-    const controlOneX = current.x + (next.x - previous.x) * tension;
-    const controlOneY = clampNumber(
-      current.y + (next.y - previous.y) * tension,
-      Math.min(current.y, next.y),
-      Math.max(current.y, next.y),
-    );
-    const controlTwoX = next.x - (after.x - current.x) * tension;
-    const controlTwoY = clampNumber(
-      next.y - (after.y - current.y) * tension,
-      Math.min(current.y, next.y),
-      Math.max(current.y, next.y),
-    );
-    path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)} ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
-  }
-  return path;
-}
-
-function ActivityChartPanel({
-  data,
-  series,
-  title,
-}: {
-  data?: Json;
-  series: readonly { key: string; label: string }[];
-  title: string;
-}) {
-  const [visible, setVisible] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(series.map(({ key }) => [key, true])),
-  );
-  const [hovered, setHovered] = useState<{
-    x: number;
-    y: number;
-    index: number;
-  } | null>(null);
-  const chartRef = useRef<HTMLDivElement>(null);
-  const channels = data?.channels || {};
-  const timestamps: string[] = Array.from(
-    new Set(
-      series.flatMap(({ key }) =>
-        (channels[key] || []).map((bucket: any) => String(bucket.ts)),
-      ),
-    ),
-  ).sort((a, b) => Number(a) - Number(b));
-  const seriesValues = series.map(({ key }) =>
-    timestamps.map((ts) =>
-      Number(
-        (channels[key] || []).find((bucket: any) => String(bucket.ts) === ts)?.n ||
-          0,
-      ),
-    ),
-  );
-  const seriesTotals = seriesValues.map((values) =>
-    values.reduce((sum, value) => sum + value, 0),
-  );
-  const shownSeries = series
-    .map((definition, index) => ({ ...definition, index }))
-    .filter((definition) => visible[definition.key]);
-  const hasActivity = seriesValues.some((values) =>
-    values.some((value) => value > 0),
-  );
-  const width = 900,
-    chartHeight = 208,
-    // Reserve enough room for grouped counts (for example, "10,000") so
-    // right-aligned Y-axis labels remain inside the SVG viewport.
-    left = 56,
-    right = 28,
-    top = 18,
-    baseline = 176,
-    plotWidth = width - left - right,
-    maxBarHeight = baseline - top,
-    maxValue = Math.max(1, ...shownSeries.flatMap(({ index }) => seriesValues[index]));
-  const rawTickStep = maxValue / 4;
-  const tickMagnitude = rawTickStep > 0 ? 10 ** Math.floor(Math.log10(rawTickStep)) : 1;
-  const tickFraction = rawTickStep / tickMagnitude;
-  const tickStep =
-    (tickFraction <= 1 ? 1 : tickFraction <= 2 ? 2 : tickFraction <= 5 ? 5 : 10) *
-    tickMagnitude;
-  const axisMax = Math.max(tickStep, Math.ceil(maxValue / tickStep) * tickStep);
-  const axisTicks = Array.from({ length: 5 }, (_, index) => axisMax - index * tickStep).filter(
-    (value) => value >= 0,
-  );
-  const slot = plotWidth / Math.max(1, timestamps.length);
-  const xForIndex = (index: number) => left + index * slot + slot / 2;
-  const yForValue = (value: number) => baseline - (value / axisMax) * maxBarHeight;
-  const xTickIndices = Array.from(
-    new Set(
-      Array.from({ length: Math.min(6, timestamps.length) }, (_, index) =>
-        timestamps.length > 1
-          ? Math.round((index * (timestamps.length - 1)) / (Math.min(6, timestamps.length) - 1))
-          : 0,
-      ),
-    ),
-  );
-  const formatAxisTime = (ts: string) => {
-    const date = new Date(Number(ts) * 1000);
-    return Number(data?.window_hours || 24) <= 24
-      ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : date.toLocaleDateString([], { month: "short", day: "numeric" });
-  };
-  const trackHover = (event: React.MouseEvent<SVGRectElement>) => {
-    const bounds = chartRef.current?.getBoundingClientRect();
-    if (!bounds || timestamps.length === 0) return;
-    const svgX = ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * width;
-    const index = clampNumber(
-      Math.floor((svgX - left) / Math.max(1, slot)),
-      0,
-      timestamps.length - 1,
-    );
-    const tooltipWidth = Math.min(220, Math.max(0, bounds.width - 24));
-    setHovered({
-      x: Math.max(
-        12,
-        Math.min(event.clientX - bounds.left + 14, bounds.width - tooltipWidth - 12),
-      ),
-      y: Math.max(8, event.clientY - bounds.top - 10),
-      index,
-    });
-  };
-  return (
-    <div className="activity-chart-panel">
-      <div className="formation-chart" ref={chartRef}>
-        {!hasActivity ? (
-          <EmptyState title={`No ${title.toLowerCase()} activity yet`}>
-            Creation, retrieval, and reported use will appear here once Slowave
-            records activity in the selected period.
-          </EmptyState>
-        ) : (
-          <>
-            <svg
-              viewBox={`0 0 ${width} ${chartHeight}`}
-              role="img"
-              aria-label={`${title} created, retrieved, and reported used over the selected period`}
-            >
-              <defs>
-                {series.map(({ key }) => (
-                  <linearGradient
-                    key={key}
-                    id={`formation-fill-${key}`}
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop className={`formation-stop-top formation-stop-${key}`} offset="0%" />
-                    <stop className={`formation-stop-bottom formation-stop-${key}`} offset="100%" />
-                  </linearGradient>
-                ))}
-              </defs>
-              {axisTicks.map((value) => {
-                const y = yForValue(value);
-                return (
-                  <g key={value}>
-                    <line className="formation-gridline" x1={left} x2={width - right} y1={y} y2={y} />
-                    <text className="formation-axis-label" x={left - 8} y={y + 4} textAnchor="end">
-                      {value.toLocaleString()}
-                    </text>
-                  </g>
-                );
-              })}
-              <line
-                className="formation-baseline"
-                x1={left}
-                x2={width - right}
-                y1={baseline}
-                y2={baseline}
-              />
-              {xTickIndices.map((index) => {
-                const x = xForIndex(index);
-                const isFirst = index === xTickIndices[0];
-                const isLast = index === xTickIndices[xTickIndices.length - 1];
-                return (
-                  <g key={`x-${timestamps[index]}`}>
-                    <line className="formation-tick" x1={x} x2={x} y1={baseline} y2={baseline + 5} />
-                    <text
-                      className="formation-axis-label"
-                      x={isFirst ? left : isLast ? width - right : x}
-                      y={baseline + 19}
-                      textAnchor={isFirst ? "start" : isLast ? "end" : "middle"}
-                    >
-                      {formatAxisTime(timestamps[index])}
-                    </text>
-                  </g>
-                );
-              })}
-              {hovered && timestamps[hovered.index] !== undefined && (
-                <line
-                  className="formation-crosshair"
-                  x1={xForIndex(hovered.index)}
-                  x2={xForIndex(hovered.index)}
-                  y1={top}
-                  y2={baseline}
-                />
-              )}
-              {shownSeries.map(({ key, index }) => {
-                const points = seriesValues[index].map((value, pointIndex) => ({
-                  x: xForIndex(pointIndex),
-                  y: yForValue(value),
-                }));
-                const line = smoothFormationPath(points);
-                const area = `${line} L ${points[points.length - 1].x} ${baseline} L ${points[0].x} ${baseline} Z`;
-                return (
-                  <g key={key} className={`formation-series formation-series-${key}`}>
-                    <path
-                      className="formation-area"
-                      d={area}
-                      fill={`url(#formation-fill-${key})`}
-                    />
-                    <path className="formation-line" d={line} pathLength={1} />
-                    {timestamps.length <= 48
-                      ? points.map((point, pointIndex) => (
-                          <circle
-                            className={`formation-dot ${hovered?.index === pointIndex ? "formation-dot-active" : ""}`}
-                            key={`${key}-${pointIndex}`}
-                            cx={point.x}
-                            cy={point.y}
-                            r={hovered?.index === pointIndex ? 4 : 2.4}
-                          />
-                        ))
-                      : null}
-                  </g>
-                );
-              })}
-              <rect
-                className="formation-hit-area"
-                x={left}
-                y={top}
-                width={plotWidth}
-                height={maxBarHeight}
-                onMouseMove={trackHover}
-                onMouseLeave={() => setHovered(null)}
-              />
-            </svg>
-            {hovered && (
-              <div
-                className="formation-tooltip"
-                style={{ left: hovered.x, top: hovered.y }}
-              >
-                <strong>{formatDate(timestamps[hovered.index])}</strong>
-                {shownSeries.map(({ key, label, index }) => (
-                  <span className={`formation-tooltip-${key}`} key={key}>
-                    <i aria-hidden="true" />
-                    {label}: {seriesValues[index][hovered.index].toLocaleString()}
-                  </span>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-      <div className="formation-legend" aria-label="Visible series">
-        {series.map(({ key, label }, index) => (
-          <button
-            type="button"
-            key={key}
-            className={`formation-legend-item formation-legend-${key}`}
-            aria-pressed={visible[key]}
-            onClick={() =>
-              setVisible((current) => ({ ...current, [key]: !current[key] }))
-            }
-          >
-            <i aria-hidden="true" />
-            {label}
-            <b>{seriesTotals[index].toLocaleString()}</b>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function MemoryFormationChart({ data }: { data?: Json }) {
   const [activeChart, setActiveChart] = useState<"memories" | "procedures">("memories");
@@ -592,6 +342,7 @@ function LibraryCards({
   return (
     <>
       <MetricCard
+        className={memory ? "metric-memory" : "metric-procedure"}
         title={memory ? "Active memories" : "Saved procedures"}
         value={
           data.available
@@ -603,14 +354,16 @@ function LibraryCards({
       />
       <RateMetricCard
         compact={compact}
+        className="metric-retrieval"
         title={`${name} retrieval coverage`}
         numerator={data[`${kind}_exposed`]}
-        denominator={data[`${kind}_total`]}
-        tooltip="Distinct current inventory records delivered during the selected period divided by the current inventory. A record counts once even if delivered repeatedly. Retrieval does not establish use or quality."
+        denominator={data[`${kind}_universe`] ?? data[`${kind}_total`]}
+        tooltip="Distinct records delivered during the selected period divided by the current inventory plus any retired records delivered in the period. A record counts once even if delivered repeatedly. Retrieval does not establish use or quality."
         href={metricHref(path, data)}
       />
       <RateMetricCard
         compact={compact}
+        className="metric-used"
         title={`${name} usage rate`}
         numerator={data[`${kind}_used`]}
         denominator={data[`${kind}_assessed`]}
@@ -620,7 +373,7 @@ function LibraryCards({
       />
       {!compact && (
         <RateMetricCard
-          title="Feedback coverage · occasions"
+          title="Feedback coverage" className="metric-rate"
           numerator={data[`${kind}_feedback`]}
           denominator={data[`${kind}_deliveries`]}
           secondary={`${Number(data[`${kind}_deliveries`] || 0) - Number(data[`${kind}_feedback`] || 0)} unassessed delivery occasions`}
@@ -684,7 +437,7 @@ function FocusedChart({
   const series =
     selected === "memory" ? memoryActivitySeries : procedureActivitySeries;
   return (
-    <Section title="Activity">
+    <Section title="Activity" className="focused-activity">
       {tabs && (
         <div
           className="knowledge-activity-tabs"
@@ -746,11 +499,11 @@ function TokenConsumptionCard({ data }: { data: Json }) {
 
   // Professional color palette (OKLCH-based, accessible)
   const endpointColors: Record<string, string> = {
-    activate: "oklch(0.55 0.18 150)",   // Green
-    recall: "oklch(0.52 0.22 260)",     // Blue
-    remember: "oklch(0.62 0.20 30)",    // Amber
-    feedback: "oklch(0.60 0.22 340)",   // Rose
-    commit: "oklch(0.58 0.18 290)",     // Violet
+    activate: "var(--chart-retrieved)",
+    recall: "var(--chart-used)",
+    remember: "var(--chart-created)",
+    feedback: "var(--chart-rate)",
+    commit: "var(--accent-procedure)",
   };
 
   // Merge historical activation records into the current endpoint label.
@@ -769,7 +522,7 @@ function TokenConsumptionCard({ data }: { data: Json }) {
       label: endpointLabels[key] || key,
       tokens: val.total_tokens,
       samples: val.samples,
-      color: endpointColors[key] || "oklch(0.55 0.18 150)",
+      color: endpointColors[key] || "var(--accent-neutral)",
     }))
     .filter((d) => d.tokens > 0)
     .sort((a, b) => b.tokens - a.tokens);
@@ -839,6 +592,7 @@ function MemoryEffectiveness({ data }: { data: Json }) {
         <LibraryCards data={data} kind="procedure" compact />
         <RateMetricCard
           compact
+          className="metric-retrieval"
           title="Retrieval match rate"
           numerator={
             Number(data.retrievals_total || 0) -
@@ -850,6 +604,7 @@ function MemoryEffectiveness({ data }: { data: Json }) {
         />
         <RateMetricCard
           compact
+          className="metric-rate"
           title="Feedback coverage"
           numerator={data.feedback_assessed}
           denominator={data.deliveries}
@@ -1108,7 +863,7 @@ function SalienceBar({ salience }: { salience: unknown }) {
   const available = percent !== null;
   return (
     <div
-      className={`use-rate-bar${available ? "" : " is-disabled"}`}
+      className={`use-rate-bar bar-neutral${available ? "" : " is-disabled"}`}
       role="progressbar"
       aria-label={available ? `Salience ${Math.round(percent)}%` : "Salience unavailable"}
       aria-valuemin={0}
@@ -1157,7 +912,7 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
         <td className="numeric">{memories.toLocaleString()}</td>
         <td className="numeric">
           <span
-            className="use-rate-bar"
+            className="use-rate-bar bar-neutral"
             role="progressbar"
             aria-label={`${Math.round(share)}% of memories`}
             aria-valuemin={0}
@@ -1172,7 +927,7 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
         </td>
         <td className="numeric">
           <span
-            className="use-rate-bar"
+            className="use-rate-bar bar-retrieved"
             role="progressbar"
             aria-label={`${Math.round(coverage)}% retrieval coverage`}
             aria-valuemin={0}
@@ -1243,13 +998,13 @@ export function MemoryPage({ location }: PageProps) {
   const page = pageNumber(location);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [visibleColumns] = useState<string[]>(["memory", "state", "salience", "scope", "changed", "use_rate", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["memory", "scope", "state", "salience", "changed", "use_rate", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
     return () => clearTimeout(timer);
   }, [search]);
-  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}`;
+  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`;
   const request = useApi<Json>(endpoint);
   const rows = request.data?.schemas || [];
   const pagination = request.data?.pagination || {
@@ -1325,12 +1080,20 @@ export function MemoryPage({ location }: PageProps) {
                 saved_from: e.target.value
                   ? Math.floor(new Date(e.target.value).getTime() / 1000)
                   : undefined,
+                saved_to: undefined,
                 page: 1,
               })
             }
           />
         </label>
       </div>
+      {param(location, "saved_to") && (
+        <div className="filter-chips">
+          <button onClick={() => updateParams("/memory", location, { saved_from: undefined, saved_to: undefined, page: 1 })}>
+            Created: {new Date(Number(param(location, "saved_from")) * 1000).toLocaleDateString([], { timeZone: "UTC" })} – {new Date(Number(param(location, "saved_to")) * 1000).toLocaleDateString([], { timeZone: "UTC" })} UTC ×
+          </button>
+        </div>
+      )}
       {states && (
         <div className="filter-chips">
           <button
@@ -1384,7 +1147,7 @@ export function MemoryPage({ location }: PageProps) {
       ) : rows.length ? (
         <>
           <TableFrame label="Memory results">
-            <table>
+            <table className="library-table">
               <thead>
                 <tr>
                   {visible("memory") && <th
@@ -1403,9 +1166,9 @@ export function MemoryPage({ location }: PageProps) {
                       onClick={() => changeSort("content")}
                     />
                   </th>}
+                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /><DefinitionTooltip label="State definition">The memory's lifecycle status: active, needs review, or stale.</DefinitionTooltip></th>}
                   {visible("salience") && <th className="numeric"><SortButton label="Salience" active={sort === "salience"} direction={dir} onClick={() => changeSort("salience")} /><DefinitionTooltip label="Salience definition">A measure of how strongly this memory is favored for retrieval. Higher means it is more likely to be surfaced.</DefinitionTooltip></th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("created") && <th
                     aria-sort={
                       sort === "formed"
@@ -1468,17 +1231,12 @@ export function MemoryPage({ location }: PageProps) {
                     </DefinitionTooltip>
                   </th>}
                   {visible("use_rate") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Use rate among assessed %"
-                        active={sort === "use_rate"}
-                        direction={dir}
-                        onClick={() => changeSort("use_rate")}
-                      />
+                    <th>
+                      Usage
                       <DefinitionTooltip label="Use rate definition">
-                        Delivered occasions reported used divided by delivered
-                        occasions with a supported assessment; only use assessed
-                        items in the denominator.
+                        Used / retrieved delivery occasions for this memory. The bar
+                        shows the share reported used; grey includes occasions
+                        without usage feedback, and a dash means feedback is pending.
                       </DefinitionTooltip>
                     </th>
                   )}
@@ -1552,16 +1310,6 @@ export function MemoryPage({ location }: PageProps) {
                           <ClampedText text={memory.content} />
                         </td>
                       )}
-                      {visible("state") && (
-                        <td>
-                          <StatusBadge value={memory.status} />
-                        </td>
-                      )}
-                      {visible("salience") && (
-                        <td className="numeric">
-                          <SalienceBar salience={memory.salience} />
-                        </td>
-                      )}
                       {visible("scope") && (
                         <td
                           className="scope-text"
@@ -1570,6 +1318,16 @@ export function MemoryPage({ location }: PageProps) {
                           {memory.scope
                             ? truncate(memory.scope, 30)
                             : "No scope"}
+                        </td>
+                      )}
+                      {visible("state") && (
+                        <td>
+                          <StatusBadge value={memory.status} />
+                        </td>
+                      )}
+                      {visible("salience") && (
+                        <td className="numeric">
+                          <SalienceBar salience={memory.salience} />
                         </td>
                       )}
                       {visible("created") && (
@@ -1592,9 +1350,10 @@ export function MemoryPage({ location }: PageProps) {
                         <td className="numeric">{memory.times_used ?? 0}</td>
                       )}
                       {visible("use_rate") && (
-                        <td className="numeric">
-                          <MemoryUseRateBar
+                        <td className="retrieval-usage-cell">
+                          <UsageCell
                             used={memory.times_used}
+                            retrieved={memory.times_exposed}
                             assessed={memory.times_assessed}
                           />
                         </td>
@@ -1859,6 +1618,23 @@ function MemoryDetail({ id, onClose, onDeleted }: {
   );
 }
 
+/** One record's reported use: used / retrieved delivery occasions, in the Retrieval page's bar style. */
+function UsageCell({ used, retrieved, assessed }: { used: unknown; retrieved: unknown; assessed?: unknown }) {
+  const total = Number(retrieved || 0);
+  if (!total) return <span className="neutral">-</span>;
+  const usedCount = Number(used || 0);
+  const pending = assessed !== undefined && Number(assessed || 0) === 0;
+  const description = pending
+    ? `${total} retrieved; usage feedback pending`
+    : `${usedCount} of ${total} retrieved occasions reported used${assessed !== undefined ? ` · ${Number(assessed || 0)} assessed` : ""}`;
+  return <div className="retrieval-usage-stack">
+    <span className="retrieval-usage-row retrieval-usage-single" title={description} aria-label={description}>
+      <span className="retrieval-usage-track" aria-hidden="true"><span style={{ width: `${Math.min(100, usedCount / total * 100)}%` }} /></span>
+      <span className={`retrieval-usage-value${pending ? " neutral" : ""}`}>{pending ? `—/${total}` : `${usedCount}/${total}`}</span>
+    </span>
+  </div>;
+}
+
 function RetrievalUsage({ row }: { row: any }) {
   if (!row.exposed_count) return <span className="neutral">-</span>;
   return <div className="retrieval-usage-stack">{(["memory", "procedure"] as const).map((kind) => {
@@ -1881,7 +1657,7 @@ function RetrievalUsage({ row }: { row: any }) {
 
 export function RetrievalPage({ location }: PageProps) {
   const retrievalSignalColumns = [
-    ["used", "Context used"],
+    ["used", "Usage"],
     ["not_used", "Not used"],
     ["irrelevant", "Irrelevant"],
     ["stale", "Stale"],
@@ -2184,7 +1960,7 @@ export function RetrievalPage({ location }: PageProps) {
                       {visible("memories_retrieved") && <td className="numeric">{row.memory_count ?? 0}</td>}
                       {visible("procedures_retrieved") && <td className="numeric">{row.procedure_count ?? 0}</td>}
                       {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key]) => (
-                        <td data-label={key === "used" ? "Context used · used / retrieved" : key} className={key === "used" ? "retrieval-usage-cell" : "numeric"} key={key}>
+                        <td data-label={key === "used" ? "Usage · used / retrieved" : key} className={key === "used" ? "retrieval-usage-cell" : "numeric"} key={key}>
                           {key === "used" ? <RetrievalUsage row={row} /> : Number(row.signal_counts?.[key] || 0).toLocaleString()}
                         </td>
                       ))}
@@ -2495,10 +2271,10 @@ export function ProceduresPage({ location }: PageProps) {
   const sort = param(location, "sort", "recent");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
-  const [visibleColumns] = useState<string[]>(["procedure", "scope", "outcome", "verification", "created", "retrieved", "used", "effect", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["procedure", "scope", "effect", "created", "used", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
-    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}`,
+    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`,
   );
   const rows = request.data?.procedures || [];
   const pagination = request.data?.pagination || {
@@ -2525,7 +2301,7 @@ export function ProceduresPage({ location }: PageProps) {
         <PeriodFilter location={location} path="/procedures" />
         <label>View
           <select value={sort} onChange={(e) => updateParams("/procedures", location, { sort: e.target.value, dir: "desc", page: 1 })}>
-            <option value="recent">Recently created</option><option value="retrieved">Most retrieved</option><option value="used">Most used</option><option value="helped">Most helpful</option><option value="harmed">Most harmful</option>
+            <option value="recent">Recently created</option><option value="retrieved">Most retrieved</option><option value="helped">Most helpful</option><option value="harmed">Most harmful</option>
           </select>
         </label>
         <label>
@@ -2614,14 +2390,14 @@ export function ProceduresPage({ location }: PageProps) {
             aria-label="Procedure usage outcomes"
           >
             <RateMetricCard
-              title="Helpful rate · uses"
+              title="Helpful rate · uses" className="metric-helpful"
               numerator={request.data.metrics?.procedure_helped}
               denominator={request.data.metrics?.effect_known}
               secondary={`Among uses with reported effects · ${request.data.metrics?.effect_unknown || 0} unknown effects`}
               tooltip="Used procedure delivery occasions reported helped divided by used delivery occasions with known effects. A procedure delivered in several requests contributes several occasions; these counts can exceed the distinct-procedure usage rate."
             />
             <RateMetricCard
-              title="Harmful rate · uses"
+              title="Harmful rate · uses" className="metric-harmful"
               numerator={request.data.metrics?.procedure_harmed}
               denominator={request.data.metrics?.effect_known}
               secondary={`Among uses with reported effects · ${request.data.metrics?.effect_unknown || 0} unknown effects`}
@@ -2652,20 +2428,13 @@ export function ProceduresPage({ location }: PageProps) {
       ) : rows.length ? (
         <>
           <TableFrame label="Procedure results">
-            <table>
+            <table className="library-table">
               <thead>
                 <tr>
                   {visible("procedure") && <th aria-sort={sort === "summary" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Procedure" active={sort === "summary"} direction={dir} onClick={() => changeSort("summary")} />
                   </th>}
                   {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
-                  {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /><DefinitionTooltip label="Outcome definition">{sharedColumnHelp.outcome}</DefinitionTooltip></th>}
-                  {visible("verification") && <th><SortButton label="Verification" active={sort === "verification"} direction={dir} onClick={() => changeSort("verification")} /><DefinitionTooltip label="Verification definition">{sharedColumnHelp.verification}</DefinitionTooltip></th>}
-                  {visible("created") && <th aria-sort={sort === "recent" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Created" active={sort === "recent"} direction={dir} onClick={() => changeSort("recent")} />
-                  </th>}
-                  {visible("retrieved") && <th className="numeric"><SortButton label="Retrieved" active={sort === "retrieved"} direction={dir} onClick={() => changeSort("retrieved")} /><DefinitionTooltip label="Retrieved definition">{sharedColumnHelp.retrieved}</DefinitionTooltip></th>}
-                  {visible("used") && <th className="numeric"><SortButton label="Used" active={sort === "used"} direction={dir} onClick={() => changeSort("used")} /><DefinitionTooltip label="Used definition">{sharedColumnHelp.used}</DefinitionTooltip></th>}
                   {visible("effect") && (
                     <th>
                       Effect{" "}
@@ -2674,6 +2443,10 @@ export function ProceduresPage({ location }: PageProps) {
                       </DefinitionTooltip>
                     </th>
                   )}
+                  {visible("created") && <th aria-sort={sort === "recent" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <SortButton label="Created" active={sort === "recent"} direction={dir} onClick={() => changeSort("recent")} />
+                  </th>}
+                  {visible("used") && <th>Usage <DefinitionTooltip label="Usage definition">{sharedColumnHelp.usage}</DefinitionTooltip></th>}
                   {visible("last_used") && <th>
                     <SortButton
                       label="Last used"
@@ -2777,18 +2550,11 @@ export function ProceduresPage({ location }: PageProps) {
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
                       </td>}
-                      {visible("outcome") && <td>
-                        <StatusBadge value={row.outcome} />
-                      </td>}
-                      {visible("verification") && <td>
-                        <StatusBadge value={row.verification?.status || "unknown"} />
-                      </td>}
+                      {visible("effect") && <td className="badge-stack">{assessed ? <StatusBadge value={Number(evidence.harmed || 0) ? "harmed" : Number(evidence.no_effect || 0) ? "no effect" : Number(evidence.helped || 0) ? "helped" : "unknown"} /> : <StatusBadge value="unknown" />}</td>}
                       {visible("created") && <td title={formatDate(row.created_at)}>
                         {relativeDate(row.created_at)}
                       </td>}
-                      {visible("retrieved") && <td className="numeric">{evidence.retrieved || 0}</td>}
-                      {visible("used") && <td className="numeric">{evidence.used || 0}</td>}
-                      {visible("effect") && <td className="badge-stack">{assessed ? <StatusBadge value={Number(evidence.harmed || 0) ? "harmed" : Number(evidence.no_effect || 0) ? "no effect" : Number(evidence.helped || 0) ? "helped" : "unknown"} /> : <StatusBadge value="unknown" />}</td>}
+                      {visible("used") && <td className="retrieval-usage-cell"><UsageCell used={evidence.used} retrieved={evidence.retrieved} assessed={assessed} /></td>}
                       {visible("last_used") && <td title={formatDate(row.last_used_ts)}>{row.last_used_ts ? relativeDate(row.last_used_ts) : "—"}</td>}
                       {visible("use_rate") && <td className="numeric">{formatRate(evidence.used, evidence.retrieved)}</td>}
                       {visible("helped") && <td className="numeric">{evidence.helped || 0}</td>}
