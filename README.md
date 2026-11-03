@@ -3,6 +3,10 @@
 ---
 
 <p align="center">
+  <b>English</b> | <a href="README.zh-CN.md">中文</a>
+</p>
+
+<p align="center">
   <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="450"/>
 </p>
 <p align="center">
@@ -20,11 +24,11 @@
 
 
 ---
-Slowave is a local MCP memory server that carries your decisions, constraints and procedures across your coding sessions and tools.
+Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
 
-Slowave adapts through your usage, building over time compounding reusable context for your agent so that it can learn from experience.
+Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
 
-It runs on your machine. No separate LLM for memory maintenance. With the local dashboard you can inspect what your agent remembers and reports valuable from memory.
+It runs on your machine and requires no LLM API key for memory maintenance. The local dashboard lets you inspect what your agent remembers and which memories it finds valuable.
 
 At the core Slowave is built around a simple concept:
 
