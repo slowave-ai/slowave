@@ -141,6 +141,7 @@ _RECALL_MIN_RELEVANCE_DEFAULT = 0.20
 # empty_correct 0%->100%, zero all_relevant regression), so 0.10 is chosen
 # as a mid-plateau value with margin under real (continuous, not
 # axis-aligned) embedding similarity -- not the corpus-optimal edge value.
+_PROCEDURE_SCORER_BACKOFF_S = 60.0
 _ACTIVATE_MIN_RELEVANCE_DEFAULT = 0.20
 
 # WP-5 (associative retrieval ablations, plan Phase 3): which schema_relations
@@ -329,6 +330,12 @@ class RetrievalService:
         self._retrieval_cfg = retrieval_cfg
         self._applicability_config = applicability_config or ApplicabilityConfig()
         self._applicability_scorer: PairScorer | None = None
+        # Procedures get their own scorer: memory retrieval treats
+        # ``_applicability_scorer is None`` as "no scorer available", so creating
+        # that one as a side effect of a procedure lookup would change memory
+        # behaviour. The ONNX backend underneath is shared and cached.
+        self._procedure_scorer: PairScorer | None = None
+        self._procedure_scorer_failed_at: float | None = None
         self._passage_indexes: dict[tuple, tuple[int, dict]] = {}
 
     def _delivery_facets(self, schema: Any) -> dict[str, Any]:
@@ -442,6 +449,32 @@ class RetrievalService:
         return (spans[best],)
 
     # ---- public API --------------------------------------------------------
+
+    def procedure_scorer(self) -> PairScorer:
+        """Cross-encoder for procedure relevance, or ProcedureScorerUnavailable.
+
+        A failure is remembered for a short backoff so missing model assets are
+        not re-downloaded or re-logged on every activation.
+        """
+        from slowave.symbolic.procedural_memory import ProcedureScorerUnavailable
+
+        if self._procedure_scorer is not None:
+            return self._procedure_scorer
+        failed_at = self._procedure_scorer_failed_at
+        if failed_at is not None and time.monotonic() - failed_at < _PROCEDURE_SCORER_BACKOFF_S:
+            raise ProcedureScorerUnavailable("procedure scorer unavailable (backing off)")
+        try:
+            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
+
+            scorer = ApplicabilityEncoder()
+            # Load the backend now so a missing model surfaces here, once.
+            scorer.score(["probe"], ["probe"])
+        except (OSError, RuntimeError, ImportError, ValueError) as exc:
+            self._procedure_scorer_failed_at = time.monotonic()
+            raise ProcedureScorerUnavailable(str(exc)) from exc
+        self._procedure_scorer_failed_at = None
+        self._procedure_scorer = scorer
+        return scorer
 
     def _shared_scorer(self) -> PairScorer:
         if self._applicability_scorer is None:

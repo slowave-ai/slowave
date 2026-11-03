@@ -36,17 +36,14 @@ from slowave.core.shared_retrieval import SharedRequest
 from slowave.core.shared_retrieval import enabled as shared_retrieval_enabled
 from slowave.storage.embedding_store import EmbeddingStore
 from slowave.symbolic.procedural_memory import (
+    ProcedureScorerUnavailable,
     load_procedures,
     normalize_facets,
-    retrieve_procedures,
+    retrieve_relevant_procedures,
     validate_procedure,
     validate_procedure_uses,
 )
-from slowave.symbolic.procedure_search import (
-    backfill_procedure_search,
-    procedure_cue,
-    search_procedure_fts,
-)
+from slowave.symbolic.procedure_search import backfill_procedure_search
 
 # Start-only reinstatement is for a broad, under-specified client opening, not
 # a way to pad a clearly answered question with neighbouring facets.  This is
@@ -159,6 +156,42 @@ def _procedure_decision_candidates(
         }
         for item in procedures
     ]
+
+
+def _retrieve_procedure_hits(
+    eng: Any,
+    procedures: list[dict[str, Any]],
+    *,
+    task: str,
+    goal: str | None,
+    retrieval_context: dict[str, Any] | None,
+    suppression_trace: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Relevant procedures for a task, at most PROCEDURE_RESULT_LIMIT.
+
+    Returns nothing, with a warning, when the relevance scorer cannot run
+    (model assets missing): procedures are advisory, and a guess without a
+    relevance judgement is how retrieval used to return three unrelated ones.
+    """
+    if not procedures:
+        return []
+    try:
+        return retrieve_relevant_procedures(
+            procedures,
+            query=task,
+            goal=goal,
+            retrieval_context=retrieval_context,
+            scorer=eng._retrieval.procedure_scorer(),
+            encoder=getattr(eng, "encoder", None),
+            vector_store=EmbeddingStore(eng.db),
+            suppression_trace=suppression_trace,
+        )
+    except ProcedureScorerUnavailable as exc:
+        logging.getLogger(__name__).warning(
+            "Procedure relevance scorer unavailable (%s); returning no procedures", exc
+        )
+        suppression_trace.clear()
+        return []
 
 
 @dataclass(frozen=True)
@@ -779,30 +812,17 @@ def activate(
     ):
         procedure_interpretation = _shadow_task_interpretation(resolved_goal, resolved_context)
     procedures = load_procedures(eng.db.connect(), scope=scope_id)
-    procedure_query = procedure_cue(
-        query=query,
-        goal=resolved_goal,
-        semantic_context=semantic_context,
-        task_type=task_type,
-        situation=cue_situation,
-        requirements=requirements,
-        topics=topics,
-        entities=entities,
-    )
     procedure_suppressions: list[dict[str, str]] = []
     procedure_hits = (
-        retrieve_procedures(
+        _retrieve_procedure_hits(
+            eng,
             procedures,
-            query=procedure_query,
+            task=query,
+            goal=resolved_goal,
             retrieval_context=resolved_context,
-            lexical_candidates=search_procedure_fts(
-                eng.db.connect(), query=procedure_query, scope=scope_id
-            ),
-            encoder=getattr(eng, "encoder", None),
-            vector_store=EmbeddingStore(eng.db),
             suppression_trace=procedure_suppressions,
         )
-        if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
+        if shared_request is None
         else []
     )
     if baseline_request is not None:
@@ -1188,21 +1208,17 @@ def recall(
     recall_id = f"rec_{uuid.uuid4().hex[:12]}"
     procedure_interpretation = _shadow_task_interpretation(query, retrieval_context)
     procedures = load_procedures(eng.db.connect(), scope=scope)
-    procedure_query = procedure_cue(query=query, semantic_context=semantic_context)
     procedure_suppressions: list[dict[str, str]] = []
     procedure_hits = (
-        retrieve_procedures(
+        _retrieve_procedure_hits(
+            eng,
             procedures,
-            query=procedure_query,
+            task=query,
+            goal=None,
             retrieval_context=retrieval_context,
-            lexical_candidates=search_procedure_fts(
-                eng.db.connect(), query=procedure_query, scope=scope
-            ),
-            encoder=getattr(eng, "encoder", None),
-            vector_store=EmbeddingStore(eng.db),
             suppression_trace=procedure_suppressions,
         )
-        if shared_request is None and procedure_interpretation["action_intent"] != "non_action"
+        if shared_request is None
         else []
     )
     if baseline_request is not None:
