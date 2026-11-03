@@ -441,17 +441,12 @@ class SQLiteDB:
         except Exception:
             pass
 
-        # Procedure search is a derived, advisory projection.  Keep its FTS
-        # accelerator optional: SQLite builds without FTS5 still retain the
-        # canonical projection and fall back to dense retrieval.
+        # Procedure relevance is scored by the cross-encoder over the search
+        # documents; the FTS accelerator that served the old lexical bypass is
+        # derived, unused state, so remove it from older databases.
         try:
-            conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS procedure_search_fts USING fts5("
-                "procedure_id UNINDEXED, applicability_text, strategy_text)"
-            )
+            conn.execute("DROP TABLE IF EXISTS procedure_search_fts")
         except Exception:
-            # The search documents are useful without lexical acceleration.
-            # Leave this optional capability for a later startup to retry.
             pass
         try:
             from slowave.symbolic.procedure_search import backfill_procedure_search

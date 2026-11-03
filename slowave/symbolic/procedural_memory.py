@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from slowave.symbolic.procedure_search import (
-    ProcedureLexicalCandidate,
-    load_procedure_search_documents,
-)
+from slowave.symbolic.procedure_search import load_procedure_search_documents
 
 _NAME = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 _SCALAR = (str, int, float, bool)
@@ -25,13 +25,26 @@ _HARMED_PENALTY_CAP = 0.18
 _VERIFIED_SUCCESS_BONUS = 0.015
 _PARTIALLY_VERIFIED_SUCCESS_BONUS = 0.0075
 _FAILED_SOURCE_PENALTY = 0.03
-_PROCEDURE_RRF_K = 60
-_APPLICABILITY_WEIGHT = 2.0
-_STRATEGY_WEIGHT = 1.0
-_LEXICAL_WEIGHT = 1.0
-_DENSE_RELEVANCE_FLOOR = 0.60
-_LEXICAL_APPLICABILITY_FALLBACK = 0.30
-_CONTEXTUAL_LEXICAL_APPLICABILITY_FALLBACK = 0.20
+
+# Graded relevance gate (retrieve_relevant_procedures). Calibrated on the live
+# corpus: any floor from -3.5 to +2 kept empty-result queries empty, so -2.5 sits
+# mid-plateau; the margin only guards against a flood of near-equal matches.
+PROCEDURE_RESULT_LIMIT = 3
+_GATE_CANDIDATES = 15
+_GATE_LOGIT_FLOOR = -2.5
+_GATE_LOGIT_MARGIN = 6.0
+_GATE_UTILITY_WEIGHT = 5.0  # utility is <= ~0.1, so it moves a logit by <= ~0.5
+_GATE_TASK_HEAD_CHARS = 200
+
+log = logging.getLogger(__name__)
+
+
+class ProcedureScorerUnavailable(RuntimeError):
+    """The relevance scorer cannot run (model assets missing or failing).
+
+    Raised instead of a bare backend error so callers can fall back narrowly and
+    a genuine bug in the retrieval code is not mistaken for a missing model.
+    """
 
 
 def _clean_name(value: Any, field: str) -> str:
@@ -420,114 +433,142 @@ def load_procedures(conn: Any, *, scope: str | None = None) -> list[dict[str, An
     return procedures
 
 
-def retrieve_procedures(
+def _gate_terms(text: str) -> set[str]:
+    # Unicode word characters, no language-specific stopword list: inverse
+    # document frequency already discounts function words in any language.
+    return {token for token in re.findall(r"\w+", text.casefold()) if len(token) > 2}
+
+
+def _procedure_document(item: dict[str, Any]) -> str:
+    return f"{item.get('applicability_text') or ''} {item['goal']} {item['summary']}"
+
+
+def retrieve_relevant_procedures(
     procedures: list[dict[str, Any]],
     *,
     query: str,
-    retrieval_context: dict[str, Any] | None = None,
-    lexical_candidates: dict[str, ProcedureLexicalCandidate] | None = None,
-    encoder: Any = None,
+    goal: str | None,
+    retrieval_context: dict[str, Any] | None,
+    scorer: Any,
+    encoder: Any,
     vector_store: Any = None,
-    limit: int = 3,
-    min_similarity: float = _DENSE_RELEVANCE_FLOOR,
+    limit: int = PROCEDURE_RESULT_LIMIT,
     suppression_trace: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Retrieve a bounded set of applicable advisory procedures.
+    """Return only procedures that are relevant to the task, at most ``limit``.
 
-    Applicability is the admission decision.  The strategy text explains how a
-    procedure works and can break ties between applicable precedents, but a
-    similar step sequence alone must not surface a method for the wrong goal.
+    Admission is graded, not a cap filler:
+
+    1. Context-incompatible procedures are dropped.
+    2. A cheap stage ranks the rest by dense similarity of the goal to each
+       procedure's applicability text plus inverse-document-frequency coverage
+       of the goal and the head of the task. Reuse evidence is deliberately
+       excluded here: letting it pick candidates made the same procedures
+       return for unrelated queries.
+    3. A cross-encoder scores the top candidates against the goal.
+    4. A procedure is admitted when its logit reaches ``max(floor, best -
+       margin)`` and the best logit itself reaches the floor, so a pool with no
+       real match returns nothing instead of its three least-bad members.
+    5. Admitted procedures are ordered by relevance, with reuse evidence only a
+       small tie-break, and ``limit`` bounds the result. Exact method
+       duplicates collapse only under cap pressure, as before, so independently
+       recorded attempts stay comparable through helped/harmed feedback.
+
+    The cue is the goal (or the head of the task when no goal exists), never the
+    whole verbatim prompt, which flooded the result in evaluation. Raises when
+    the scorer cannot run so the caller can fall back.
     """
 
-    # Structured task context is checked field-by-field below.  Serializing it
-    # into the semantic cue made arbitrary metadata dominate the old cosine
-    # representation and diverged from schema retrieval's cue discipline.
-    cue = query.strip()
-    if not procedures:
+    task = (query or "").strip()
+    head = task[:_GATE_TASK_HEAD_CHARS]
+    goal_text = (goal or "").strip()
+    cue = goal_text or head
+    lexical_cue = f"{goal_text}. {head}" if goal_text else head
+    candidates = [
+        item for item in procedures if _contexts_compatible(item.get("context"), retrieval_context)
+    ]
+    if not candidates or not cue:
         return []
-    lexical_candidates = lexical_candidates or {}
-    cue_terms = set(re.findall(r"\w+", cue.casefold()))
-    query_vector = encoder.encode(cue) if encoder is not None else None
-    stored_vectors = None
-    if (
-        query_vector is not None
-        and vector_store is not None
-        and hasattr(encoder, "embedding_spec")
-        and getattr(getattr(encoder, "cfg", None), "use_onnx", True)
-    ):
-        entries = [
-            (item["id"], role, str(item.get(field) or item[fallback]))
-            for item in procedures
-            for role, field, fallback in [
-                ("applicability", "applicability_text", "goal"),
-                ("strategy", "strategy_text", "summary"),
-            ]
-        ]
-        stored_vectors = vector_store.vectors("procedure", entries, encoder)
-    scored: list[tuple[dict[str, Any], float, float]] = []
-    for index, item in enumerate(procedures):
-        applicability = str(item.get("applicability_text") or item["goal"])
-        strategy = str(item.get("strategy_text") or item["summary"])
-        if query_vector is not None:
-            applicability_vector = (
-                stored_vectors[2 * index]
-                if stored_vectors is not None
-                else encoder.encode(applicability)
-            )
-            strategy_vector = (
-                stored_vectors[2 * index + 1]
-                if stored_vectors is not None
-                else encoder.encode(strategy)
-            )
-            applicability_score = max(0.0, float(query_vector.dot(applicability_vector)))
-            strategy_score = max(0.0, float(query_vector.dot(strategy_vector)))
-        else:
-            applicability_score = _lexical_overlap(cue_terms, applicability)
-            strategy_score = _lexical_overlap(cue_terms, strategy)
-        scored.append((item, applicability_score, strategy_score))
 
-    applicability_ranks = _ranks(scored, index=1)
-    strategy_ranks = _ranks(scored, index=2)
+    if len(candidates) > _GATE_CANDIDATES:
+        document_frequency: Counter[str] = Counter()
+        for item in procedures:
+            document_frequency.update(_gate_terms(_procedure_document(item)))
+        total = len(procedures)
+
+        def idf(term: str) -> float:
+            frequency = document_frequency.get(term, 0)
+            return math.log(1 + (total - frequency + 0.5) / (frequency + 0.5))
+
+        cue_terms = _gate_terms(lexical_cue)
+        denominator = sum(idf(term) for term in cue_terms) or 1.0
+        stage_one = [
+            0.5
+            * sum(idf(term) for term in cue_terms & _gate_terms(_procedure_document(item)))
+            / denominator
+            for item in candidates
+        ]
+        if encoder is not None:
+            cue_vector = encoder.encode(cue)
+            entries = [
+                (item["id"], "applicability", str(item.get("applicability_text") or item["goal"]))
+                for item in candidates
+            ]
+            if (
+                vector_store is not None
+                and hasattr(encoder, "embedding_spec")
+                and getattr(getattr(encoder, "cfg", None), "use_onnx", True)
+            ):
+                vectors = vector_store.vectors("procedure", entries, encoder)
+            else:
+                vectors = [encoder.encode(text) for _id, _role, text in entries]
+            stage_one = [
+                score + 0.5 * max(0.0, float(cue_vector.dot(vector)))
+                for score, vector in zip(stage_one, vectors)
+            ]
+        order = sorted(
+            range(len(candidates)),
+            key=lambda i: (-stage_one[i], _stable_procedure_key(candidates[i])),
+        )[:_GATE_CANDIDATES]
+        candidates = [candidates[i] for i in order]
+
+    # A vague goal ("repair another workload") can hide an informative short
+    # task, so a short task is a second cue. A long prompt is never a cue: the
+    # whole verbatim text matched nearly everything in evaluation.
+    cues = [cue]
+    if goal_text and task and task != cue and len(task) <= _GATE_TASK_HEAD_CHARS:
+        cues.append(task)
+    try:
+        scores = scorer.score(cues, [f"{item['goal']}. {item['summary']}" for item in candidates])
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ProcedureScorerUnavailable(str(exc)) from exc
+    admitted = [False] * len(candidates)
+    for column in range(scores.shape[1]):
+        best = float(scores[:, column].max())
+        if best < _GATE_LOGIT_FLOOR:
+            continue
+        cutoff = max(_GATE_LOGIT_FLOOR, best - _GATE_LOGIT_MARGIN)
+        for index in range(len(candidates)):
+            admitted[index] = admitted[index] or float(scores[index, column]) >= cutoff
+    logits = scores.max(axis=1)
     ranked: list[tuple[float, dict[str, Any]]] = []
-    for item, applicability_score, strategy_score in scored:
-        lexical = lexical_candidates.get(str(item["id"]))
-        if not _contexts_compatible(item.get("context"), retrieval_context):
+    for item, logit, keep in zip(candidates, logits, admitted):
+        if not keep:
             continue
-        context_agreement = _context_agreement(item.get("context"), retrieval_context)
-        # Test and offline configurations can deliberately run without an
-        # embedding model.  In that case the score is term-overlap evidence,
-        # not cosine similarity, so keep its historical conservative fallback
-        # without allowing strategy text to satisfy admission.
-        applicability_floor = min_similarity
-        if encoder is None:
-            applicability_floor = (
-                _CONTEXTUAL_LEXICAL_APPLICABILITY_FALLBACK
-                if context_agreement
-                else _LEXICAL_APPLICABILITY_FALLBACK
-            )
-        dense_pass = applicability_score >= applicability_floor
-        lexical_pass = lexical is not None and lexical.specific
-        if not (dense_pass or lexical_pass):
-            continue
-        utility = procedure_feedback_utility(item)
-        fusion = (
-            _rrf(applicability_ranks[str(item["id"])], _APPLICABILITY_WEIGHT)
-            + _rrf(strategy_ranks[str(item["id"])], _STRATEGY_WEIGHT)
-            + _rrf(lexical.rank if lexical is not None else None, _LEXICAL_WEIGHT)
-        )
         result = dict(item)
-        result["score"] = round(fusion + utility, 4)
+        result["score"] = round(float(logit), 4)
         result["match"] = {
-            "applicability": round(applicability_score, 4),
-            "strategy": round(strategy_score, 4),
-            "lexical": lexical is not None and lexical.specific,
-            "admission": _admission_reason(dense_pass=dense_pass, lexical_pass=lexical_pass),
-            "context": "matched" if context_agreement else "compatible",
+            "admission": "cross_encoder_pool_relative",
+            "logit": round(float(logit), 4),
+            "context": (
+                "matched"
+                if _context_agreement(item.get("context"), retrieval_context)
+                else "compatible"
+            ),
         }
-        ranked.append((fusion + utility, result))
-    # Session IDs are random UUIDs. They cannot be the last tie-breaker for a
-    # public retrieval: equal-scoring procedures would otherwise reorder across
-    # otherwise identical replays. Use immutable procedure content instead.
+        ranked.append(
+            (float(logit) + _GATE_UTILITY_WEIGHT * procedure_feedback_utility(item), result)
+        )
     ranked.sort(key=lambda pair: (-pair[0], _stable_procedure_key(pair[1])))
     return _deduplicate_ranked_procedures(ranked, limit=limit, suppression_trace=suppression_trace)
 
@@ -570,12 +611,6 @@ def procedure_feedback_utility(item: dict[str, Any]) -> float:
         _HARMED_PENALTY_CAP, evidence.get("harmed", 0) * _HARMED_PENALTY
     )
     return utility + _source_outcome_adjustment(item)
-
-
-def _admission_reason(*, dense_pass: bool, lexical_pass: bool) -> str:
-    if dense_pass and lexical_pass:
-        return "applicability_dense_and_lexical"
-    return "applicability_dense" if dense_pass else "applicability_lexical"
 
 
 def _deduplicate_ranked_procedures(
@@ -635,16 +670,6 @@ def _normalise_method_text(value: str) -> str:
     return " ".join(re.findall(r"\w+", value.casefold()))
 
 
-def _ranks(scored: list[tuple[dict[str, Any], float, float]], *, index: int) -> dict[str, int]:
-    if index == 1:
-        ordered = sorted(scored, key=lambda value: (-value[1], _stable_procedure_key(value[0])))
-    else:
-        ordered = sorted(scored, key=lambda value: (-value[2], _stable_procedure_key(value[0])))
-    return {
-        str(item["id"]): rank for rank, (item, _applicability, _strategy) in enumerate(ordered, 1)
-    }
-
-
 def _stable_procedure_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     """Stable content identity for deterministic ranking ties.
 
@@ -660,15 +685,6 @@ def _stable_procedure_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
         _normalise_method_text(steps),
         json.dumps(item.get("context") or {}, sort_keys=True, ensure_ascii=False),
     )
-
-
-def _rrf(rank: int | None, weight: float) -> float:
-    return 0.0 if rank is None else weight / (_PROCEDURE_RRF_K + rank)
-
-
-def _lexical_overlap(cue_terms: set[str], text: str) -> float:
-    terms = set(re.findall(r"\w+", text.casefold()))
-    return len(cue_terms & terms) / len(cue_terms) if cue_terms else 0.0
 
 
 def _contexts_compatible(

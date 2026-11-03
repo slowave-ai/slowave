@@ -4,7 +4,6 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections import Counter
 
 import pytest
 
@@ -12,13 +11,8 @@ from slowave import ops
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
 from slowave.mcp.session_reaper import _reap_once
-from slowave.symbolic.procedural_memory import flatten_facets, retrieve_procedures
-from slowave.symbolic.procedure_search import (
-    ProcedureLexicalCandidate,
-    _has_discriminative_term,
-    backfill_procedure_search,
-    search_procedure_fts,
-)
+from slowave.symbolic.procedural_memory import flatten_facets
+from slowave.symbolic.procedure_search import backfill_procedure_search
 
 
 def _engine() -> tuple[SlowaveEngine, str]:
@@ -38,7 +32,7 @@ def _cleanup(path: str) -> None:
 
 def _procedure(service: str, *, failure: str = "crashloop") -> dict:
     return {
-        "summary": "Diagnose and repair a failing orchestrated service",
+        "summary": "Diagnose and repair a failing Kubernetes service",
         "context": {
             "aiops": {
                 "platform": "kubernetes",
@@ -78,285 +72,6 @@ def _attempt(eng: SlowaveEngine, service: str, outcome: str = "success") -> str:
         procedure=_procedure(service),
     )
     return activated["session_id"]
-
-
-class _SimilarityEncoder:
-    def __init__(self, similarity: float) -> None:
-        self.similarity = similarity
-
-    def encode(self, text: str):
-        class _Vector:
-            def __init__(self, similarity: float) -> None:
-                self.similarity = similarity
-
-            def dot(self, other: object) -> float:
-                return self.similarity
-
-        return _Vector(self.similarity)
-
-
-class _CountingEncoder:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def encode(self, text: str):
-        self.calls += 1
-        raise AssertionError("an empty procedure set must not be embedded")
-
-
-class _TextSimilarityEncoder:
-    def __init__(self, similarities: dict[tuple[str, str], float]) -> None:
-        self.similarities = similarities
-
-    def encode(self, text: str):
-        class _Vector:
-            def __init__(self, value: str, similarities: dict[tuple[str, str], float]) -> None:
-                self.value = value
-                self.similarities = similarities
-
-            def dot(self, other: object) -> float:
-                return self.similarities.get((self.value, getattr(other, "value", "")), 0.0)
-
-        return _Vector(text, self.similarities)
-
-
-def test_procedure_retrieval_requires_point_six_dense_similarity() -> None:
-    procedure = {
-        "id": "proc_example",
-        "goal": "repair service",
-        "summary": "Repair a failing service",
-        "context": {},
-        "steps": [{"summary": "Inspect and repair"}],
-        "caveats": [],
-        "outcome_summary": "Recovered",
-        "contributions": [],
-        "evidence": {
-            "helped": 10,
-            "harmed": 0,
-        },
-    }
-
-    assert not retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.5999))
-    admitted = retrieve_procedures([procedure], query="repair", encoder=_SimilarityEncoder(0.6))
-    assert [item["id"] for item in admitted] == ["proc_example"]
-    assert admitted[0]["match"] == {
-        "applicability": 0.6,
-        "strategy": 0.6,
-        "lexical": False,
-        "admission": "applicability_dense",
-        "context": "compatible",
-    }
-
-
-def test_procedure_retrieval_skips_embedding_for_empty_set() -> None:
-    encoder = _CountingEncoder()
-
-    assert retrieve_procedures([], query="repair", encoder=encoder) == []
-    assert encoder.calls == 0
-
-
-def test_procedure_strategy_similarity_cannot_admit_wrong_applicability() -> None:
-    query = "restore checkout database after credential rotation"
-    applicability = "repair a Kubernetes checkout crash loop"
-    strategy = "inspect evidence rotate credentials and verify service health"
-    procedure = {
-        "id": "proc_wrong_goal",
-        "goal": applicability,
-        "applicability_text": applicability,
-        "strategy_text": strategy,
-        "summary": strategy,
-        "context": {},
-        "steps": [{"summary": strategy}],
-        "caveats": [],
-        "outcome": "success",
-        "verification_status": "verified",
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-    encoder = _TextSimilarityEncoder({(query, applicability): 0.59, (query, strategy): 0.99})
-
-    assert retrieve_procedures([procedure], query=query, encoder=encoder) == []
-
-
-def test_procedure_lexical_admission_requires_applicability_evidence() -> None:
-    procedure = {
-        "id": "proc_lexical",
-        "goal": "repair checkout crash loop",
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect events then validate health",
-        "summary": "inspect events then validate health",
-        "context": {},
-        "steps": [{"summary": "inspect events"}],
-        "caveats": [],
-        "outcome": "unknown",
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-
-    selected = retrieve_procedures(
-        [procedure],
-        query="repair checkout crash loop",
-        lexical_candidates={"proc_lexical": ProcedureLexicalCandidate("proc_lexical", 1, True)},
-    )
-
-    assert [item["id"] for item in selected] == ["proc_lexical"]
-    assert selected[0]["match"]["admission"] == "applicability_dense_and_lexical"
-
-
-def test_verified_success_ranks_above_equally_applicable_failed_precedent() -> None:
-    common = {
-        "goal": "repair checkout crash loop",
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect events then repair and validate",
-        "summary": "inspect events then repair and validate",
-        "context": {},
-        "steps": [{"summary": "inspect events"}],
-        "caveats": [],
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-    failed = {
-        **common,
-        "id": "proc_failed",
-        "outcome": "failure",
-        "verification_status": "unverified",
-    }
-    verified = {
-        **common,
-        "id": "proc_verified",
-        "outcome": "success",
-        "verification_status": "verified",
-    }
-
-    selected = retrieve_procedures(
-        [failed, verified], query="repair checkout crash loop", encoder=_SimilarityEncoder(0.8)
-    )
-
-    assert [item["id"] for item in selected] == ["proc_verified", "proc_failed"]
-
-
-def test_equal_procedures_use_content_not_random_source_id_as_tie_breaker() -> None:
-    common = {
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect evidence then validate service health",
-        "context": {},
-        "steps": [{"summary": "inspect evidence"}, {"summary": "validate health"}],
-        "caveats": [],
-        "outcome": "success",
-        "verification_status": "verified",
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-    first = {**common, "id": "proc_random_z", "goal": "repair checkout api"}
-    second = {**common, "id": "proc_random_a", "goal": "repair checkout worker"}
-
-    selected = retrieve_procedures(
-        [second, first], query="repair checkout crash loop", encoder=_SimilarityEncoder(0.8)
-    )
-
-    assert [item["id"] for item in selected] == ["proc_random_z", "proc_random_a"]
-
-
-def test_duplicate_attempts_do_not_fill_capped_procedure_result() -> None:
-    duplicate = {
-        "goal": "repair checkout crash loop",
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect events then repair and validate",
-        "summary": "inspect events then repair and validate",
-        "context": {"platform": "kubernetes"},
-        "steps": [{"summary": "inspect events"}],
-        "caveats": [],
-        "outcome": "success",
-        "verification_status": "verified",
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-    distinct = {
-        **duplicate,
-        "id": "proc_distinct",
-        "strategy_text": "restore a known-good revision then validate",
-        "summary": "restore a known-good revision then validate",
-    }
-    duplicates = [{**duplicate, "id": f"proc_duplicate_{index}"} for index in range(3)]
-
-    selected = retrieve_procedures(
-        [*duplicates, distinct], query="repair checkout crash loop", encoder=_SimilarityEncoder(0.8)
-    )
-
-    assert len(selected) == 2
-    assert {item["id"] for item in selected} & {"proc_distinct"}
-
-
-def test_declared_duplicate_group_is_suppressed_with_a_representative() -> None:
-    common = {
-        "goal": "repair checkout crash loop",
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect events then repair and validate",
-        "summary": "inspect events then repair and validate",
-        "context": {"platform": "kubernetes"},
-        "steps": [{"summary": "inspect events"}],
-        "caveats": [],
-        "outcome": "success",
-        "verification_status": "verified",
-        "evidence": {"helped": 0, "harmed": 0},
-    }
-    trace: list[dict[str, str]] = []
-    selected = retrieve_procedures(
-        [
-            {**common, "id": "proc_primary", "deduplication_key": "checkout_repair"},
-            {**common, "id": "proc_alternative", "deduplication_key": "checkout_repair"},
-            {
-                **common,
-                "id": "proc_distinct",
-                "goal": "restore checkout revision",
-                "strategy_text": "restore known-good revision",
-                "deduplication_key": "checkout_rollback",
-            },
-            {
-                **common,
-                "id": "proc_other",
-                "goal": "validate checkout health",
-                "strategy_text": "validate health after repair",
-                "deduplication_key": "checkout_validate",
-            },
-        ],
-        query="repair checkout crash loop",
-        encoder=_SimilarityEncoder(0.8),
-        suppression_trace=trace,
-    )
-
-    assert len(selected) == 3
-    assert {item["id"] for item in selected} & {"proc_primary", "proc_alternative"}
-    assert len(trace) == 1
-    assert trace[0]["candidate_id"] in {"proc_primary", "proc_alternative"}
-    assert trace[0]["redundant_with"] in {"proc_primary", "proc_alternative"}
-
-
-def test_declared_duplicate_group_is_suppressed_below_the_public_cap() -> None:
-    common = {
-        "goal": "repair checkout crash loop",
-        "applicability_text": "repair checkout crash loop",
-        "strategy_text": "inspect events then repair and validate",
-        "summary": "inspect events then repair and validate",
-        "context": {"platform": "kubernetes"},
-        "steps": [{"summary": "inspect events"}],
-        "caveats": [],
-        "outcome": "success",
-        "verification_status": "verified",
-        "evidence": {"helped": 0, "harmed": 0},
-        "deduplication_key": "checkout_repair",
-    }
-    trace: list[dict[str, str]] = []
-    selected = retrieve_procedures(
-        [{**common, "id": "proc_primary"}, {**common, "id": "proc_alternative"}],
-        query="repair checkout crash loop",
-        encoder=_SimilarityEncoder(0.8),
-        suppression_trace=trace,
-    )
-
-    assert len(selected) == 1
-    assert len(trace) == 1
-    assert trace[0]["candidate_id"] != trace[0]["redundant_with"]
-
-
-def test_lexical_specificity_uses_corpus_frequency_not_english_stopwords() -> None:
-    assert _has_discriminative_term({"reparar"}, 4, Counter({"reparar": 1}))
-    assert not _has_discriminative_term({"reparar"}, 4, Counter({"reparar": 4}))
 
 
 def test_activate_can_omit_duplicate_schemas_and_diagnostics() -> None:
@@ -448,23 +163,15 @@ def test_procedure_search_backfills_from_canonical_completion_events() -> None:
         assert document is not None
         assert "repair checkout crashloop" in document["applicability_text"]
         assert "Diagnose and repair" in document["strategy_text"]
-        assert f"proc_{session_id}" in search_procedure_fts(
-            conn,
-            query="repair checkout crashloop",
-            scope="project:aiops",
+        # The old lexical index is gone: nothing queries it any more.
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'procedure_search_fts'"
+            ).fetchone()
+            is None
         )
-        # FTS may find a strategy-only phrase, but it must not use that phrase
-        # as lexical evidence that the procedure applies to a new goal.
-        strategy_only = search_procedure_fts(
-            conn,
-            query="Inspect service evidence",
-            scope="project:aiops",
-        )
-        assert strategy_only[f"proc_{session_id}"].specific is False
 
-        # The durable projection remains available if lexical FTS support is
-        # unavailable; the accelerator can be restored on a later release.
-        conn.execute("DROP TABLE procedure_search_fts")
+        # The durable projection can be rebuilt from the event log alone.
         conn.execute("DELETE FROM procedure_search_documents")
         conn.commit()
         assert backfill_procedure_search(conn) == 1
@@ -482,11 +189,6 @@ def test_procedure_search_backfills_from_canonical_completion_events() -> None:
             (f"proc_{session_id}",),
         ).fetchone()
         assert restored is not None
-        assert f"proc_{session_id}" in search_procedure_fts(
-            conn,
-            query="repair checkout crashloop",
-            scope="project:aiops",
-        )
     finally:
         eng.close()
         _cleanup(path)
