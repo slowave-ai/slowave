@@ -93,6 +93,9 @@ node_modules/
 # uv
 .uv/
 
+# claude
+.claude
+
 docs/iterations/
 episodic.faiss
 .playwright-mcp/
