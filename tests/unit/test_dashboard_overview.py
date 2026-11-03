@@ -39,21 +39,29 @@ def test_status_payload_reports_the_running_slowave_version(tmp_path, monkeypatc
     assert payload["slowave_version"] == dashboard_app.__version__
 
 
-def test_home_activity_bucket_size_keeps_day_to_year_views_granular() -> None:
-    day = 24 * 3600
+def test_activity_bucket_size_adapts_every_window_to_a_balanced_bar_count() -> None:
+    hour, day = 3600, 24 * 3600
+    windows = [
+        hour // 2,
+        hour,
+        3 * hour,
+        12 * hour,
+        day,
+        7 * day,
+        22 * day,
+        30 * day,
+        60 * day,
+        365 * day,
+        2 * 365 * day,
+        5 * 365 * day,
+    ]
+    for window in windows:
+        bars = window / (dashboard_app._activity_bucket_minutes(window) * 60)
+        assert 12 <= bars <= 40, (window, bars)
 
+    assert dashboard_app._activity_bucket_minutes(3 * hour) == 5
     assert dashboard_app._activity_bucket_minutes(day) == 60
-    assert dashboard_app._activity_bucket_minutes(7 * day) == 6 * 60
     assert dashboard_app._activity_bucket_minutes(30 * day) == 24 * 60
-    assert dashboard_app._activity_bucket_minutes(365 * day) == 7 * 24 * 60
-
-
-def test_home_activity_bucket_size_adapts_all_time_histories() -> None:
-    day = 24 * 3600
-
-    assert dashboard_app._activity_bucket_minutes(22 * day) == 24 * 60
-    assert dashboard_app._activity_bucket_minutes(2 * 365 * day) == 14 * 24 * 60
-    assert dashboard_app._activity_bucket_minutes(5 * 365 * day) == 30 * 24 * 60
 
 
 def test_react_home_separates_service_observations_and_activity_lanes() -> None:

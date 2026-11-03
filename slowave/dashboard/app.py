@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from slowave import __version__
 from slowave.dashboard.metrics import (
     MEMORY_ASSESSMENTS,
+    activity_bucket_seconds,
     assessed,
     bounds,
     complete_request_sql,
@@ -2394,25 +2395,9 @@ def _episodes_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
 
 
 def _activity_bucket_minutes(window_seconds: int) -> int:
-    """Choose a legible Home activity bucket size for the selected window.
+    """Home activity bucket size; shared adaptive ladder keeps ~12-40 bars."""
 
-    Keep roughly 24–60 bars on screen: this preserves detail for short
-    histories while avoiding an unreadable wall of narrow bars for long ones.
-    """
-
-    if window_seconds <= 24 * 3600:
-        return 60  # 24 hourly bars
-    if window_seconds <= 7 * 24 * 3600:
-        return 6 * 60  # 28 six-hour bars
-    if window_seconds <= 31 * 24 * 3600:
-        return 24 * 60  # 31 daily bars
-    if window_seconds <= 366 * 24 * 3600:
-        return 7 * 24 * 60  # 53 weekly bars
-    if window_seconds <= 2 * 366 * 24 * 3600:
-        return 14 * 24 * 60  # about 52 two-week bars
-    if window_seconds <= 5 * 366 * 24 * 3600:
-        return 30 * 24 * 60  # at most about 61 monthly bars
-    return 90 * 24 * 60  # quarterly bars for longer histories
+    return activity_bucket_seconds(window_seconds) // 60
 
 
 def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:

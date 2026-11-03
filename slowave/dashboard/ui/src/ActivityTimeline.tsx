@@ -5,7 +5,7 @@ import { bucketDescription, bucketIndex, bucketLabel, bucketPeriod, countAxis, r
 
 type Series = { key: string; label: string };
 type View = "usage" | "creation";
-const LEFT = 56, RIGHT = 56, WIDTH = 900, TOP = 26, BASE = 236, HEIGHT = 268;
+const LEFT = 56, RIGHT = 56, WIDTH = 900, TOP = 8, BASE = 158, HEIGHT = 180;
 
 /**
  * Two views of the same period.
