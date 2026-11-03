@@ -556,7 +556,9 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
     real_which = _setup_mod.shutil.which
     monkeypatch.setattr(
-        _setup_mod.shutil, "which", lambda name: None if name == "copilot" else real_which(name)
+        _setup_mod.shutil,
+        "which",
+        lambda name: None if name in {"copilot", "agy", "antigravity"} else real_which(name),
     )
     return tmp_path
 
@@ -1372,3 +1374,107 @@ def test_launchd_reapply_waits_before_bootstrap(monkeypatch, tmp_path):
     content = plistlib.dumps({"Label": "com.slowave.daemon"}).decode()
     _setup_mod._apply_launchd_service(tmp_path / "daemon.plist", content, force=True)
     assert calls == ["print", "bootout", 12345, "bootstrap"]
+
+
+def test_antigravity_setup_and_cleanup_preserve_other_config(fake_home, monkeypatch):
+    from slowave.cli.cleanup import _remove_lifecycle_blocks, _remove_mcp_configs
+
+    monkeypatch.setattr(
+        _setup_mod.shutil, "which", lambda name: "/bin/agy" if name == "agy" else None
+    )
+    spec = next(s for s in _setup_mod._clients() if s.key == "antigravity")
+    assert _setup_mod._is_client_detected(spec)
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    spec.mcp_path().touch()
+    assert _remove_mcp_configs(dry_run=False) == 0
+    assert spec.mcp_path().read_bytes() == b""
+    config = {
+        "mcpServers": {
+            "other": {"command": "other"},
+            "slowave": {"command": "old", "headers": {"X": "y"}},
+        }
+    }
+    config, changed = _setup_mod._patch_antigravity_mcp(config, "http://127.0.0.1:9999/mcp")
+    assert changed
+    assert config["mcpServers"]["slowave"] == {
+        "serverUrl": "http://127.0.0.1:9999/mcp",
+        "headers": {"X": "y"},
+    }
+    assert not _setup_mod._patch_antigravity_mcp(config, "http://127.0.0.1:9999/mcp")[1]
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    spec.mcp_path().write_text(json.dumps(config), encoding="utf-8")
+    spec.lifecycle_path().write_text("User instructions\n", encoding="utf-8")
+    _inject_block(spec.lifecycle_path(), _lifecycle_block("antigravity"))
+    _remove_mcp_configs(dry_run=False)
+    _remove_lifecycle_blocks(dry_run=False)
+    assert json.loads(spec.mcp_path().read_text(encoding="utf-8"))["mcpServers"] == {
+        "other": {"command": "other"}
+    }
+    instructions = spec.lifecycle_path().read_text(encoding="utf-8")
+    assert "User instructions" in instructions
+    assert "slowave-lifecycle-start" not in instructions
+
+
+def test_antigravity_selected_setup_installs_global_config(fake_home, monkeypatch):
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
+    monkeypatch.setattr(
+        _setup_mod.shutil, "which", lambda name: "/bin/agy" if name == "agy" else None
+    )
+    calls = []
+    monkeypatch.setattr(_setup_mod.subprocess, "run", lambda args, **kwargs: calls.append(args))
+    spec = next(s for s in _setup_mod._clients() if s.key == "antigravity")
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    spec.mcp_path().touch()  # Native first-launch config is empty, not valid JSON.
+    result = CliRunner().invoke(setup_cmd, ["--client", "antigravity", "--no-worker"], input="y\n")
+    assert result.exit_code == 0, result.output
+    entry = json.loads(spec.mcp_path().read_text(encoding="utf-8"))["mcpServers"]["slowave"]
+    assert entry["serverUrl"].endswith("/mcp")
+    assert _lifecycle_block("antigravity") in spec.lifecycle_path().read_text(encoding="utf-8")
+    assert calls == [[_setup_mod.sys.executable, "-m", "slowave", "doctor"]]
+
+
+@pytest.mark.parametrize(
+    "entry,rules,warning",
+    [
+        ({"serverUrl": HTTP_URL}, "current", None),
+        ({"url": HTTP_URL}, "current", None),
+        ({"serverUrl": "http://127.0.0.1:9999/mcp"}, "current", "transport/URL"),
+        ({"command": "old-stdio-server"}, "current", "transport/URL"),
+        ({"serverUrl": HTTP_URL, "disabled": True}, "current", "server is disabled"),
+        (
+            {"serverUrl": HTTP_URL, "enabledTools": ["slowave_activate"]},
+            "current",
+            "enable all five",
+        ),
+        (
+            {"serverUrl": HTTP_URL, "disabledTools": ["slowave_commit"]},
+            "current",
+            "enable all five",
+        ),
+        ({"serverUrl": HTTP_URL}, "missing", "lifecycle instructions"),
+        ({"serverUrl": HTTP_URL}, "stale", "lifecycle instructions"),
+        ({"serverUrl": HTTP_URL}, "unreadable", "lifecycle instructions"),
+    ],
+)
+def test_antigravity_doctor_reports_unusable_configuration(
+    fake_home, monkeypatch, entry, rules, warning
+):
+    from slowave.cli.clients import _antigravity_status, summarize_client_status
+    from slowave.cli.output import Status
+
+    monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "8766")
+    spec = next(s for s in _setup_mod._clients() if s.key == "antigravity")
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    spec.mcp_path().write_text(json.dumps({"mcpServers": {"slowave": entry}}), encoding="utf-8")
+    if rules == "unreadable":
+        spec.lifecycle_path().mkdir()
+    elif rules != "missing":
+        spec.lifecycle_path().write_text(
+            _lifecycle_block("antigravity") if rules == "current" else "old rules", encoding="utf-8"
+        )
+    status, detail = summarize_client_status(_antigravity_status())
+    assert status == (Status.WARN if warning else Status.OK), detail
+    if warning:
+        assert warning in detail

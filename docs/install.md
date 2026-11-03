@@ -279,6 +279,7 @@ To configure a single client, or to find client-specific details:
 | Codex ² | [integrations/codex/README.md](../integrations/codex/README.md) |
 | Cursor ¹ | [integrations/cursor/README.md](../integrations/cursor/README.md) |
 | OpenCode | [integrations/opencode/README.md](../integrations/opencode/README.md) |
+| Antigravity | [integrations/antigravity/README.md](../integrations/antigravity/README.md) |
 | Windsurf | [integrations/windsurf/README.md](../integrations/windsurf/README.md) |
 | Cline | [integrations/cline/README.md](../integrations/cline/README.md) |
 | Claude Desktop ¹ | [integrations/claude-desktop/README.md](../integrations/claude-desktop/README.md) |
@@ -304,7 +305,7 @@ rerun setup and refresh/restart the client to load current tool definitions.
 Options:
 
 ```
-slowave setup --client [claude-code|copilot|codex|cursor|opencode|windsurf|cline|claude-desktop|all]
+slowave setup --client [claude-code|copilot|codex|cursor|opencode|antigravity|windsurf|cline|claude-desktop|all]
               --no-worker       # skip daemon, worker, and backup registration
               --dry-run         # preview without writing
 ```
@@ -322,6 +323,7 @@ slowave setup --client [claude-code|copilot|codex|cursor|opencode|windsurf|cline
 | Codex | `~/.codex/` (or `$CODEX_HOME`) exists |
 | Cursor | `~/.cursor/` exists |
 | OpenCode | `~/.config/opencode/` exists |
+| Antigravity | `agy` or `antigravity` on PATH, an existing Antigravity directory or global MCP config |
 | Windsurf | `~/.codeium/windsurf/` exists |
 | Cline | `~/.cline/` (CLI/TUI) or `~/Library/Application Support/Code/.../cline_mcp_settings.json` parent exists |
 | Claude Desktop | `~/Library/Application Support/Claude/` (macOS) or equivalent exists |
@@ -607,6 +609,7 @@ url = "http://127.0.0.1:8766/mcp"
 | Codex | `~/.codex/config.toml` (shared by the CLI, Codex Desktop, and the IDE extension) |
 | Cursor | `~/.cursor/mcp.json` |
 | OpenCode | `~/.config/opencode/opencode.json` |
+| Antigravity | `~/.gemini/config/mcp_config.json` (`serverUrl` for HTTP) |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | Cline (VS Code / Cursor) | `.../cline_mcp_settings.json` |
 | Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
@@ -629,6 +632,7 @@ contracts.
 | Codex | `~/.codex/AGENTS.md` | `codex` |
 | Cursor | **Settings → Rules for AI** (or repo `.cursorrules`) | `cursor` |
 | OpenCode | `~/.config/opencode/slowave-instructions.md` | `opencode` |
+| Antigravity | `~/.gemini/config/AGENTS.md` | `antigravity` |
 | Windsurf | `~/.codeium/windsurf/memories/global_rules.md` | `windsurf` |
 | Cline | `~/.cline/rules/slowave.md` or repo `.clinerules` | `cline-tui` |
 | Claude Desktop | **Settings → General → Instructions for Claude** | `claude-desktop` |
@@ -642,3 +646,5 @@ Claude Desktop and Cursor require manual paste.
 
 - 🩺 Run `slowave doctor` to check status
 - 🐛 Report issues on [GitHub](https://github.com/mrsalty/slowave/issues)
+
+Antigravity setup writes `~/.gemini/config/mcp_config.json` and adds the lifecycle block to `~/.gemini/config/AGENTS.md`. `slowave uninstall` removes the Slowave entry and block while preserving other configuration. See the [Antigravity guide](../integrations/antigravity/README.md).

@@ -91,6 +91,71 @@ def _copilot_status() -> ClientStatus:
     return status
 
 
+def _antigravity_status() -> ClientStatus:
+    """Validate the shared daemon connection and always-on global instructions."""
+    from slowave.cli.setup import (
+        _antigravity_instructions_path,
+        _antigravity_mcp_config_path,
+        _detect_lifecycle_version,
+        _lifecycle_block,
+        _lifecycle_block_up_to_date,
+    )
+    from slowave.core.paths import daemon_port
+
+    status = ClientStatus(name="Antigravity")
+    warnings: list[str] = []
+    path = _antigravity_mcp_config_path()
+    expected_url = f"http://127.0.0.1:{daemon_port()}/mcp"
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+        entry = config["mcpServers"]["slowave"]
+        status.mcp_configured = (
+            isinstance(entry, dict)
+            and entry.get("serverUrl", entry.get("url")) == expected_url
+            and "command" not in entry
+        )
+        if not status.mcp_configured:
+            warnings.append("MCP transport/URL differs from this installation; run slowave setup")
+        if isinstance(entry, dict):
+            if entry.get("disabled") is True:
+                warnings.append("Slowave MCP server is disabled; run agy mcp enable slowave")
+            required = {
+                "slowave_activate",
+                "slowave_remember",
+                "slowave_recall",
+                "slowave_feedback",
+                "slowave_commit",
+            }
+            for key in ("enabledTools", "disabledTools"):
+                if key not in entry:
+                    continue
+                tools = entry[key]
+                if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                    warnings.append(f"invalid MCP {key} selection")
+                elif (key == "enabledTools" and not required.issubset(tools)) or (
+                    key == "disabledTools" and required.intersection(tools)
+                ):
+                    warnings.append(f"MCP {key} excludes lifecycle tools; enable all five")
+    except FileNotFoundError:
+        warnings.append("MCP configuration missing; run slowave setup --client antigravity")
+    except (OSError, ValueError, TypeError, KeyError):
+        warnings.append(f"invalid or missing slowave MCP entry in {path}; repair it then run setup")
+    try:
+        text = _antigravity_instructions_path().read_text(encoding="utf-8")
+        status.lifecycle_version = _detect_lifecycle_version(text)
+        status.lifecycle_enabled = _lifecycle_block_up_to_date(
+            text, _lifecycle_block("antigravity")
+        )
+    except (OSError, UnicodeError):
+        pass
+    if not status.lifecycle_enabled:
+        warnings.append(
+            "global lifecycle instructions missing, unreadable or stale; run slowave setup"
+        )
+    status.configuration_warning = "; ".join(warnings) or None
+    return status
+
+
 def _cursor_mcp_config_path() -> Path:
     return Path.home() / ".cursor" / "mcp.json"
 
@@ -290,6 +355,8 @@ def get_client_statuses() -> dict[str, ClientStatus]:
             )
         from slowave.cli.setup import _clients_for, _is_client_detected
 
+        if _is_client_detected(_clients_for("antigravity")[0]):
+            statuses["antigravity"] = _antigravity_status()
         if _is_client_detected(_clients_for("copilot")[0]):
             statuses["copilot"] = _copilot_status()
     except ImportError:

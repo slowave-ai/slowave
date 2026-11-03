@@ -268,6 +268,14 @@ def _cursor_rules_path() -> Path:
     return _home() / ".cursor" / "rules"
 
 
+def _antigravity_mcp_config_path() -> Path:
+    return _home() / ".gemini" / "config" / "mcp_config.json"
+
+
+def _antigravity_instructions_path() -> Path:
+    return _home() / ".gemini" / "config" / "AGENTS.md"
+
+
 def _windsurf_mcp_config_path() -> Path:
     """Windsurf/Devin Desktop MCP config — ~/.codeium/windsurf/mcp_config.json (all platforms)."""
     return _home() / ".codeium" / "windsurf" / "mcp_config.json"
@@ -516,6 +524,15 @@ def _clients() -> list[ClientSpec]:
             restart_note="Restart Cursor to apply changes.",
         ),
         ClientSpec(
+            key="antigravity",
+            label="Antigravity",
+            mcp_path=_antigravity_mcp_config_path,
+            lifecycle_path=_antigravity_instructions_path,
+            lifecycle_agent="antigravity",
+            require_dir_exists=True,
+            restart_note="Restart Antigravity or reload MCP servers to apply changes.",
+        ),
+        ClientSpec(
             key="windsurf",
             label="Windsurf",
             mcp_path=_windsurf_mcp_config_path,
@@ -579,6 +596,13 @@ def _is_client_detected(spec: ClientSpec) -> bool:
         return (_home() / ".claude").exists()
     if spec.key == "cline":
         return (_home() / ".cline").exists() or spec.mcp_path().parent.exists()
+    if spec.key == "antigravity":
+        return (
+            spec.mcp_path().exists()
+            or (_home() / ".gemini" / "antigravity").is_dir()
+            or shutil.which("agy") is not None
+            or shutil.which("antigravity") is not None
+        )
     if spec.key == "copilot":
         # Fresh CLI installs need not have created their user directory yet.
         return _copilot_home().is_dir() or shutil.which("copilot") is not None
@@ -694,10 +718,14 @@ def _backup_file(path: Path) -> Path | None:
     return backup
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json(path: Path, *, allow_empty: bool = False) -> dict[str, Any]:
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            # Antigravity creates a zero-byte config before its first MCP server.
+            if allow_empty and not text.strip():
+                return {}
+            return json.loads(text)
         except json.JSONDecodeError as exc:
             click.echo(
                 click.style(
@@ -791,6 +819,26 @@ def _patch_mcp_servers(
             return config, True
         return config, False
     # Anything else (stdio, missing, different url) — overwrite
+    servers["slowave"] = want
+    return config, True
+
+
+def _patch_antigravity_mcp(
+    config: dict[str, Any], url: str = "http://127.0.0.1:8766/mcp"
+) -> tuple[dict[str, Any], bool]:
+    """Configure Antigravity's serverUrl transport while retaining user options."""
+    servers = config.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise click.ClickException("Antigravity mcpServers must be a JSON object.")
+    existing = servers.get("slowave", {})
+    if not isinstance(existing, dict):
+        raise click.ClickException("Antigravity mcpServers.slowave must be a JSON object.")
+    want = dict(existing)
+    for key in ("command", "args", "env", "cwd", "url", "httpUrl", "type"):
+        want.pop(key, None)
+    want["serverUrl"] = url
+    if "slowave" in servers and existing == want:
+        return config, False
     servers["slowave"] = want
     return config, True
 
@@ -1668,7 +1716,11 @@ def _build_summary(
         if not _is_client_detected(spec):
             continue
 
-        cfg = _read_toml(mcp_file) if spec.key == "codex" else _read_json(mcp_file)
+        cfg = (
+            _read_toml(mcp_file)
+            if spec.key == "codex"
+            else _read_json(mcp_file, allow_empty=spec.key == "antigravity")
+        )
         if spec.key == "claude-desktop":
             slowave_mcp_bin = _find_mcp_binary(slowave_bin)
             _, changed_mcp = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
@@ -1681,6 +1733,8 @@ def _build_summary(
             changed_mcp = changed_mcp_only or changed_instructions
         elif spec.key == "codex":
             _, changed_mcp = _patch_codex_mcp(cfg, mcp_url)
+        elif spec.key == "antigravity":
+            _, changed_mcp = _patch_antigravity_mcp(cfg, mcp_url)
         elif spec.key == "copilot":
             _, changed_mcp = _patch_copilot_mcp(cfg, mcp_url)
         else:
@@ -1857,7 +1911,7 @@ def _section(title: str) -> None:
 def setup_cmd(
     client: str, worker: bool, dry_run: bool, as_json: bool = False, force: bool = False
 ) -> None:
-    """One-command post-install wiring for Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf, Cline, and Claude Desktop.
+    """One-command post-install wiring for Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Antigravity, Windsurf, Cline, and Claude Desktop.
 
     Configures every detected client to connect to the Slowave HTTP MCP daemon
     at http://127.0.0.1:8766/mcp.  The daemon and background worker start
@@ -1995,7 +2049,7 @@ def setup_cmd(
             if not dry_run and (mcp_changed or force):
                 _write_toml(mcp_file, cfg)
         else:
-            cfg = _read_json(mcp_file)
+            cfg = _read_json(mcp_file, allow_empty=spec.key == "antigravity")
             if spec.key == "claude-desktop":
                 slowave_mcp_bin = _find_mcp_binary(slowave_bin)
                 cfg, changed = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
@@ -2007,6 +2061,9 @@ def setup_cmd(
                 instructions_path = str(_opencode_instructions_path().resolve())
                 cfg, instructions_changed = _patch_opencode_instructions(cfg, instructions_path)
                 changed = mcp_changed or instructions_changed
+            elif spec.key == "antigravity":
+                cfg, changed = _patch_antigravity_mcp(cfg, mcp_url)
+                transport_label = "HTTP"
             elif spec.key == "copilot":
                 cfg, changed = _patch_copilot_mcp(cfg, mcp_url)
                 transport_label = "HTTP"

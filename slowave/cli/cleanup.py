@@ -244,7 +244,7 @@ def _remove_mcp_configs(dry_run: bool) -> int:
         if not mcp_file.exists():
             _skip(f"{spec.label}: {mcp_file} not found")
         else:
-            cfg = _read_json(mcp_file)
+            cfg = _read_json(mcp_file, allow_empty=spec.key == "antigravity")
             # OpenCode uses `mcp` key; other clients use `mcpServers`
             if spec.key == "opencode":
                 if "mcp" not in cfg or "slowave" not in cfg["mcp"]:

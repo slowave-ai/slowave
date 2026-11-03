@@ -41,6 +41,7 @@ the manual Claude Desktop and Cursor steps.
 | Codex | [codex/README.md](codex/README.md) | TOML config (`~/.codex/config.toml`) shared with Codex Desktop and the IDE extension; lifecycle via `AGENTS.md` |
 | Cursor | [cursor/README.md](cursor/README.md) | Requires Rules for AI (one manual paste); MCP config at `~/.cursor/mcp.json` |
 | OpenCode | [opencode/README.md](opencode/README.md) | Uses local MCP (`mcp` key, not `mcpServers`); lifecycle via Slowave-owned file registered in `instructions` array |
+| Antigravity | [antigravity/README.md](antigravity/README.md) | Automatic MCP configuration and global lifecycle instructions |
 | Windsurf | [windsurf/README.md](windsurf/README.md) | Fully automated; MCP config at `~/.codeium/windsurf/mcp_config.json`, lifecycle block injected into `global_rules.md` |
 | Cline | [cline/README.md](cline/README.md) | Same lifecycle block injected into `.clinerules` |
 | Claude Desktop | [claude-desktop/README.md](claude-desktop/README.md) | Requires Custom Instructions (one manual paste) |
