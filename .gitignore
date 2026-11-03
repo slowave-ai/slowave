@@ -94,7 +94,7 @@ node_modules/
 .uv/
 
 # claude
-.claude
+.claude/
 
 docs/iterations/
 episodic.faiss
