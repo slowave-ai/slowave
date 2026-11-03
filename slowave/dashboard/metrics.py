@@ -303,6 +303,43 @@ def projection(
     return result
 
 
+# Nice bucket sizes in minutes; the chart picks the smallest one that keeps the
+# bar count at or below ACTIVITY_MAX_BARS, so any window (3 hours, an arbitrary
+# "all times" span, or a custom range) lands on roughly 12-40 evenly sized bars.
+ACTIVITY_BUCKET_LADDER_MINUTES = (
+    1,
+    2,
+    5,
+    10,
+    15,
+    30,
+    60,
+    120,
+    240,
+    360,
+    720,
+    1440,
+    2880,
+    4320,
+    10080,
+    20160,
+    43200,
+    86400,
+    129600,
+    259200,
+    525600,
+)
+ACTIVITY_MAX_BARS = 40
+
+
+def activity_bucket_seconds(window_seconds: int) -> int:
+    window = max(1, int(window_seconds))
+    for minutes in ACTIVITY_BUCKET_LADDER_MINUTES:
+        if window / (minutes * 60) <= ACTIVITY_MAX_BARS:
+            return minutes * 60
+    return ACTIVITY_BUCKET_LADDER_MINUTES[-1] * 60
+
+
 def chart(
     conn: sqlite3.Connection,
     qs: dict[str, list[str]],
@@ -353,11 +390,7 @@ def chart(
     if not start:
         start = min([end, *[ts for ts, _ in saved], *[i["request_ts"] for i in items]])
     window = max(1, end - start)
-    bucket = (
-        300
-        if window <= 86400
-        else 3600 if window <= 7 * 86400 else 86400 if window <= 365 * 86400 else 604800
-    )
+    bucket = activity_bucket_seconds(window)
     grid = range(start // bucket * bucket, end // bucket * bucket + 1, bucket)
     channels: dict[str, Counter[int]] = {
         k: Counter()

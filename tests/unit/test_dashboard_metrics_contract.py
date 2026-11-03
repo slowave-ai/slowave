@@ -502,7 +502,7 @@ def test_daily_chart_boundaries_deduplication_and_late_corrections(fixture):
         ("r1", 2 * day - 1),
         ("r2", 2 * day),
         ("r3", 2 * day + 1),
-        ("r4", 10 * day + 1),
+        ("r4", 41 * day + 1),
     ]:
         conn.execute("UPDATE context_recall_events SET created_at=? WHERE context_id=?", (ts, rid))
     # A retried delivery must not add another occasion.
@@ -517,11 +517,11 @@ def test_daily_chart_boundaries_deduplication_and_late_corrections(fixture):
         "VALUES ('late-correction','r2','memory','sch_1','not_used','accepted','complete','slowave_feedback:v19',?)",
         [4 * day],
     )
-    result = projection(conn, {"from": [str(day)], "to": [str(9 * day)], "hours": ["all"]})
+    result = projection(conn, {"from": [str(day)], "to": [str(40 * day)], "hours": ["all"]})
     chart = result["chart"]
     assert chart["bucket_minutes"] == 1440
     channels = {key: {b["ts"]: b["n"] for b in rows} for key, rows in chart["channels"].items()}
-    zeros = {i * day: 0 for i in range(1, 10)}
+    zeros = {i * day: 0 for i in range(1, 41)}
     assert channels["memory_retrievals"] == {**zeros, day: 4, 2 * day: 3}
     assert channels["used_memories"] == {**zeros, day: 2, 2 * day: 1}
     assert channels["procedure_retrievals"] == {**zeros, day: 1, 2 * day: 2}

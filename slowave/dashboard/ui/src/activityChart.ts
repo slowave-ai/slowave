@@ -4,8 +4,10 @@ export function countAxis(maxValue: number) {
   const magnitude = 10 ** Math.floor(Math.log10(rawStep));
   const fraction = rawStep / magnitude;
   const step = Math.max(1, (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * magnitude);
-  const max = Math.max(step, Math.ceil(maxValue / step) * step);
-  const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => max - i * step);
+  // Top of the axis hugs the data (half-step granularity); labelled ticks stay on whole steps.
+  const unit = Math.max(1, Math.floor(step / 2));
+  const max = Math.max(unit, Math.ceil(maxValue / unit) * unit);
+  const ticks = Array.from({ length: Math.floor(max / step) + 1 }, (_, i) => Math.floor(max / step) * step - i * step);
   return { max, ticks };
 }
 
@@ -25,7 +27,8 @@ export function bucketLabel(ts: number, minutes: number, locale?: string) {
 
 export function bucketDescription(minutes: number) {
   return minutes < 60 ? `${minutes}-minute counts` : minutes === 60 ? "Hourly counts"
-    : minutes === 1440 ? "Daily counts" : minutes === 10080 ? "Weekly counts" : `${minutes / 60}-hour counts`;
+    : minutes === 1440 ? "Daily counts" : minutes === 10080 ? "Weekly counts"
+    : minutes % 1440 === 0 ? `${minutes / 1440}-day counts` : `${minutes / 60}-hour counts`;
 }
 
 /** Drill-down APIs use inclusive bounds; never include the next bucket. */
