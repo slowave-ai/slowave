@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -39,6 +40,91 @@ class Color(Enum):
     RESET = "\033[0m"
 
 
+@dataclass(frozen=True)
+class Caps:
+    """What the attached terminal can render.
+
+    Detected once per render from the output stream and environment, so every
+    command degrades the same way (piped output, CI, ``NO_COLOR``, legacy
+    Windows code pages) instead of each call site guessing.
+    """
+
+    tty: bool
+    color: bool
+    unicode: bool
+    width: int
+
+
+_UNICODE_GLYPHS = {
+    "ok": "✓",
+    "warn": "▲",
+    "fail": "✗",
+    "skip": "–",
+    "step": "◆",
+    "arrow": "→",
+    "dot": "·",
+    "rule": "─",
+}
+_ASCII_GLYPHS = {
+    "ok": "+",
+    "warn": "!",
+    "fail": "x",
+    "skip": "-",
+    "step": ">",
+    "arrow": "->",
+    "dot": "-",
+    "rule": "-",
+}
+
+
+def detect_caps(stream: Any = None) -> Caps:
+    """Detect terminal capabilities for *stream* (default: ``sys.stdout``)."""
+    stream = stream if stream is not None else sys.stdout
+    try:
+        tty = bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        tty = False
+    color = tty and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+    if os.environ.get("FORCE_COLOR") and not os.environ.get("NO_COLOR"):
+        color = True
+    unicode_ok = os.environ.get("SLOWAVE_ASCII") != "1"
+    if unicode_ok:
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        try:
+            "".join(_UNICODE_GLYPHS.values()).encode(encoding)
+        except (LookupError, UnicodeEncodeError):
+            unicode_ok = False
+    try:
+        width = shutil.get_terminal_size((80, 24)).columns
+    except OSError:
+        width = 80
+    return Caps(tty=tty, color=color, unicode=unicode_ok, width=max(40, min(width, 100)))
+
+
+def glyph(name: str, caps: Caps | None = None) -> str:
+    """Return the glyph *name* for the terminal (Unicode, or ASCII fallback)."""
+    caps = caps or detect_caps()
+    return (_UNICODE_GLYPHS if caps.unicode else _ASCII_GLYPHS)[name]
+
+
+def style(
+    text: str, caps: Caps, *, fg: str | None = None, bold: bool = False, dim: bool = False
+) -> str:
+    """Apply ANSI styling only when *caps* allows colour."""
+    if not caps.color:
+        return text
+    codes = []
+    if bold:
+        codes.append("1")
+    if dim:
+        codes.append("2")
+    if fg:
+        codes.append({"green": "32", "yellow": "33", "red": "31", "cyan": "36"}[fg])
+    if not codes:
+        return text
+    return f"\033[{';'.join(codes)}m{text}\033[0m"
+
+
 @dataclass
 class CheckResult:
     """Result of a single diagnostic check."""
@@ -60,8 +146,9 @@ class ConsoleRenderer:
             use_color: Use ANSI colors. Respects NO_COLOR environment variable.
         """
         self.use_emoji = use_emoji
-        # NO_COLOR env var disables color (https://no-color.org/)
-        self.use_color = use_color and not os.environ.get("NO_COLOR")
+        self.caps = detect_caps()
+        # NO_COLOR, non-TTY output and TERM=dumb all disable color.
+        self.use_color = use_color and self.caps.color
 
     def _symbol(self, status: Status) -> str:
         """Get status symbol."""
@@ -74,13 +161,8 @@ class ConsoleRenderer:
             }
             return symbols_emoji[status]
         else:
-            symbols_ascii = {
-                Status.OK: "✓",
-                Status.WARN: "!",
-                Status.FAIL: "✗",
-                Status.SKIP: "-",
-            }
-            return symbols_ascii[status]
+            names = {Status.OK: "ok", Status.WARN: "warn", Status.FAIL: "fail", Status.SKIP: "skip"}
+            return glyph(names[status], self.caps)
 
     def _colorize(self, text: str, color: Color) -> str:
         """Apply ANSI color if enabled."""
@@ -92,7 +174,7 @@ class ConsoleRenderer:
         """Print a section header."""
         click().echo()
         click().echo(self._colorize(f"  {title}", Color.BOLD))
-        click().echo(f"  {self._colorize('─' * (len(title)), Color.DIM)}")
+        click().echo(f"  {self._colorize(glyph('rule', self.caps) * len(title), Color.DIM)}")
 
     def check(
         self,
@@ -152,8 +234,7 @@ class ConsoleRenderer:
 
     def hint(self, message: str) -> None:
         """Print a hint/suggestion."""
-        icon = safe_emoji("💡", "[i]")
-        msg = self._colorize(f"{icon} {message}", Color.DIM)
+        msg = self._colorize(f"{glyph('arrow', self.caps)} {message}", Color.DIM)
         click().echo(f"  {msg}")
 
     def title(self, title: str, version: str = "") -> None:
@@ -208,4 +289,4 @@ def status_symbol(status: Status, use_emoji: bool = False) -> str:
     """Get status symbol for use in inline labels."""
     if use_emoji:
         return {"ok": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}[status.value]
-    return {"ok": "✓", "warn": "!", "fail": "✗", "skip": "-"}[status.value]
+    return glyph(status.value)

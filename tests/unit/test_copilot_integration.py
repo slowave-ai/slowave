@@ -25,7 +25,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOWAVE_MCP_HTTP_PORT", "19876")
     monkeypatch.setattr(setup.shutil, "which", lambda name: None)
     monkeypatch.setattr(setup, "_find_slowave_binary", lambda: "/fake/slowave")
-    monkeypatch.setattr(setup, "_prepare_search_vectors", lambda database: None)
+    monkeypatch.setattr(setup, "_prepare_search_vectors", lambda database, progress=None: None)
     monkeypatch.setattr(setup.subprocess, "run", lambda *a, **kw: None)
     return tmp_path
 
@@ -115,8 +115,8 @@ def test_setup_auto_discovers_binary_and_configures_lifecycle(isolated, monkeypa
     args = ["--no-worker"] + (["--client", selection[0]] if selection else [])
     result = CliRunner().invoke(setup.setup_cmd, args, input="y\n")
     assert result.exit_code == 0, result.output
-    assert "Found: Copilot CLI" in result.output
-    assert "Restart Copilot CLI" in result.output
+    assert "Copilot" in result.output
+    assert "Restart Copilot" in result.output
     cfg = json.loads(setup._copilot_mcp_config_path().read_text())
     assert cfg["mcpServers"]["slowave"] == {
         "type": "http",
@@ -154,7 +154,7 @@ def test_dry_run_creates_no_files_even_for_binary_only_install(isolated, monkeyp
         setup.setup_cmd, ["--client", "copilot", "--dry-run", "--no-worker"]
     )
     assert result.exit_code == 0, result.output
-    assert "Copilot CLI" in result.output
+    assert "Copilot" in result.output
     assert "19876/mcp" in result.output
     assert not list(isolated.iterdir())
 

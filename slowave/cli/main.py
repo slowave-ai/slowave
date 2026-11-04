@@ -1951,125 +1951,144 @@ def doctor_cmd(ctx: click.Context, as_json: bool, verbose: bool) -> None:
         if has_fail:
             sys.exit(1)
     else:
-        # Human-readable mode
-        runtime = get_runtime_info(__version__, ctx.obj["db"])
-        renderer.title("Slowave Doctor", f"v{__version__}")
+        _render_doctor(ctx, verbose)
 
-        renderer.section("Environment")
-        renderer.item("Python", runtime.python_version)
-        renderer.item("Data dir", runtime.slowave_dir, dim=True)
-        renderer.item("Config", runtime.config_path, dim=True)
-        renderer.item("MCP URL", runtime.mcp_url)
 
-        # Runtime checks
-        renderer.section("Runtime")
-        checks = [
-            check_python(),
-            check_faiss(),
-            check_onnxruntime(),
-            check_embedding_backend(),
-            check_sqlite_write(),
-            check_mcp_server(),
-            check_http_daemon(),
-        ]
+def _render_doctor(ctx: click.Context, verbose: bool) -> None:
+    """Verdict-first, grouped doctor report (human-readable mode)."""
+    from slowave import __version__
+    from slowave.cli.clients import get_client_statuses, summarize_client_status
+    from slowave.cli.diagnostics import (
+        check_embedding_backend,
+        check_faiss,
+        check_http_daemon,
+        check_mcp_server,
+        check_onnxruntime,
+        check_python,
+        check_sqlite_write,
+        get_runtime_info,
+    )
+    from slowave.cli.output import Status, detect_caps, glyph, style
+    from slowave.cli.setup_output import SetupView
 
-        for check in checks:
-            renderer.check(check.label, check.status, check.detail, check.remediation)
+    caps = detect_caps()
+    view = SetupView(verbose=verbose, label_width=28)
+    runtime = get_runtime_info(__version__, ctx.obj["db"])
 
-        # Operational health
-        worker = _worker_health()
-        session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
-        feedback = _feedback_health(ctx.obj["db"])
+    checks = [
+        check_python(),
+        check_faiss(),
+        check_onnxruntime(),
+        check_embedding_backend(),
+        check_sqlite_write(),
+        check_mcp_server(),
+        check_http_daemon(),
+    ]
+    worker = _worker_health()
+    session_lifecycle = _session_lifecycle_health(ctx.obj["db"])
+    feedback = _feedback_health(ctx.obj["db"])
+    clients = get_client_statuses()
 
-        renderer.section("Worker Health")
-        renderer.item("Worker process detected", str(worker.get("process_detected", False)))
-        renderer.item("Worker process count", f"{worker.get('process_count', 0):,}")
-
-        renderer.section("Session Lifecycle Health")
-        renderer.item("Sessions started", f"{session_lifecycle.get('sessions_started', 0):,}")
-        renderer.item(
-            "Sessions ended/committed",
-            f"{session_lifecycle.get('sessions_committed', 0):,}",
-        )
-
-        renderer.section("Feedback Health")
-        renderer.item("Recall/context calls", f"{feedback.get('recall_or_context_calls', 0):,}")
-        renderer.item("Remember calls", f"{feedback.get('remember_calls', 0):,}")
-        renderer.item(
-            "Feedback/reinforcement calls",
-            f"{feedback.get('feedback_or_reinforcement_calls', 0):,}",
-        )
-        age = feedback.get("last_feedback_age_days")
-        renderer.item(
-            "Last feedback",
-            "never" if age is None else f"{age:g} day(s) ago",
-        )
-
-        # Client checks
-        renderer.section("Clients")
-        clients = get_client_statuses()
-        warnings_list = []
-
-        for key, client in clients.items():
-            status, detail = summarize_client_status(client)
-            renderer.check(client.name, status, detail)
-            if status == Status.WARN:
-                warnings_list.append((client.name, detail))
-
-        # Warnings
-        operational_warnings = []
-        for label, health in (
-            ("Worker", worker),
-            ("Session lifecycle", session_lifecycle),
-            ("Feedback", feedback),
-        ):
-            for warning in health.get("warnings", []):
-                operational_warnings.append((label, str(warning)))
-
-        runtime_warnings = [("Runtime root", warning) for warning in runtime.warnings]
-        if warnings_list or operational_warnings or runtime_warnings:
-            renderer.section("Warnings")
-            for label, warning in runtime_warnings + operational_warnings:
-                remediation = None
-                if label == "Worker":
-                    remediation = "Run: slowave worker --once, or configure the worker service if you want automatic consolidation."
-                elif label == "Feedback":
-                    if "counters unavailable" in warning:
-                        remediation = "Run `slowave status --json` or inspect the SQLite DB schema; this diagnostic is best-effort and does not mean feedback is broken."
-                    else:
-                        remediation = "Check client lifecycle instructions and post-recall feedback. This is independent from the background worker."
-                elif label == "Session lifecycle":
-                    if "counters unavailable" in warning:
-                        remediation = "Run `slowave status --json` or inspect the SQLite DB schema; this diagnostic is best-effort and does not mean lifecycle tracking is broken."
-                    else:
-                        remediation = "Check that the client calls session end/commit when a conversation or task finishes."
-                renderer.warning(f"{label}: {warning}", remediation)
-            for name, detail in warnings_list:
-                if "custom instructions" in detail.lower():
-                    renderer.warning(
-                        f"{name}: {detail}",
-                        "Run: slowave setup --dry-run, then slowave setup",
+    # (label, status, detail, fix) for everything that needs attention.
+    issues: list[tuple[str, Status, str, str]] = []
+    for check in checks:
+        if check.status in (Status.WARN, Status.FAIL):
+            issues.append((check.label, check.status, check.detail, check.remediation))
+    client_rows = []
+    service_rows = []
+    for client in clients.values():
+        status, detail = summarize_client_status(client)
+        is_service = "worker" in client.name.lower() or "daemon" in client.name.lower()
+        if "daemon" in client.name.lower():
+            continue  # covered by the Runtime daemon check
+        (service_rows if is_service else client_rows).append((client.name, status, detail))
+        if status == Status.WARN:
+            if client.name == "Cursor":
+                # Cursor rules can't be written automatically; say so plainly.
+                issues.append(
+                    (
+                        client.name,
+                        status,
+                        "add the rules manually: https://github.com/mrsalty/slowave",
+                        "",
                     )
-                else:
-                    renderer.warning(f"{name}: {detail}")
+                )
+            else:
+                issues.append((client.name, status, detail, "slowave setup"))
+    for label, health in (
+        ("Worker", worker),
+        ("Session lifecycle", session_lifecycle),
+        ("Feedback", feedback),
+    ):
+        for warning in health.get("warnings", []):
+            issues.append((label, Status.WARN, str(warning), ""))
+    for warning in runtime.warnings:
+        issues.append(("Runtime root", Status.WARN, str(warning), ""))
 
-        # Summary
-        has_fail = any(c.status == Status.FAIL for c in checks)
-        has_warn = bool(warnings_list) or bool(operational_warnings) or bool(runtime_warnings)
+    failed = [i for i in issues if i[1] == Status.FAIL]
+    warned = [i for i in issues if i[1] == Status.WARN]
 
-        if has_fail:
-            msg = f"Setup required. {len([c for c in checks if c.status == Status.FAIL])} check(s) failed."
-            renderer.summary(False, msg)
-            sys.exit(1)
-        elif has_warn:
-            msg = (
-                "Usable with "
-                f"{len(warnings_list) + len(operational_warnings) + len(runtime_warnings)} "
-                "warning(s)."
-            )
-            renderer.summary(True, msg)
-        else:
-            renderer.summary(True, "All systems ready.")
+    view.banner(__version__, "Doctor")
+    view.blank()
+    if failed:
+        view.failure(f"{len(failed)} check{'s' if len(failed) != 1 else ''} failed")
+    elif warned:
+        view.line(
+            f"{style(glyph('warn', caps), caps, fg='yellow')} "
+            f"{style(f'Healthy, {len(warned)} thing' + ('s' if len(warned) != 1 else '') + ' to review', caps, bold=True)}"
+        )
+    else:
+        view.success("All systems healthy")
+
+    def _row(label: str, status: Status, detail: str) -> None:
+        view.row(label, status.value, detail)
+
+    view.group("Runtime")
+    for check in checks:
+        _row(
+            check.label, check.status, check.detail if verbose or check.status != Status.OK else ""
+        )
+
+    view.group("Services")
+    for name, status, detail in service_rows:
+        _row(name, status, detail)
+
+    view.group("Clients")
+    for name, status, detail in client_rows:
+        # Warnings are explained once, under "Needs attention".
+        _row(name, status, "needs attention" if status == Status.WARN else detail)
+
+    view.group("Memory")
+    age = feedback.get("last_feedback_age_days")
+    sessions = session_lifecycle.get("sessions_started", 0)
+    committed = session_lifecycle.get("sessions_committed", 0)
+    view.row("Sessions", "ok", f"{sessions:,} started {glyph('dot', caps)} {committed:,} committed")
+    view.row(
+        "Recall",
+        "ok",
+        f"{feedback.get('recall_or_context_calls', 0):,} recalls {glyph('dot', caps)} "
+        f"{feedback.get('remember_calls', 0):,} remembers",
+    )
+    view.row(
+        "Feedback",
+        "ok",
+        f"{feedback.get('feedback_or_reinforcement_calls', 0):,} assessments {glyph('dot', caps)} last "
+        + ("never" if age is None else "today" if age < 1 else f"{age:g} day(s) ago"),
+    )
+    if verbose:
+        view.row("Data dir", "skip", runtime.slowave_dir)
+        view.row("Config", "skip", runtime.config_path)
+        view.row("MCP URL", "skip", runtime.mcp_url)
+
+    if issues:
+        view.group("Needs attention")
+        for label, status, detail, fix in issues:
+            view.row(label, status.value, detail)
+            if fix:
+                view.line(f"Fix:  {fix}", dim=True, indent=6)
+    view.blank()
+    if failed:
+        sys.exit(1)
 
 
 @cli.command("uninstall")
