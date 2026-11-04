@@ -69,17 +69,14 @@ Over time, the way you work becomes reusable context for your agent.
 
 ## Installation
 
-### Install
+To install and configure all clients in one go:
+
 ```bash
 pipx install slowave
-```
-
-### Setup
-```
 slowave setup
 ```
 
-The quick start configures every detected client. To configure just one client at a time, see the [installation reference](docs/install.md).
+To configure just one client at a time, see the [installation reference](docs/install.md).
 
 > [!IMPORTANT]
 > **No LLM API key required.**

@@ -33,7 +33,7 @@ def _copilot_status() -> ClientStatus:
     )
     from slowave.core.paths import daemon_port, runtime_paths
 
-    status = ClientStatus(name="Copilot CLI")
+    status = ClientStatus(name="Copilot")
     warnings: list[str] = []
     path = _copilot_mcp_config_path()
     expected_url = f"http://127.0.0.1:{daemon_port(runtime_paths())}/mcp"
@@ -285,9 +285,23 @@ def get_client_statuses() -> dict[str, ClientStatus]:
 
         windsurf_mcp_paths = _windsurf_mcp_config_paths()
         if any(path.parent.exists() for path in windsurf_mcp_paths):
+            from slowave.cli.setup import _detect_lifecycle_version as _ws_version
+            from slowave.cli.setup import _lifecycle_block as _ws_block
+            from slowave.cli.setup import _lifecycle_block_up_to_date as _ws_up_to_date
+            from slowave.cli.setup import _windsurf_global_rules_path
+
+            ws_rules = _windsurf_global_rules_path()
+            ws_text = ""
+            if ws_rules.exists():
+                try:
+                    ws_text = ws_rules.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    ws_text = ""
             statuses["windsurf"] = ClientStatus(
                 name="Windsurf",
                 mcp_configured=_any_json_has_slowave_mcp(windsurf_mcp_paths),
+                lifecycle_enabled=_ws_up_to_date(ws_text, _ws_block("windsurf")),
+                lifecycle_version=_ws_version(ws_text),
             )
 
         # OpenCode detection — uses `mcp` key (not `mcpServers`) and `instructions` array
@@ -418,7 +432,7 @@ def get_client_statuses() -> dict[str, ClientStatus]:
 def summarize_client_status(client: ClientStatus) -> tuple[Status, str]:
     if client.configuration_warning:
         return (Status.WARN, client.configuration_warning)
-    if client.name == "Copilot CLI" and client.mcp_configured and client.lifecycle_enabled:
+    if client.name == "Copilot" and client.mcp_configured and client.lifecycle_enabled:
         return (Status.OK, "MCP (HTTP), lifecycle (user config; verify in Copilot)")
     if "http mcp daemon" in client.name.lower():
         return (

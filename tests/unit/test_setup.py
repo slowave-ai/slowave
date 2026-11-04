@@ -552,7 +552,7 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr(_setup_mod, "_home", lambda: tmp_path)
     monkeypatch.setattr(_cleanup_mod, "_home", lambda: tmp_path)
     # These are configuration tests; search preparation has separate tests.
-    monkeypatch.setattr(_setup_mod, "_prepare_search_vectors", lambda database: None)
+    monkeypatch.setattr(_setup_mod, "_prepare_search_vectors", lambda database, progress=None: None)
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / ".copilot"))
     real_which = _setup_mod.shutil.which
     monkeypatch.setattr(
@@ -1046,7 +1046,8 @@ def test_manual_clients_receive_current_pasteable_block_even_when_configured(
     monkeypatch.setattr(_setup_mod, "_build_summary", lambda *args, **kwargs: summary)
     result = CliRunner().invoke(setup_cmd, ["--client", client, "--no-worker"])
     assert result.exit_code == 0, result.output
-    assert _lifecycle_block(spec.lifecycle_agent) in result.output
+    # The long block is never dumped during setup; users fetch it on demand.
+    assert _lifecycle_block(spec.lifecycle_agent) not in result.output
     assert "Everything already configured" in result.output
     assert not spec.mcp_path().exists()
 
@@ -1104,7 +1105,7 @@ def test_upgrading_preserves_user_heading_immediately_after_end_marker(tmp_path)
     assert target.read_text(encoding="utf-8") == expected
 
 
-def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkeypatch):
+def test_force_reapplies_matching_client_without_running_doctor(fake_home, monkeypatch):
     monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
     monkeypatch.delenv("SLOWAVE_DB", raising=False)
     monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
@@ -1130,13 +1131,13 @@ def test_force_reapplies_matching_client_and_runs_verification(fake_home, monkey
     assert instructions.read_text(encoding="utf-8") == before
     assert _read_toml(cfg)["unrelated"]["keep"] == "yes"
     assert list(instructions.parent.glob(instructions.name + ".bak.*"))
-    assert any(args[-1] == "doctor" for args in calls)
+    assert not any(args[-1] == "doctor" for args in calls)
     calls.clear()
     result = CliRunner().invoke(
         setup_cmd, ["--client", "codex", "--no-worker", "--force", "--dry-run"]
     )
     assert result.exit_code == 0, result.output
-    assert "Would inject" in result.output
+    assert "would update" in result.output
     assert instructions.read_text(encoding="utf-8") == before
     assert not calls
 
@@ -1339,23 +1340,6 @@ def test_linux_service_quotes_executable_path_with_spaces(fake_home, monkeypatch
     ).read_text(encoding="utf-8")
 
 
-def test_setup_does_not_claim_success_if_doctor_fails(fake_home, monkeypatch):
-    import subprocess
-
-    monkeypatch.setattr(_setup_mod, "_find_slowave_binary", lambda: "/fake/slowave")
-
-    def run(args, **kwargs):
-        raise subprocess.CalledProcessError(1, args)
-
-    monkeypatch.setattr(_setup_mod.subprocess, "run", run)
-    result = CliRunner().invoke(
-        setup_cmd, ["--client", "codex", "--no-worker", "--force"], input="y\n"
-    )
-    assert result.exit_code != 0
-    assert "verification failed" in result.output
-    assert "Setup complete" not in result.output
-
-
 def test_launchd_reapply_waits_before_bootstrap(monkeypatch, tmp_path):
     import plistlib
     from subprocess import CompletedProcess
@@ -1432,7 +1416,7 @@ def test_antigravity_selected_setup_installs_global_config(fake_home, monkeypatc
     entry = json.loads(spec.mcp_path().read_text(encoding="utf-8"))["mcpServers"]["slowave"]
     assert entry["serverUrl"].endswith("/mcp")
     assert _lifecycle_block("antigravity") in spec.lifecycle_path().read_text(encoding="utf-8")
-    assert calls == [[_setup_mod.sys.executable, "-m", "slowave", "doctor"]]
+    assert not any(args[-1] == "doctor" for args in calls)
 
 
 @pytest.mark.parametrize(
@@ -1478,3 +1462,57 @@ def test_antigravity_doctor_reports_unusable_configuration(
     assert status == (Status.WARN if warning else Status.OK), detail
     if warning:
         assert warning in detail
+
+
+def test_doctor_recognises_windsurf_lifecycle_written_by_setup(fake_home, monkeypatch):
+    from slowave.cli.clients import get_client_statuses
+
+    # doctor resolves Path.home() directly, so redirect the real home too.
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    spec = next(s for s in _setup_mod._clients() if s.key == "windsurf")
+    spec.mcp_path().parent.mkdir(parents=True, exist_ok=True)
+    spec.mcp_path().write_text(
+        '{"mcpServers": {"slowave": {"serverUrl": "http://127.0.0.1:8766/mcp"}}}',
+        encoding="utf-8",
+    )
+    assert not get_client_statuses()["windsurf"].lifecycle_enabled
+    _inject_block(spec.lifecycle_path(), _lifecycle_block(spec.lifecycle_agent))
+    assert get_client_statuses()["windsurf"].lifecycle_enabled
+
+
+def test_doctor_report_is_verdict_first_and_plain_when_piped(fake_home, monkeypatch):
+    from slowave.cli.main import cli
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("SLOWAVE_DB", raising=False)
+    monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
+    result = CliRunner().invoke(cli, ["doctor"])
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    assert "\x1b" not in result.output
+    assert lines[1].strip() == "Doctor"
+    assert any(word in lines[2] for word in ("healthy", "Healthy", "failed"))
+
+
+def test_codex_patch_keeps_user_tool_approvals_and_drops_stale_stdio():
+    cfg = {
+        "mcp_servers": {
+            "slowave": {
+                "url": "http://127.0.0.1:8768/mcp",
+                "tools": {"slowave_activate": {"approval_mode": "approve"}},
+            }
+        }
+    }
+    cfg, changed = _setup_mod._patch_codex_mcp(cfg, "http://127.0.0.1:8768/mcp")
+    assert not changed
+    assert cfg["mcp_servers"]["slowave"]["tools"]["slowave_activate"]["approval_mode"] == "approve"
+
+    cfg["mcp_servers"]["slowave"].update({"command": "old", "url": "http://127.0.0.1:8766/mcp"})
+    cfg, changed = _setup_mod._patch_codex_mcp(cfg, "http://127.0.0.1:8768/mcp")
+    assert changed
+    entry = cfg["mcp_servers"]["slowave"]
+    assert entry["url"] == "http://127.0.0.1:8768/mcp" and "command" not in entry
+    assert "tools" in entry

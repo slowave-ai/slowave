@@ -7,7 +7,7 @@ Automates:
      rule files.
   3. Installing the background worker as a user service
      (launchd on macOS, systemd on Linux, Task Scheduler on Windows).
-  4. Running `slowave doctor` to verify the result.
+  4. Checking that the daemon responds (run `slowave doctor` for a full report).
 
 All steps are idempotent — re-running is always safe.
 The HTTP MCP daemon and background worker are installed as system services and started automatically.
@@ -30,7 +30,7 @@ from typing import Any
 
 import click
 
-from slowave.cli.output import safe_emoji
+from slowave.cli.output import detect_caps, glyph, style
 from slowave.cli.services import (
     DAEMON_HEALTH_TIMEOUT,
     wait_for_daemon_health,
@@ -116,7 +116,7 @@ class Summary:
 
         # Binaries
         if self.binaries:
-            lines.append(click.style(f"{safe_emoji('📦', '[package]')} Binaries", bold=True))
+            lines.append(click.style(f"Binaries", bold=True))
             for name, path in self.binaries.items():
                 lines.append(f"  ✓ {name}: {path}")
             lines.append("")
@@ -129,7 +129,7 @@ class Summary:
             configs = grouped[ChangeType.MCP_CONFIG]
             lines.append(
                 click.style(
-                    f"{safe_emoji('🔌', '[plug]')} MCP Configurations ({len(configs)} file{'s' if len(configs) != 1 else ''})",
+                    f"MCP Configurations ({len(configs)} file{'s' if len(configs) != 1 else ''})",
                     bold=True,
                 )
             )
@@ -145,7 +145,7 @@ class Summary:
             blocks = grouped[ChangeType.LIFECYCLE_BLOCK]
             lines.append(
                 click.style(
-                    f"{safe_emoji('📝', '[doc]')} Lifecycle Blocks ({len(blocks)} file{'s' if len(blocks) != 1 else ''})",
+                    f"Lifecycle Blocks ({len(blocks)} file{'s' if len(blocks) != 1 else ''})",
                     bold=True,
                 )
             )
@@ -161,7 +161,7 @@ class Summary:
             services = grouped[ChangeType.WORKER_SERVICE]
             lines.append(
                 click.style(
-                    f"{safe_emoji('⚙️', '[gear]')}  Background Worker Service",
+                    f"Background Worker Service",
                     bold=True,
                 )
             )
@@ -176,12 +176,12 @@ class Summary:
         if self.manual_steps:
             lines.append(
                 click.style(
-                    f"{safe_emoji('⚠️', '!!')}  Manual Steps Required ({len(self.manual_steps)})",
+                    f"Manual Steps Required ({len(self.manual_steps)})",
                     bold=True,
                 )
             )
             for step in self.manual_steps:
-                lines.append(f"  {safe_emoji('⚠', '! ')} {step}")
+                lines.append(f"  ! {step}")
             lines.append("")
 
         lines.append(click.style("━" * 70, fg="cyan"))
@@ -565,7 +565,7 @@ def _clients() -> list[ClientSpec]:
         ),
         ClientSpec(
             key="copilot",
-            label="Copilot CLI",
+            label="Copilot",
             mcp_path=_copilot_mcp_config_path,
             lifecycle_path=_copilot_instructions_path,
             lifecycle_agent="copilot",
@@ -691,6 +691,17 @@ def _find_slowave_binary() -> str:
     return "slowave"  # fallback – rely on PATH
 
 
+_BACKUP_LOG: list[Path] = []
+_BACKUP_QUIET = False
+
+
+def _note_backup(bak: Path) -> None:
+    """Record a config backup; print it only outside of the setup checklist."""
+    _BACKUP_LOG.append(bak)
+    if not _BACKUP_QUIET:
+        click.echo(click.style(f"  {glyph('arrow')}  backup {glyph('arrow')} {bak}", dim=True))
+
+
 def _backup_file(path: Path) -> Path | None:
     """Create a timestamped backup of *path* before overwriting it.
 
@@ -743,7 +754,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     bak = _backup_file(path)
     if bak:
-        click.echo(click.style(f"  ↩  backup → {bak}", fg="cyan"))
+        _note_backup(bak)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -779,7 +790,7 @@ def _write_toml(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     bak = _backup_file(path)
     if bak:
-        click.echo(click.style(f"  ↩  backup → {bak}", fg="cyan"))
+        _note_backup(bak)
     path.write_text(tomlkit.dumps(data), encoding="utf-8")
 
 
@@ -945,9 +956,20 @@ def _patch_codex_mcp(
     """
     servers = config.setdefault("mcp_servers", {})
     existing = servers.get("slowave")
-    if isinstance(existing, dict) and dict(existing) == {"url": url}:
+    stale_stdio = ("command", "args", "env")
+    if (
+        isinstance(existing, dict)
+        and existing.get("url") == url
+        and not any(key in existing for key in stale_stdio)
+    ):
         return config, False
-    servers["slowave"] = {"url": url}
+    if isinstance(existing, dict):
+        # Keep user-owned settings such as per-tool approval_mode tables.
+        for key in stale_stdio:
+            existing.pop(key, None)
+        existing["url"] = url
+    else:
+        servers["slowave"] = {"url": url}
     return config, True
 
 
@@ -1155,7 +1177,7 @@ def _inject_block(path: Path, block: str, *, force: bool = False) -> bool:
             return False
         bak = _backup_file(path)
         if bak:
-            click.echo(click.style(f"  ↩  backup → {bak}", fg="cyan"))
+            _note_backup(bak)
         path.write_text(new_content, encoding="utf-8")
         return True
 
@@ -1167,7 +1189,7 @@ def _inject_block(path: Path, block: str, *, force: bool = False) -> bool:
         return False
     bak = _backup_file(path)
     if bak:
-        click.echo(click.style(f"  ↩  backup → {bak}", fg="cyan"))
+        _note_backup(bak)
     path.write_text(new_content, encoding="utf-8")
     return True
 
@@ -1677,7 +1699,7 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
     return wait_for_daemon_health(port, timeout, require_retrieval_ready=True) is None
 
 
-def _prepare_search_vectors(database: str) -> None:
+def _prepare_search_vectors(database: str, progress: Any = None) -> None:
     """Provision derived search state without holding a migration transaction."""
     from slowave.core.config import SlowaveConfig
     from slowave.core.engine import SlowaveEngine
@@ -1685,13 +1707,16 @@ def _prepare_search_vectors(database: str) -> None:
     engine = SlowaveEngine(SlowaveConfig(db_path=database))
     try:
         result = engine.prepare_retrieval(
-            progress=lambda message: _ok(message), wait=True, timeout=_DAEMON_HEALTH_TIMEOUT
+            progress=progress or (lambda message: _ok(message)),
+            wait=True,
+            timeout=_DAEMON_HEALTH_TIMEOUT,
         )
         if not result["ready"]:
             raise click.ClickException(
                 f"Search preparation incomplete: {result.get('reason')}. Run slowave setup again."
             )
-        _ok("Search embeddings ready")
+        if progress is None:
+            _ok("Search embeddings ready")
     except Exception as exc:
         raise click.ClickException(
             f"Search preparation failed: {exc}. Run slowave setup again."
@@ -1860,23 +1885,57 @@ def _build_summary(
 
 
 def _ok(msg: str) -> None:
-    click.echo(click.style(f"  ✓  {msg}", fg="green"))
+    click.echo(style(f"  {glyph('ok')}  {msg}", detect_caps(), fg="green"))
 
 
 def _skip(msg: str) -> None:
-    click.echo(click.style(f"  –  {msg}", fg="bright_black"))
+    click.echo(style(f"  {glyph('skip')}  {msg}", detect_caps(), dim=True))
 
 
 def _warn(msg: str) -> None:
-    click.echo(click.style(f"  ⚠  {msg}", fg="yellow"))
+    click.echo(style(f"  {glyph('warn')}  {msg}", detect_caps(), fg="yellow"))
 
 
 def _err(msg: str) -> None:
-    click.echo(click.style(f"  ✗  {msg}", fg="red"))
+    click.echo(style(f"  {glyph('fail')}  {msg}", detect_caps(), fg="red"))
 
 
 def _section(title: str) -> None:
-    click.echo(f"\n{click.style(title, bold=True)}")
+    click.echo(f"\n{style(title, detect_caps(), bold=True)}")
+
+
+_SERVICE_PLATFORM_LABEL = {
+    "Darwin": "launchd",
+    "Linux": "systemd user service",
+    "Windows": "Task Scheduler",
+}
+
+
+def _apply_service(view: Any, kind: str, label: str, slowave_bin: str, dry_run: bool) -> None:
+    """Install or reapply one managed service and render a single row for it."""
+    mechanism = _SERVICE_PLATFORM_LABEL.get(SYSTEM)
+    if mechanism is None:
+        view.row(label, "warn", f"unsupported platform '{SYSTEM}'")
+        return
+    if dry_run:
+        view.row(label, "ok", "would be installed", note=mechanism)
+        return
+    suffix_by_system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}
+    installer = globals()[f"_install_{kind}_{suffix_by_system[SYSTEM]}"]
+    if SYSTEM == "Windows":
+        if kind == "backup":
+            task, _ = installer(slowave_bin, force=True)
+            view.row(label, "ok", "installed", note=f"{mechanism}: {task}")
+            return
+        ok, detail = installer(slowave_bin, force=True)
+        if not ok:
+            task_name = "SlowaveDaemon" if kind == "daemon" else "SlowaveWorker"
+            sid = "-<current-user-SID>" if kind == "daemon" else ""
+            raise click.ClickException(f"Task Scheduler task {task_name}{sid}: {detail}")
+        view.row(label, "ok", "installed", note=f"{mechanism}: {detail}")
+        return
+    path, changed = installer(slowave_bin, force=True)
+    view.row(label, "ok", "installed" if changed else "up to date", note=f"{mechanism}: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1908,8 +1967,14 @@ def _section(title: str) -> None:
 )
 @click.option("--dry-run", is_flag=True, help="Preview changes without writing any files.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
+@click.option("--verbose", is_flag=True, help="Show file paths and service mechanisms.")
 def setup_cmd(
-    client: str, worker: bool, dry_run: bool, as_json: bool = False, force: bool = False
+    client: str,
+    worker: bool,
+    dry_run: bool,
+    as_json: bool = False,
+    force: bool = False,
+    verbose: bool = False,
 ) -> None:
     """One-command post-install wiring for Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Antigravity, Windsurf, Cline, and Claude Desktop.
 
@@ -1928,11 +1993,20 @@ def setup_cmd(
       slowave setup --dry-run             # preview without writing
       slowave setup --force               # reapply configuration and services
     """
-    click.echo(click.style("\nSlowave setup", bold=True))
-    if dry_run:
-        click.echo(click.style("  [DRY RUN — no files will be changed]\n", fg="yellow"))
+    from slowave import __version__
+    from slowave.cli.setup_output import SetupView
 
-    # Migration must be offered before services or doctor can populate the new
+    global _BACKUP_QUIET
+    _BACKUP_QUIET = True
+    _BACKUP_LOG.clear()
+    view = SetupView(verbose=verbose)
+    view.banner(
+        __version__, "Memory for AI coding agents", link="https://github.com/mrsalty/slowave"
+    )
+    if dry_run:
+        view.notice("Dry run: no files will be changed.")
+
+    # Migration must be offered before services can populate the new
     # root; once populated, the migration command intentionally refuses to merge.
     from slowave.cli.migrate_data import (
         _destination_is_empty,
@@ -1947,18 +2021,21 @@ def setup_cmd(
         and migration.needed
         and _destination_is_empty(migration.destination_root)
     ):
-        _section("0. Legacy runtime data")
+        view.group("Legacy data")
         if dry_run:
-            _ok(
-                f"Would offer migration: {migration.source_root} → " f"{migration.destination_root}"
+            view.row(
+                "Migration",
+                "ok",
+                "would be offered",
+                note=f"{migration.source_root} {glyph('arrow')} {migration.destination_root}",
             )
         elif click.confirm(
-            f"Migrate legacy data from {migration.source_root} to "
+            f"  Migrate legacy data from {migration.source_root} to "
             f"{migration.destination_root} now?",
             default=True,
         ):
             execute_migration(migration)
-            _ok("Legacy data migrated; source preserved for rollback")
+            view.row("Migration", "ok", "done; source kept for rollback")
         else:
             raise click.ClickException(
                 "Setup stopped before creating the new runtime root. Run "
@@ -1970,64 +2047,64 @@ def setup_cmd(
     paths = runtime_paths()
     selected_daemon_port = daemon_port(paths) if dry_run else assign_daemon_port(paths)
     mcp_url = f"http://127.0.0.1:{selected_daemon_port}/mcp"
-    _section("Preparing retrieval")
-    if dry_run:
-        _ok("Would prepare missing or outdated search embeddings")
-    else:
-        paths.root.mkdir(parents=True, exist_ok=True)
-        _prepare_search_vectors(str(paths.database))
-
-    # 1. Binaries
-    _section("1. Locating binaries")
     slowave_bin = _find_slowave_binary()
-    _ok(f"slowave: {slowave_bin}")
-    _ok(f"MCP endpoint: {mcp_url}  (daemon auto-starts via system service)")
-
-    # Quick detection pass — show which clients were found
-    _section("2. Detecting clients")
     detected_specs = _detected_clients(client)
-    if detected_specs:
-        _ok(f"Found: {', '.join(spec.label for spec in detected_specs)}")
 
-    # Build and display summary
+    # Plan: decide what would change, then ask once before touching anything.
     summary = _build_summary(client, worker, slowave_bin, detected_specs, mcp_url=mcp_url)
     if force:
         for change in summary.changes:
             if change.status == ChangeStatus.SKIP:
                 change.status = ChangeStatus.UPDATE
-    click.echo(summary.format())
-    for spec in detected_specs:
-        if spec.restart_note:
-            click.echo(f"  After setup: {spec.restart_note}")
-    if worker:
-        _ok("Services will be reapplied and restarted, including after package upgrades.")
-    if summary.manual_steps:
-        click.echo("\nPaste this block into the instruction settings listed above:")
-        click.echo(_lifecycle_block("manual"))
+    changed_labels = {c.client for c in summary.changes if c.status != ChangeStatus.SKIP}
 
-    # Confirm unless dry-run — skip if nothing to do
+    view.group("Detected")
+    if detected_specs:
+        view.row("Clients", "ok", ", ".join(spec.label for spec in detected_specs))
+    else:
+        view.row("Clients", "warn", "none found; services only")
+    view.row("MCP endpoint", "ok", mcp_url)
+
     if not dry_run:
         if not force and not worker and not summary.has_changes():
-            click.echo(click.style("\nEverything already configured. Nothing to do.", fg="green"))
-            if summary.manual_steps:
-                click.echo(click.style("\nReminders:", bold=True))
-                for step in summary.manual_steps:
-                    _warn(step)
+            view.success("Everything already configured. Nothing to do.")
             sys.exit(0)
         if not click.confirm(
             (
-                "\nApply configuration and restart managed services?"
+                "\n  Apply configuration and restart managed services?"
                 if worker
-                else "\nConfigure detected clients?"
+                else "\n  Configure detected clients?"
             ),
             default=True,
         ):
-            click.echo(click.style("\nSetup cancelled.", fg="yellow"))
+            click.echo(click.style("\n  Setup cancelled.", fg="yellow"))
             sys.exit(0)
 
-    # 3-N. Clients (shared spec registry with format-specific patchers)
-    for i, spec in enumerate(detected_specs, start=3):
-        _section(f"{i}. {spec.label}")
+    verb_updated = "would update" if dry_run else "updated"
+
+    view.group("Preparing retrieval")
+    if dry_run:
+        view.row("Search index", "ok", "would be prepared")
+    else:
+        paths.root.mkdir(parents=True, exist_ok=True)
+        counts: dict[str, int] = {}
+
+        def _on_progress(message: str) -> None:
+            match = re.search(r"for (\d+) (memories|procedures)", message)
+            if match and int(match.group(1)) > 0:
+                counts[match.group(2)] = int(match.group(1))
+
+        _prepare_search_vectors(str(paths.database), progress=_on_progress)
+        view.row("Search models", "ok", "loaded")
+        if "memories" in counts:
+            view.row("Memories", "ok", f"{counts['memories']:,} indexed")
+        if "procedures" in counts:
+            view.row("Procedures", "ok", f"{counts['procedures']:,} indexed")
+
+    # Clients (shared spec registry with format-specific patchers)
+    view.group("Connecting clients")
+    restart_specs: list[ClientSpec] = []
+    for spec in detected_specs:
         mcp_file = spec.mcp_path()
 
         # Skip if the config directory doesn't exist and client marks require_dir_exists
@@ -2037,207 +2114,78 @@ def setup_cmd(
         if spec.key == "codex":
             cfg = _read_toml(mcp_file)
             cfg, mcp_changed = _patch_codex_mcp(cfg, mcp_url)
-            if mcp_changed or force:
-                (
-                    _ok(f"Would set MCP server (HTTP) → {mcp_file}")
-                    if dry_run
-                    else _ok(f"MCP server set (HTTP) → {mcp_file}")
-                )
-            else:
-                _skip(f"MCP server already configured (HTTP) in {mcp_file}")
-
-            if not dry_run and (mcp_changed or force):
+            changed = mcp_changed or force
+            if changed and not dry_run:
                 _write_toml(mcp_file, cfg)
         else:
             cfg = _read_json(mcp_file, allow_empty=spec.key == "antigravity")
             if spec.key == "claude-desktop":
                 slowave_mcp_bin = _find_mcp_binary(slowave_bin)
-                cfg, changed = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
-                transport_label = "stdio"
+                cfg, mcp_changed = _patch_mcp_servers_stdio(cfg, command=slowave_mcp_bin)
             elif spec.key == "opencode":
-                cfg, mcp_changed = _patch_opencode_mcp(cfg, mcp_url)
-                transport_label = "remote"
+                cfg, mcp_only = _patch_opencode_mcp(cfg, mcp_url)
                 # Also register the instructions file in the config
                 instructions_path = str(_opencode_instructions_path().resolve())
                 cfg, instructions_changed = _patch_opencode_instructions(cfg, instructions_path)
-                changed = mcp_changed or instructions_changed
+                mcp_changed = mcp_only or instructions_changed
             elif spec.key == "antigravity":
-                cfg, changed = _patch_antigravity_mcp(cfg, mcp_url)
-                transport_label = "HTTP"
+                cfg, mcp_changed = _patch_antigravity_mcp(cfg, mcp_url)
             elif spec.key == "copilot":
-                cfg, changed = _patch_copilot_mcp(cfg, mcp_url)
-                transport_label = "HTTP"
+                cfg, mcp_changed = _patch_copilot_mcp(cfg, mcp_url)
             else:
-                cfg, changed = _patch_mcp_servers(
+                cfg, mcp_changed = _patch_mcp_servers(
                     cfg,
                     mcp_url,
                     include_type=spec.key == "claude-code",
                     use_sse=spec.key == "cline",
                 )
-                transport_label = "HTTP"
-            if changed or force:
-                if dry_run:
-                    _ok(f"Would set MCP server ({transport_label}) → {mcp_file}")
-                else:
-                    _write_json(mcp_file, cfg)
-                    _ok(f"MCP server set ({transport_label}) → {mcp_file}")
-            else:
-                _skip(f"MCP server already configured ({transport_label}) in {mcp_file}")
+            changed = mcp_changed or force
+            if changed and not dry_run:
+                _write_json(mcp_file, cfg)
 
-        # Lifecycle block — auto-inject or print manual instruction
+        # Lifecycle block: auto-inject, or flag a manual step.
+        lifecycle_changed = False
+        lifecycle_file: Path | None = None
         if spec.lifecycle_path is not None:
-            lc_file = spec.lifecycle_path()
+            lifecycle_file = spec.lifecycle_path()
+            block = _lifecycle_block(spec.lifecycle_agent)
             if dry_run:
                 existing = (
-                    lc_file.read_text(encoding="utf-8", errors="ignore") if lc_file.exists() else ""
+                    lifecycle_file.read_text(encoding="utf-8", errors="ignore")
+                    if lifecycle_file.exists()
+                    else ""
                 )
-                block = _lifecycle_block(spec.lifecycle_agent)
-                if not force and _lifecycle_block_up_to_date(existing, block):
-                    _skip(f"Lifecycle block already up-to-date in {lc_file}")
-                else:
-                    _ok(f"Would inject lifecycle block → {lc_file}")
+                lifecycle_changed = force or not _lifecycle_block_up_to_date(existing, block)
             else:
-                changed = _inject_block(
-                    lc_file, _lifecycle_block(spec.lifecycle_agent), force=force
-                )
-                if changed:
-                    _ok(f"Lifecycle block injected → {lc_file}")
-                else:
-                    _skip("Lifecycle block already present")
+                lifecycle_changed = _inject_block(lifecycle_file, block, force=force)
+
+        notes = [f"MCP config  {mcp_file}"]
+        if lifecycle_file is not None:
+            notes.append(f"Instructions  {lifecycle_file}")
+        note = "\n      ".join(notes)
+
+        touched = [
+            name
+            for name, did in (("MCP config", changed), ("instructions", lifecycle_changed))
+            if did
+        ]
+        if touched:
+            view.row(spec.label, "ok", f"{verb_updated} ({', '.join(touched)})", note=note)
+            restart_specs.append(spec)
         elif spec.manual_lifecycle and spec.manual_note:
-            _warn(f"REQUIRED — {spec.manual_note}")
-
-    # Reconcile running code even when service definitions are unchanged.
-    # HTTP MCP daemon service
-    _section("7. HTTP MCP daemon service")
-    if worker:
-        if dry_run:
-            if SYSTEM == "Darwin":
-                _ok(
-                    "Would install launchd service → ~/Library/LaunchAgents/com.slowave.daemon.plist"
-                )
-            elif SYSTEM == "Linux":
-                _ok("Would install systemd service → ~/.config/systemd/user/slowave-daemon.service")
-            elif SYSTEM == "Windows":
-                _ok("Would register account-scoped Task Scheduler task: SlowaveDaemon-<SID>")
-            else:
-                _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave serve start")
+            view.row(spec.label, "skip", f"up to date {glyph('dot')} add rules manually", note=note)
         else:
-            if SYSTEM == "Darwin":
-                path, changed = _install_daemon_macos(slowave_bin, force=True)
-                if changed:
-                    _ok(f"launchd daemon service installed → {path}")
-                else:
-                    _skip("launchd daemon service already up-to-date")
-            elif SYSTEM == "Linux":
-                path, changed = _install_daemon_linux(slowave_bin, force=True)
-                if changed:
-                    _ok(f"systemd daemon service installed → {path}")
-                    _ok("Verify:  systemctl --user status slowave-daemon")
-                else:
-                    _skip("systemd daemon service already up-to-date")
-            elif SYSTEM == "Windows":
-                ok, detail = _install_daemon_windows(slowave_bin, force=True)
-                if ok:
-                    _ok(f"Task Scheduler task SlowaveDaemon-<current-user-SID>: {detail}")
-                else:
-                    raise click.ClickException(
-                        f"Task Scheduler task SlowaveDaemon-<current-user-SID>: {detail}"
-                    )
-            else:
-                _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave serve start")
-    else:
-        _skip("Skipped (--no-worker). Run manually: slowave serve start")
+            view.row(spec.label, "skip", "up to date", note=note)
 
-    # Background worker service
-    _section("8. Background worker service")
+    # Services. Reconcile running code even when definitions are unchanged.
+    view.group("Starting services")
     if worker:
-        if dry_run:
-            if SYSTEM == "Darwin":
-                _ok(
-                    "Would install launchd service → ~/Library/LaunchAgents/com.slowave.worker.plist"
-                )
-            elif SYSTEM == "Linux":
-                _ok("Would install systemd service → ~/.config/systemd/user/slowave-worker.service")
-            elif SYSTEM == "Windows":
-                _ok("Would register account-scoped Task Scheduler task: SlowaveWorker-<SID>")
-            else:
-                _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave worker --interval 300")
-        else:
-            if SYSTEM == "Darwin":
-                path, changed = _install_worker_macos(slowave_bin, force=True)
-                if changed:
-                    _ok(f"launchd worker service installed → {path}")
-                else:
-                    _skip("launchd worker service already up-to-date")
-            elif SYSTEM == "Linux":
-                path, changed = _install_worker_linux(slowave_bin, force=True)
-                if changed:
-                    _ok(f"systemd worker service installed → {path}")
-                    _ok("Verify:  systemctl --user status slowave-worker")
-                else:
-                    _skip("systemd worker service already up-to-date")
-            elif SYSTEM == "Windows":
-                ok, detail = _install_worker_windows(slowave_bin, force=True)
-                if ok:
-                    _ok(f"Task Scheduler task SlowaveWorker: {detail}")
-                    _ok(
-                        "Verify:  Get-ScheduledTask | Where-Object TaskName -like 'SlowaveWorker-*'"
-                    )
-                else:
-                    raise click.ClickException(f"Task Scheduler task SlowaveWorker: {detail}")
-            else:
-                _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave worker --interval 300")
-    else:
-        _skip("Skipped (--no-worker). Run manually: slowave worker --interval 300")
-
-    # Daily database backup service
-    _section("9. Daily database backup")
-    if worker:
-        if dry_run:
-            if SYSTEM == "Darwin":
-                _ok(
-                    "Would install launchd service → ~/Library/LaunchAgents/com.slowave.backup.plist"
-                )
-            elif SYSTEM == "Linux":
-                _ok("Would install systemd timer → ~/.config/systemd/user/slowave-backup.timer")
-            elif SYSTEM == "Windows":
-                _ok("Would register account-scoped Task Scheduler task: SlowaveBackup-<SID>")
-            else:
-                _warn(f"Unknown platform '{SYSTEM}' — run manually: slowave backup")
-        else:
-            if SYSTEM == "Darwin":
-                path, changed = _install_backup_macos(slowave_bin, force=True)
-                if changed:
-                    _ok(f"launchd backup service installed → {path}")
-                else:
-                    _skip("launchd backup service already up-to-date")
-            elif SYSTEM == "Linux":
-                path, changed = _install_backup_linux(slowave_bin, force=True)
-                if changed:
-                    _ok(f"systemd backup timer installed → {path}")
-                    _ok("Verify:  systemctl --user status slowave-backup.timer")
-                else:
-                    _skip("systemd backup timer already up-to-date")
-            elif SYSTEM == "Windows":
-                task, _ = _install_backup_windows(slowave_bin, force=True)
-                _ok(f"Task Scheduler task registered: {task}")
-                _ok("Verify:  Get-ScheduledTask | Where-Object TaskName -like 'SlowaveBackup-*'")
-            else:
-                _warn(f"Unknown platform '{SYSTEM}'. Run manually: slowave backup")
-    else:
-        _skip("Skipped (--no-worker). Run manually: slowave backup")
-
-    # 10. Doctor
-    _section("10. Verification")
-    if dry_run:
-        _skip("Dry-run — skipping doctor check.")
-    else:
-        # Register every service before checking readiness. A slow or failed
-        # daemon must not leave start/restart with missing worker/backup jobs.
-        if worker:
+        _apply_service(view, "daemon", "Memory daemon", slowave_bin, dry_run)
+        _apply_service(view, "worker", "Background worker", slowave_bin, dry_run)
+        _apply_service(view, "backup", "Daily backup", slowave_bin, dry_run)
+        if not dry_run:
             if _verify_daemon_health(selected_daemon_port):
-                _ok(f"Daemon is live: http://127.0.0.1:{selected_daemon_port}/health")
+                view.row("Health check", "ok", f"daemon responding on :{selected_daemon_port}")
             else:
                 raise click.ClickException(
                     f"Daemon did not respond with the installed version on http://127.0.0.1:{selected_daemon_port}/health "
@@ -2245,19 +2193,38 @@ def setup_cmd(
                     "the daemon may still be starting. Run slowave status --services and "
                     "slowave doctor before retrying slowave start; see docs/troubleshooting.md."
                 )
-        click.echo()
-        try:
-            subprocess.run([sys.executable, "-m", "slowave", "doctor"], check=True)
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise click.ClickException(
-                f"Setup applied configuration but verification failed: {exc}. "
-                "Run slowave doctor --verbose; see slowave docs troubleshooting."
-            ) from exc
+    else:
+        view.row("Services", "skip", "skipped (--no-worker)")
 
-    click.echo()
-    click.echo(click.style("Setup complete.", bold=True))
-    if not dry_run:
+    _BACKUP_QUIET = False
+    if _BACKUP_LOG and not dry_run:
+        view.line(
+            f"Previous versions of {len(_BACKUP_LOG)} edited file"
+            f"{'s' if len(_BACKUP_LOG) != 1 else ''} were saved as *.bak.<timestamp>.",
+            dim=True,
+        )
+        if verbose:
+            for bak in _BACKUP_LOG:
+                view.line(str(bak), dim=True, indent=4)
+
+    if dry_run:
+        pending = len(changed_labels)
+        view.success(
+            f"Dry run complete. {pending} change{'s' if pending != 1 else ''} would be applied."
+        )
+    else:
+        view.success("Setup complete.")
+        if restart_specs:
+            names = ", ".join(spec.label for spec in restart_specs)
+            view.line(f"Restart {names} to pick up the new configuration.", dim=True, indent=2)
         mark_setup_done()
+    steps = [
+        ("slowave doctor", "verify your install"),
+        ("slowave dashboard", "explore your memory"),
+    ]
+    if dry_run:
+        steps.insert(0, ("slowave setup", "apply these changes"))
+    view.next_steps(steps)
 
 
 # ---------------------------------------------------------------------------
