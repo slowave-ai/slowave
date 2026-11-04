@@ -10,6 +10,7 @@ These locally bundled marks identify supported third-party clients in the Slowav
 | `cursor.svg` | Cursor | [Cursor brand site](https://cursor.com/brand) |
 | `opencode.png` | OpenCode | [OpenCode brand site](https://opencode.ai/brand) |
 | `windsurf.svg` | Windsurf | [Windsurf brand site](https://windsurf.com/brand) |
+| `antigravity.svg` | Antigravity (simplified arch mark drawn for Slowave; replace with the official mark if Google publishes one) | [Antigravity](https://antigravity.google) |
 | `cline.svg` | Cline | [Cline brand site](https://cline.bot/brand) |
 
 The `copilot-dark.svg`, `openai-dark.svg`, and `cline-dark.svg` variants use a light fill for contrast on dark backgrounds. The README selects them with `prefers-color-scheme`, keeping the original marks for light mode.

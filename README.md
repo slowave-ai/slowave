@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
 <p align="center">
-  Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Claude Desktop
+  Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Antigravity, Claude Desktop
 </p>
 
 
@@ -69,10 +69,13 @@ Over time, the way you work becomes reusable context for your agent.
 
 ## Installation
 
-### Quick start
+### Install
 ```bash
 pipx install slowave
-slowave setup --dry-run
+```
+
+### Setup
+```
 slowave setup
 ```
 
@@ -81,11 +84,18 @@ The quick start configures every detected client. To configure just one client a
 > [!IMPORTANT]
 > **No LLM API key required.**
 
-For upgrades and service management, see [Install, upgrade, run, and remove Slowave](docs/install.md).
-Use `slowave start`, `slowave stop`, and `slowave restart` for installed services;
-use `slowave status --services` and `slowave doctor` to diagnose problems.
-See [Troubleshooting](docs/troubleshooting.md) for recovery and logs, or run
-`slowave docs troubleshooting` to open it from your terminal.
+### Upgrading Slowave
+
+When upgrading to a new version:
+
+```bash
+slowave stop
+pipx upgrade slowave
+slowave setup
+```
+
+If you are in the middle of a coding client session while upgrading you might have to close the session and re-open it (via `/resume` command or similar, depending on client). 
+
 
 ## Workflow
 
@@ -180,8 +190,8 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 | <img src="img/clients/opencode-mark.svg" alt="" title="OpenCode" width="20" height="20" align="center" />&nbsp; [OpenCode](integrations/opencode/README.md) | ✅ | ✅ | ✅ | `slowave setup --client opencode` |
 | <img src="img/clients/windsurf.svg" alt="" title="Windsurf" width="20" height="20" align="center" />&nbsp; [Windsurf](integrations/windsurf/README.md) | ✅ | ✅ | ✅ | `slowave setup --client windsurf` |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/cline-dark.svg" /><img src="img/clients/cline.svg" alt="" title="Cline" width="20" height="20" align="center" /></picture>&nbsp; [Cline](integrations/cline/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cline` |
+| <img src="img/clients/antigravity.svg" alt="" title="Antigravity" width="20" height="20" align="center" />&nbsp; [Antigravity](integrations/antigravity/README.md) | ✅ | ✅ | ✅ | `slowave setup --client antigravity` |
 | <img src="img/clients/claude.svg" alt="" title="Claude Desktop" width="20" height="20" align="center" />&nbsp; [Claude Desktop](integrations/claude-desktop/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
-| [Antigravity](integrations/antigravity/README.md) | ✅ | ✅ | ✅ | `slowave setup --client antigravity` |
 | All the above |  |  |  | `slowave setup` |
 
 ¹ requires one manual paste after setup

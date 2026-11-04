@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
 <p align="center">
-  支持：Claude Code、Copilot CLI、Codex、Cursor、OpenCode、Windsurf/Devin Desktop、Cline、Claude Desktop
+  支持：Claude Code、Copilot CLI、Codex、Cursor、OpenCode、Windsurf/Devin Desktop、Cline、Antigravity、Claude Desktop
 </p>
 
 
@@ -67,10 +67,13 @@ Slowave 会保留有助于智能体达成目标的内容，弱化无益的内容
 
 ## 安装
 
-### 快速开始
+### 安装
 ```bash
 pipx install slowave
-slowave setup --dry-run
+```
+
+### 设置
+```
 slowave setup
 ```
 
@@ -79,11 +82,17 @@ slowave setup
 > [!IMPORTANT]
 > **无需 LLM API 密钥。**
 
-关于升级和服务管理，请参阅[安装、升级、运行和移除 Slowave](docs/install.md)。
-对已安装的服务，使用 `slowave start`、`slowave stop` 和 `slowave restart`；
-使用 `slowave status --services` 和 `slowave doctor` 诊断问题。
-有关恢复和日志，请参阅[故障排查](docs/troubleshooting.md)，或在终端中运行
-`slowave docs troubleshooting` 打开该文档。
+### 升级 Slowave
+
+升级到新版本时：
+
+```bash
+slowave stop
+pipx upgrade slowave
+slowave setup
+```
+
+如果升级时你正处于某个编码客户端的会话中，可能需要关闭该会话并重新打开（通过 `/resume` 命令或类似方式，取决于客户端）。
 
 ## 工作流程
 
@@ -178,6 +187,7 @@ Slowave 还会显示通过所有 MCP 端点返回的上下文量的粗略估算�
 | <img src="img/clients/opencode-mark.svg" alt="" title="OpenCode" width="20" height="20" align="center" />&nbsp; [OpenCode](integrations/opencode/README.md) | ✅ | ✅ | ✅ | `slowave setup --client opencode` |
 | <img src="img/clients/windsurf.svg" alt="" title="Windsurf" width="20" height="20" align="center" />&nbsp; [Windsurf](integrations/windsurf/README.md) | ✅ | ✅ | ✅ | `slowave setup --client windsurf` |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/cline-dark.svg" /><img src="img/clients/cline.svg" alt="" title="Cline" width="20" height="20" align="center" /></picture>&nbsp; [Cline](integrations/cline/README.md) | ✅ | ✅ | ✅ | `slowave setup --client cline` |
+| <img src="img/clients/antigravity.svg" alt="" title="Antigravity" width="20" height="20" align="center" />&nbsp; [Antigravity](integrations/antigravity/README.md) | ✅ | ✅ | ✅ | `slowave setup --client antigravity` |
 | <img src="img/clients/claude.svg" alt="" title="Claude Desktop" width="20" height="20" align="center" />&nbsp; [Claude Desktop](integrations/claude-desktop/README.md) | ✅ | ✅ | ✅ | `slowave setup --client claude-desktop` ¹ |
 | 以上全部 |  |  |  | `slowave setup` |
 
