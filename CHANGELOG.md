@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.23.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.4...slowave-v0.23.0) (2026-11-04)
+
+
+### Features
+
+* **setup:** add Antigravity support ([a80f713](https://github.com/slowave-ai/slowave/commit/a80f7133fc59469c5398b2c8acef9b91f62d461d))
+
+
+### Bug Fixes
+
+* setup ux ([#223](https://github.com/slowave-ai/slowave/issues/223)) ([0c58a99](https://github.com/slowave-ai/slowave/commit/0c58a99edb88171b8533c305ae5151f8cf9df9a1))
+
+
+### Documentation
+
+* **readme:** add Chinese translation and language switcher ([877813a](https://github.com/slowave-ai/slowave/commit/877813aa60ee95f0de4882a41972f40c6fa7a3cd))
+
 ## [0.22.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.3...slowave-v0.22.4) (2026-11-02)
 
 
