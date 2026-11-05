@@ -22,7 +22,6 @@
   Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Antigravity, Claude Desktop
 </p>
 
-
 ---
 Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
 
@@ -47,7 +46,6 @@ graph LR
 Slowave retains what helps agents achieve their goals, weakens what does not, and continuously adapts based on use. It does this through a continuous feedback loop between your agent and its memory. It works on 5 simple MCP endpoints:
 
 > **activate → remember → recall → feedback → commit**
-
 
 Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
 
@@ -80,6 +78,8 @@ To configure just one client at a time, see the [installation reference](docs/in
 
 > [!IMPORTANT]
 > **No LLM API key required.**
+
+https://github.com/user-attachments/assets/e3c71d27-eeab-4528-8c25-178334de559f
 
 ### Upgrading Slowave
 
