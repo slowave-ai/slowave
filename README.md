@@ -24,7 +24,9 @@
 
 ---
 
-https://github.com/user-attachments/assets/f265d15c-6f49-4f65-a1d9-8ba1a670b0c0
+
+https://github.com/user-attachments/assets/55d057f2-72ad-41bf-aa63-022d10e7ac6f
+
 
 ---
 Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
@@ -50,6 +52,7 @@ graph LR
 Slowave retains what helps agents achieve their goals, weakens what does not, and continuously adapts based on use. It does this through a continuous feedback loop between your agent and its memory. It works on 5 simple MCP endpoints:
 
 > **activate → remember → recall → feedback → commit**
+
 
 Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
 
