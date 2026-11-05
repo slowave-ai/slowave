@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.0...slowave-v0.23.1) (2026-11-05)
+
+
+### Miscellaneous Chores
+
+* release 0.23.1 ([f34fff1](https://github.com/slowave-ai/slowave/commit/f34fff1ce57de774e7ad3009561bee19321c8df3))
+
 ## [0.23.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.22.4...slowave-v0.23.0) (2026-11-04)
 
 
