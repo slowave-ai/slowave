@@ -23,6 +23,10 @@
 </p>
 
 ---
+
+https://github.com/user-attachments/assets/f265d15c-6f49-4f65-a1d9-8ba1a670b0c0
+
+---
 Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
 
 Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
@@ -78,8 +82,6 @@ To configure just one client at a time, see the [installation reference](docs/in
 
 > [!IMPORTANT]
 > **No LLM API key required.**
-
-https://github.com/user-attachments/assets/e3c71d27-eeab-4528-8c25-178334de559f
 
 ### Upgrading Slowave
 
