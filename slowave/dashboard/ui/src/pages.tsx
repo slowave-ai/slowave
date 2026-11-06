@@ -21,6 +21,8 @@ import {
 import {
   allowActions,
   ClampedText,
+  ClientBadge,
+  ClientStack,
   ColumnsControl,
   CopyValue,
   DefinitionTooltip,
@@ -998,7 +1000,7 @@ export function MemoryPage({ location }: PageProps) {
   const page = pageNumber(location);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [visibleColumns] = useState<string[]>(["memory", "scope", "state", "salience", "changed", "use_rate", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["memory", "client", "scope", "state", "salience", "changed", "use_rate", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
@@ -1166,6 +1168,7 @@ export function MemoryPage({ location }: PageProps) {
                       onClick={() => changeSort("content")}
                     />
                   </th>}
+                  {visible("client") && <th>Client</th>}
                   {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /><DefinitionTooltip label="State definition">The memory's lifecycle status: active, needs review, or stale.</DefinitionTooltip></th>}
                   {visible("salience") && <th className="numeric"><SortButton label="Salience" active={sort === "salience"} direction={dir} onClick={() => changeSort("salience")} /><DefinitionTooltip label="Salience definition">A measure of how strongly this memory is favored for retrieval. Higher means it is more likely to be surfaced.</DefinitionTooltip></th>}
@@ -1310,6 +1313,7 @@ export function MemoryPage({ location }: PageProps) {
                           <ClampedText text={memory.content} />
                         </td>
                       )}
+                      {visible("client") && <td><ClientStack clients={memory.clients} /></td>}
                       {visible("scope") && (
                         <td
                           className="scope-text"
@@ -1492,6 +1496,8 @@ function MemoryDetail({ id, onClose, onDeleted }: {
               <dd>{formatDate(memory.first_formed_ts)}</dd>
               <dt>Updated</dt>
               <dd>{formatDate(memory.last_updated_ts)}</dd>
+              <dt>Client</dt>
+              <dd><ClientStack clients={memory.clients} /></dd>
               <dt>Scope</dt>
               <dd>{memory.scope || "No scope recorded"}</dd>
               {memory.stale_reason && <><dt>State reason</dt>
@@ -1693,7 +1699,7 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns] = useState<string[]>(["when", "task", "type", "used", "feedback"]);
+  const [visibleColumns] = useState<string[]>(["when", "task", "client", "type", "used", "feedback"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1898,7 +1904,7 @@ export function RetrievalPage({ location }: PageProps) {
         <>
           <TableFrame label="Retrieval results">
             <table className="retrieval-table">
-              <colgroup><col className="retrieval-col-when" /><col /><col className="retrieval-col-type" /><col className="retrieval-col-usage" /><col className="retrieval-col-feedback" /></colgroup>
+              <colgroup><col className="retrieval-col-when" /><col /><col className="retrieval-col-client" /><col className="retrieval-col-type" /><col className="retrieval-col-usage" /><col className="retrieval-col-feedback" /></colgroup>
               <thead>
                 <tr>
                   {visible("when") && <th aria-sort={sort === "when" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
@@ -1909,6 +1915,7 @@ export function RetrievalPage({ location }: PageProps) {
                     <SortButton label="Task / query" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
                     <ColumnHelp id="task" label="Task / query" />
                   </th>}
+                  {visible("client") && <th>Client</th>}
                   {visible("type") && <th><SortButton label="Type" active={sort === "type"} direction={dir} onClick={() => changeSort("type")} /><ColumnHelp id="type" label="Type" /></th>}
                   {visible("scope") && <th aria-sort={sort === "scope" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} />
@@ -1952,6 +1959,7 @@ export function RetrievalPage({ location }: PageProps) {
                         <ClampedText text={row.task_preview} />
                         <small className="retrieval-task-scope" title={row.scope_id || undefined}>{row.scope_id || "No scope"}</small>
                       </td>}
+                      {visible("client") && <td data-label="Client"><ClientBadge client={row.client} /></td>}
                       {visible("type") && <td data-label="Type"><StatusBadge value={row.retrieval_type === "context" ? "Activation" : "Recall"} /></td>}
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
@@ -2074,6 +2082,8 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
               </dd>
               <dt>Observed</dt>
               <dd>{formatDate(retrieval.created_at)}</dd>
+              <dt>Client</dt>
+              <dd><ClientBadge client={data.session?.client} /></dd>
               <dt>Scope</dt>
               <dd>{retrieval.scope_id || "No scope"}</dd>
               <dt>Response size</dt>
@@ -2271,7 +2281,7 @@ export function ProceduresPage({ location }: PageProps) {
   const sort = param(location, "sort", "recent");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
-  const [visibleColumns] = useState<string[]>(["procedure", "scope", "effect", "created", "used", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["procedure", "client", "scope", "effect", "created", "used", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
     `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`,
@@ -2434,6 +2444,7 @@ export function ProceduresPage({ location }: PageProps) {
                   {visible("procedure") && <th aria-sort={sort === "summary" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Procedure" active={sort === "summary"} direction={dir} onClick={() => changeSort("summary")} />
                   </th>}
+                  {visible("client") && <th>Client</th>}
                   {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("effect") && (
                     <th>
@@ -2547,6 +2558,7 @@ export function ProceduresPage({ location }: PageProps) {
                       {visible("procedure") && <td className="primary-cell">
                         <ClampedText text={row.summary || row.goal} />
                       </td>}
+                      {visible("client") && <td><ClientBadge client={row.client} /></td>}
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
                       </td>}
@@ -2680,6 +2692,7 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
               <h2 className="detail-title">{p.summary}</h2>
               <p className="neutral">{p.outcome === "failure" ? "Source task reported failure. Review caveats before applying these steps." : p.outcome === "partial" ? "Source task reported a partial outcome. Check applicability before applying these steps." : "Captured from one completed task. Later retrieval and feedback show whether it helped; creation alone does not prove it is a general playbook."}</p>
               <dl className="key-values">
+                <dt>Client</dt><dd><ClientBadge client={p.client} /></dd>
                 <dt>Scope</dt><dd>{p.scope_id || "No scope recorded"}</dd>
                 <dt>Source outcome</dt><dd><StatusBadge value={p.outcome} /> Reported for the source task</dd>
                 <dt>Source verification</dt><dd><StatusBadge value={source?.verification?.status || "unknown"} /></dd>
@@ -2752,7 +2765,7 @@ export function ActivityPage({ location }: PageProps) {
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const activityColumns = [
-    { id: "started", label: "Started" }, { id: "task", label: "Task / goal" }, { id: "scope", label: "Scope" },
+    { id: "started", label: "Started" }, { id: "task", label: "Task / goal" }, { id: "client", label: "Client", description: "The coding agent client that ran this session." }, { id: "scope", label: "Scope" },
     { id: "outcome", label: "Outcome" }, { id: "closure", label: "Closure", description: "Whether the session's feedback loop closed (complete, incomplete, or pending)." },
     { id: "duration", label: "Duration", description: "Elapsed time between the session start and close." },
     { id: "retrievals", label: "Retrievals", description: "Distinct retrieval events recorded in this session." },
@@ -2764,7 +2777,7 @@ export function ActivityPage({ location }: PageProps) {
     { id: "verification", label: "Verification" },
   ];
   const [visibleColumns, setVisibleColumns] = useState<string[]>([
-    "started", "task", "scope", "outcome", "closure", "duration", "retrievals", "memories_touched", "procedure",
+    "started", "task", "client", "scope", "outcome", "closure", "duration", "retrievals", "memories_touched", "procedure",
   ]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
@@ -2946,7 +2959,7 @@ export function ActivityPage({ location }: PageProps) {
       ) : rows.length ? (
         <>
           <TableFrame label="Activity results">
-            <table>
+            <table className="activity-table">
               <thead>
                 <tr>
                   {visible("started") && <th aria-sort={sort === "started" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
@@ -2955,6 +2968,7 @@ export function ActivityPage({ location }: PageProps) {
                   {visible("task") && <th aria-sort={sort === "task" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
                     <SortButton label="Task / goal" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
                   </th>}
+                  {visible("client") && <th>Client</th>}
                   {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
                   {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /></th>}
                   {visible("closure") && <th><SortButton label="Closure" active={sort === "closure"} direction={dir} onClick={() => changeSort("closure")} /><DefinitionTooltip label="Closure definition">Whether the session's feedback loop closed. Pending means the session is still open.</DefinitionTooltip></th>}
@@ -2992,6 +3006,7 @@ export function ActivityPage({ location }: PageProps) {
                           text={row.goal_preview || "Untitled activity"}
                         />
                       </td>}
+                      {visible("client") && <td><ClientBadge client={row.client} /></td>}
                       {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
                         {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
                       </td>}
@@ -3134,6 +3149,8 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               {session.initial_goal && session.final_goal && session.initial_goal !== session.final_goal && <><dt>Initial goal</dt><dd>{session.initial_goal}</dd></>}
               <dt>Scope</dt>
               <dd>{session.scope_id || "No scope"}</dd>
+              <dt>Client</dt>
+              <dd><ClientBadge client={session.client} /></dd>
               <dt>Agent / integration</dt>
               <dd>{session.agent || "Unknown"}</dd>
               <dt>Outcome</dt>

@@ -75,6 +75,8 @@ class RelevantCatalogItem:
     # True when the contribution decision found a qualifying span. The paging
     # layer derives the strong-run first page from this flag.
     strong: bool = False
+    # Per-signal evidence kept only so the opt-in retrieval trace can record it.
+    channel_evidence: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -361,7 +363,9 @@ class RetrievalService:
         minimum_logit: float | None = None,
         maximum_logit_gap: float | None = None,
         retain_weak_support: bool = True,
+        score_trace: dict[int, float] | None = None,
     ) -> tuple[list[RelevantCatalogItem], str]:
+        """Rank by applicability; ``score_trace`` receives every item's best logit."""
         if not self._applicability_config.enabled or not items:
             return items, "disabled" if not self._applicability_config.enabled else "empty"
         # Synthetic/no-encoder callers retain their explicit lexical contracts.
@@ -379,6 +383,9 @@ class RetrievalService:
             )
             if scores.shape != (len(items), len(needs)):
                 raise ValueError("incorrect applicability score shape")
+            if score_trace is not None:
+                for index, item in enumerate(items):
+                    score_trace[item.schema.id] = float(scores[index].max())
             order = applicability_order(
                 scores,
                 minimum_logit=(
@@ -1107,6 +1114,7 @@ class RetrievalService:
                         "dense_rank": match.dense_rank,
                         "lexical_rank": match.lexical_rank,
                         "lexical_score": match.lexical_score,
+                        "rrf_score": match.normalized_rank_score,
                         "relevance_passed": match.relevance_passed,
                         "relevance_reason": match.relevance_reason,
                     }
@@ -1150,6 +1158,15 @@ class RetrievalService:
                     score=best.normalized_rank_score,
                     reason=f"{best.scoring_policy_version}:{best.relevance_reason}",
                     need_indexes=covered,
+                    channel_evidence=(
+                        {
+                            "dense_cosine": best.dense_cosine,
+                            "dense_rank": best.dense_rank,
+                            "lexical_rank": best.lexical_rank,
+                            "lexical_score": best.lexical_score,
+                            "rrf_score": best.normalized_rank_score,
+                        },
+                    ),
                 )
             )
         if resolved_mode == "complementary_activation":
@@ -1462,11 +1479,16 @@ class RetrievalService:
         decisions: tuple[ContributionDecision, ...] = ()
         if resolved_mode == "deliberate_recall":
             before = items
+            applicability_logits: dict[int, float] = {}
+            # Absolute signal floor; the per-column cutoff can be higher (see
+            # applicability_order), so the traced threshold is a lower bound.
+            applicability_floor = pool_relative.signal_floor()
             items, applicability_status = self._rank_applicability(
                 items,
                 clean_cues[0],
-                minimum_logit=pool_relative.signal_floor(),
+                minimum_logit=applicability_floor,
                 maximum_logit_gap=pool_relative.margin(),
+                score_trace=applicability_logits,
             )
             positions = {item.schema.id: position for position, item in enumerate(items)}
             decisions = tuple(
@@ -1483,6 +1505,17 @@ class RetrievalService:
                         )
                     ),
                     selected_position=positions.get(item.schema.id),
+                    channel_evidence=item.channel_evidence
+                    + (
+                        (
+                            {
+                                "applicability_score": applicability_logits[item.schema.id],
+                                "threshold": applicability_floor,
+                            },
+                        )
+                        if item.schema.id in applicability_logits
+                        else ()
+                    ),
                 )
                 for item in before
             )

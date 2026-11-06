@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from slowave import __version__
+from slowave.dashboard.clients import client_info, schema_clients, session_clients
 from slowave.dashboard.metrics import (
     MEMORY_ASSESSMENTS,
     activity_bucket_seconds,
@@ -227,7 +228,7 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_file(_WORDMARK_PATH, "image/jpeg")
                 elif path == "/img/slowave-logo-small.jpeg":
                     self._send_file(_ICON_PATH, "image/jpeg")
-                elif path.startswith("/assets/") or path in {"/favicon.svg"}:
+                elif path.startswith(("/assets/", "/img/clients/")) or path in {"/favicon.svg"}:
                     self._send_static(path)
                 else:
                     self._send_json(
@@ -318,7 +319,11 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                 (
                     "no-store"
                     if candidate.name == "index.html"
-                    else "public, max-age=31536000, immutable"
+                    else (
+                        "public, max-age=86400"
+                        if relative.startswith("img/clients/")
+                        else "public, max-age=31536000, immutable"
+                    )
                 ),
             )
             self.send_header("Content-Length", str(len(data)))
@@ -544,6 +549,7 @@ def _status_payload(db_path: str) -> dict[str, Any]:
                 started = d.get("started_ts") or 0
                 ended = d.get("ended_ts")
                 d["duration_seconds"] = int(ended) - int(started) if ended else None
+                d["client"] = client_info(d.get("agent"))
                 recent_sessions.append(d)
             # last consolidation: most recently ended session
             lc = conn.execute(
@@ -1327,7 +1333,9 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         rows = conn.execute(sql, tuple(args)).fetchall()
         proto_map = _prototype_map(conn, [int(r["id"]) for r in rows])
         items = [_schema_row_to_node(r, proto_map.get(int(r["id"]), [])) for r in rows]
+        clients_by_schema = schema_clients(conn, (int(r["id"]) for r in rows))
         for item, row in zip(items, rows):
+            item["clients"] = clients_by_schema.get(int(row["id"]), [])
             item["evidence_count"] = int(row["evidence_count"] or 0)
             item["times_exposed"] = int(row["times_exposed"] or 0)
             item["times_used"] = int(row["times_used"] or 0)
@@ -1552,6 +1560,7 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             return {"error": "schema not found", "schema_id": schema_id}
         proto_map = _prototype_map(conn, [schema_id])
         schema = _schema_row_to_node(row, proto_map.get(schema_id, []))
+        schema["clients"] = schema_clients(conn, [schema_id]).get(schema_id, [])
         evidence = [
             dict(r)
             for r in conn.execute(
@@ -2842,9 +2851,11 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
             ).fetchall():
                 feedback_by_id[str(row["retrieval_id"])].append(dict(row))
         retrievals = []
+        clients_by_session = session_clients(conn, (r["session_id"] for r in rows))
         for row in rows:
             item = dict(row)
             item.pop("cue_embedding", None)
+            item["client"] = clients_by_session.get(str(item.get("session_id")))
             item["requested_page_size"] = _effective_memory_page_size(conn, item)
             item["task_preview"] = item.get("query") or item.get("goal") or "Context exposure"
             item["is_internal"] = _is_lifecycle_hook_query(item.get("query"))
@@ -3097,6 +3108,8 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
                 (retrieval["session_id"],),
             ).fetchone()
             session = dict(session_row) if session_row else None
+            if session:
+                session["client"] = client_info(session.get("agent"))
         retrieval["feedback_complete"] = bool(
             conn.execute(
                 f"SELECT ({complete_request_sql()}) AS complete FROM context_recall_events r WHERE r.context_id=?",
@@ -3333,6 +3346,7 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             item = dict(row)
             for key in ("verification_json", "retrieval_context_json", "task_context_json"):
                 item.pop(key, None)
+            item["client"] = client_info(item.get("agent"))
             activities.append(item)
         activity_summary = _activity_summary(db_path, where, args) if include_summary else {}
         return {
@@ -3446,6 +3460,7 @@ def _procedure_detail(
             (session_id,),
         ).fetchone()
         source_session = dict(session_row) if session_row else None
+        procedure["client"] = client_info(source_session["agent"]) if source_session else None
         if source_session:
             source_session["verification"] = _json_dict(
                 source_session.pop("verification_json", "{}")
@@ -3581,6 +3596,7 @@ def _session_timeline(db_path: str, session_id: str) -> dict[str, Any]:
         session = dict(sess)
         for key in ("task_context_json", "verification_json"):
             session[key.removesuffix("_json")] = _json_dict(session.pop(key, "{}"))
+        session["client"] = client_info(session.get("agent"))
         event_items = []
         for row in events:
             item = dict(row)
@@ -4013,9 +4029,10 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
         for precedent in precedents:
             session_id = str(precedent["id"]).removeprefix("proc_")
             session_row = conn.execute(
-                "SELECT verification_json, lifecycle_version FROM sessions WHERE id = ?",
+                "SELECT verification_json, lifecycle_version, agent FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
+            precedent["client"] = client_info(session_row["agent"]) if session_row else None
             precedent["verification"] = (
                 _json_dict(session_row["verification_json"]) if session_row else {}
             )

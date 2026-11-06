@@ -1113,6 +1113,7 @@ main {
 .range-feedback { border-top: 3px solid var(--link); }
 .range-unknown { border-top: 3px solid var(--accent-memory); }
 .table-frame {
+  container-type: inline-size;
   overflow: auto;
   max-height: calc(100vh - 260px);
   border: 1px solid var(--border);
@@ -2069,6 +2070,7 @@ pre {
 /* Retrieval columns fit the available pane; narrow panes become compact cards. */
 .retrieval-table { table-layout: fixed; }
 .retrieval-col-when { width: 82px; }
+.retrieval-col-client { width: 150px; }
 .retrieval-col-type { width: 104px; }
 .retrieval-col-usage { width: 152px; }
 .retrieval-col-feedback { width: 112px; }
@@ -2497,7 +2499,7 @@ span.formation-legend-item:hover { background: transparent; }
 /* v6: Memories/Procedures tables — the text column takes all spare width, other columns hug content */
 .library-table { width: 100%; table-layout: auto; }
 .library-table th:not(:first-child), .library-table td:not(:first-child) { width: 1%; white-space: nowrap; }
-.library-table th:first-child, .library-table td:first-child { min-width: 320px; white-space: normal; }
+.library-table th:first-child, .library-table td:first-child { min-width: clamp(200px, 30cqw, 320px); white-space: normal; }
 .library-table th.numeric, .library-table td.numeric { text-align: left; }
 .library-table td.badge-stack { display: table-cell; }
 
@@ -2508,3 +2510,22 @@ span.formation-legend-item:hover { background: transparent; }
 .retrieval-usage-procedure .retrieval-usage-track > span { background: var(--accent-procedure); }
 .retrieval-usage-memory .retrieval-usage-track { background: color-mix(in srgb, var(--accent-memory) 16%, var(--border)); }
 .retrieval-usage-procedure .retrieval-usage-track { background: color-mix(in srgb, var(--accent-procedure) 16%, var(--border)); }
+
+/* Coding-agent client badges */
+.client-badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); }
+.client-badge.client-unknown { color: var(--muted, #888); }
+.client-logo { width: 18px; height: 18px; object-fit: contain; flex: none; }
+.client-logo-dark { display: none; }
+:root[data-theme="dark"] .client-logo-dark { display: inline-block; }
+:root[data-theme="dark"] .client-logo-dark ~ .client-logo-light,
+:root[data-theme="dark"] .client-logo-light:has(+ .client-logo-dark) { display: none; }
+.client-stack { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Client column: logo + name. */
+td:has(> .client-badge, > .client-stack) { white-space: nowrap; }
+.client-stack { flex-wrap: nowrap; }
+
+/* Activity: headers wrap and padding tightens so ten columns fit common widths. */
+.activity-table th { white-space: normal; line-height: 1.25; }
+.activity-table th, .activity-table td { padding: 10px 8px; }
+.activity-table td.primary-cell { min-width: clamp(160px, 22cqw, 320px); }

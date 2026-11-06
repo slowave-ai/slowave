@@ -899,10 +899,6 @@ class SlowaveEngine:
     def record_context_recall(self, *, context_id: str, **kwargs: Any) -> None:
         self._feedback.record_context_recall(context_id=context_id, **kwargs)
 
-    def backfill_legacy_decision_traces(self, *, batch_size: int = 100) -> int:
-        """Write bounded, metadata-only traces for retrievals predating Phase 1."""
-        return self._feedback.backfill_legacy_decision_traces(batch_size=batch_size)
-
     def retrieval_feedback(self, **kwargs: Any) -> dict[str, Any]:
         return self._feedback.retrieval_feedback(**kwargs)
 
