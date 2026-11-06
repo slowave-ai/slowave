@@ -67,6 +67,24 @@ def test_static_shell_and_assets_are_served_with_safe_paths(tmp_path: Path) -> N
         server.server_close()
 
 
+def test_client_logos_are_served_and_traversal_is_rejected(tmp_path: Path) -> None:
+    server = _server(tmp_path, allow_actions=False)
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        with urlopen(base + "/img/clients/claude.svg") as response:
+            assert response.headers["Content-Type"].startswith("image/svg+xml")
+        for bad in ("/img/clients/../../index.html", "/img/clients/%2e%2e/index.html"):
+            try:
+                urlopen(base + bad)
+            except HTTPError as error:
+                assert error.code == 404
+            else:
+                raise AssertionError("traversal unexpectedly succeeded")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_static_shell_preserves_action_gate(tmp_path: Path) -> None:
     server = _server(tmp_path, allow_actions=False)
     try:

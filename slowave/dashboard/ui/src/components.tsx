@@ -1071,3 +1071,37 @@ export function RateMetricCard({
     />
   );
 }
+
+export type ClientInfo = { key: string; name: string };
+
+const DARK_LOGO_CLIENTS = new Set(["codex", "copilot", "cline"]);
+
+function clientLogo(key: string) {
+  if (key === "claude-code" || key === "claude-desktop") return "claude";
+  if (key === "codex") return "openai";
+  return key;
+}
+
+/** Logo (and optionally name) of a supported coding-agent client. */
+export function ClientBadge({ client, showName = true }: { client?: ClientInfo | null; showName?: boolean }) {
+  if (!client) return <span className="client-badge client-unknown" title="Client not identified">—</span>;
+  const base = `/img/clients/${clientLogo(client.key)}`;
+  return (
+    <span className="client-badge" title={client.name}>
+      <img className="client-logo client-logo-light" src={`${base}.svg`} alt="" aria-hidden="true" />
+      {DARK_LOGO_CLIENTS.has(client.key) && (
+        <img className="client-logo client-logo-dark" src={`${base}-dark.svg`} alt="" aria-hidden="true" />
+      )}
+      {showName ? <span className="client-name">{client.name}</span> : <span className="sr-only">{client.name}</span>}
+    </span>
+  );
+}
+
+export function ClientStack({ clients }: { clients?: ClientInfo[] | null }) {
+  if (!clients || clients.length === 0) return <span className="client-badge client-unknown" title="Client not identified">—</span>;
+  return (
+    <span className="client-stack">
+      {clients.map((client) => <ClientBadge key={client.key} client={client} showName={clients.length === 1} />)}
+    </span>
+  );
+}

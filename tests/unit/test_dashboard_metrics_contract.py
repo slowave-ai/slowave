@@ -419,9 +419,17 @@ def test_tool_telemetry_preserves_retrieval_population_and_cohort(fixture):
     )
     listed = app._retrievals_payload(str(path), qs)
     assert listed["pagination"]["total"] == before["retrievals_total"]
+    conn.execute("UPDATE sessions SET agent='mcp:claude-code' WHERE id='a'")
     conn.commit()
     activity = app._activity_detail(str(path), "a")
     assert {row["context_id"] for row in activity["retrievals"]} == {"r1", "r2"}
+    assert activity["session"]["client"] == {"key": "claude-code", "name": "Claude Code"}
+    by_id = {row["context_id"]: row for row in app._retrievals_payload(str(path), qs)["retrievals"]}
+    assert by_id["r1"]["client"] == {"key": "claude-code", "name": "Claude Code"}
+    listed_activity = app._activity_payload(str(path), {"per_page": ["50"]})["activities"]
+    assert {r["id"]: r["client"] and r["client"]["key"] for r in listed_activity}[
+        "a"
+    ] == "claude-code"
 
 
 def test_response_telemetry_failure_does_not_raise():
