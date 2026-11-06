@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.1...slowave-v0.23.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* remove audit data + dashboard ([#232](https://github.com/slowave-ai/slowave/issues/232)) ([d337cac](https://github.com/slowave-ai/slowave/commit/d337cac57ea8dd5c4b8865b58d7890d40beeb132))
+
 ## [0.23.1](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.0...slowave-v0.23.1) (2026-11-05)
 
 
