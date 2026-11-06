@@ -3400,9 +3400,7 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             "), event_counts AS ("
             " SELECT session_id, COUNT(*) AS timeline_event_count, MAX(ts) AS last_event_ts,"
             " MAX(CASE WHEN type = 'task_complete' AND metadata_json LIKE '%\"procedure\"%' THEN 1 ELSE 0 END) AS has_procedure"
-            " FROM raw_events"
-            + only("session_id")
-            + " GROUP BY session_id"
+            " FROM raw_events" + only("session_id") + " GROUP BY session_id"
             ")"
             f" SELECT {alias}.*, COALESCE({alias}.final_goal,{alias}.initial_goal,{alias}.goal,'') AS goal_preview,"
             " COALESCE(rc.retrieval_count, 0) AS retrieval_count,"
@@ -3528,7 +3526,11 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
 
 
 def _session_call_log(
-    conn: sqlite3.Connection, session_id: str, *, after_id: int = 0, limit: int = 200,
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    after_id: int = 0,
+    limit: int = 200,
     kinds: list[str] | None = None,
 ) -> dict[str, Any]:
     """Ordered Slowave call log of one session (keyset-paginated on ``session_events.id``)."""
@@ -3576,9 +3578,14 @@ def _session_call_log(
         session_outcome = outcome_row[0] if outcome_row else None
     except sqlite3.Error:
         return {"events": [], "total": 0, "approximate": False, "kind_counts": {}}
-    exposure_ids = [r["retrieval_id"] for r in rows
-                    if r["kind"] in ("activate", "recall", "recall_page") and r["retrieval_id"]]
-    feedback_ids = [r["retrieval_id"] for r in rows if r["kind"] == "feedback" and r["retrieval_id"]]
+    exposure_ids = [
+        r["retrieval_id"]
+        for r in rows
+        if r["kind"] in ("activate", "recall", "recall_page") and r["retrieval_id"]
+    ]
+    feedback_ids = [
+        r["retrieval_id"] for r in rows if r["kind"] == "feedback" and r["retrieval_id"]
+    ]
     items_by_retrieval: dict[str, list[dict[str, Any]]] = {}
     assessments_by_retrieval: dict[str, list[dict[str, Any]]] = {}
     try:
