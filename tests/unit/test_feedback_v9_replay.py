@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 
 from slowave import ops
+from slowave.core import retrieval_trace
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.ops import _shadow_task_interpretation
 
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "validate_feedback_v9_replay.py"
 _SPEC = importlib.util.spec_from_file_location("validate_feedback_v9_replay", _SCRIPT)
@@ -54,10 +54,8 @@ def test_replay_recommends_zero_start_for_outcome_coupled_history(tmp_path) -> N
     assert result["recommended_migration"] == "zero_start"
 
 
-def test_decision_trace_records_candidates_without_changing_feedback_exposure(tmp_path) -> None:
-    eng = SlowaveEngine(
-        SlowaveConfig(db_path=str(tmp_path / "trace.db"), dim=8, disable_encoder=True)
-    )
+def _trace_engine(tmp_path, name: str) -> SlowaveEngine:
+    eng = SlowaveEngine(SlowaveConfig(db_path=str(tmp_path / name), dim=8, disable_encoder=True))
     eng.schemas.create(
         content_text="alpha deployment policy",
         facets={"schema_class": "fact"},
@@ -66,71 +64,76 @@ def test_decision_trace_records_candidates_without_changing_feedback_exposure(tm
         scope_id="project:trace",
         dedupe=False,
     )
+    return eng
+
+
+def _trace_tables(conn) -> set[str]:
+    return {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'retrieval_%trace%'"
+        )
+    }
+
+
+def test_retrieval_trace_is_off_by_default_and_writes_nothing(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("SLOWAVE_RETRIEVAL_TRACE", raising=False)
+    eng = _trace_engine(tmp_path, "off.db")
     result = ops.activate(
         eng, query="alpha deployment policy", initial_goal="inspect alpha", scope="project:trace"
     )
     conn = eng.db.connect()
-    parent = conn.execute(
-        "SELECT policy_role, trace_origin, trace_complete FROM retrieval_decisions "
-        "WHERE retrieval_id = ? AND policy_role = 'current'",
-        (result["retrieval_id"],),
-    ).fetchone()
-    trace_ids = {
-        row["candidate_id"]
-        for row in conn.execute(
-            "SELECT candidate_id FROM retrieval_candidate_decisions WHERE retrieval_id = ?",
-            (result["retrieval_id"],),
-        )
-    }
-    exposed_ids = {
+    assert _trace_tables(conn) == set()
+    exposed = {
         row["memory_id"]
         for row in conn.execute(
             "SELECT memory_id FROM context_recall_items WHERE context_id = ? AND admitted = 1",
             (result["retrieval_id"],),
         )
     }
-    assert tuple(parent) == ("current", "prospective", 1)
-    assert trace_ids == {"sch_1"}
-    assert exposed_ids == {"sch_1"}
-    shadow = conn.execute(
-        "SELECT action_intent, action_intent_reason FROM retrieval_decisions "
-        "WHERE retrieval_id = ? AND policy_role = 'shadow'",
-        (result["retrieval_id"],),
-    ).fetchone()
-    assert tuple(shadow) == ("non_action", "no_imperative_clause")
+    assert exposed == {"sch_1"}
 
 
-def test_legacy_trace_backfill_is_metadata_only_and_incomplete(tmp_path) -> None:
-    eng = SlowaveEngine(
-        SlowaveConfig(db_path=str(tmp_path / "legacy.db"), dim=8, disable_encoder=True)
-    )
-    eng.record_retrieval(
-        retrieval_id="rec_legacy",
-        retrieval_policy_version="strict-v9",
-        response={"schemas": [{"id": "sch_8", "reason": "direct"}]},
+def test_retrieval_trace_records_scores_when_marker_file_present(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("SLOWAVE_RETRIEVAL_TRACE", raising=False)
+    eng = _trace_engine(tmp_path, "on.db")
+    (tmp_path / ".retrieval_trace").touch()
+    result = ops.activate(
+        eng, query="alpha deployment policy", initial_goal="inspect alpha", scope="project:trace"
     )
     conn = eng.db.connect()
-    conn.execute("DELETE FROM retrieval_decisions WHERE retrieval_id = 'rec_legacy'")
+    run = conn.execute(
+        "SELECT selected_total, gate_rejections_json FROM retrieval_trace_runs WHERE retrieval_id = ?",
+        (result["retrieval_id"],),
+    ).fetchone()
+    candidates = conn.execute(
+        "SELECT candidate_id, decision, selected_position FROM retrieval_trace_candidates "
+        "WHERE retrieval_id = ?",
+        (result["retrieval_id"],),
+    ).fetchall()
+    assert run["selected_total"] == 1
+    assert [tuple(row) for row in candidates] == [("sch_1", "selected", 0)]
+
+
+def test_old_decision_trace_tables_are_dropped_by_migration(tmp_path) -> None:
+    db_path = tmp_path / "old.db"
+    eng = SlowaveEngine(SlowaveConfig(db_path=str(db_path), dim=8, disable_encoder=True))
+    conn = eng.db.connect()
+    conn.execute("CREATE TABLE retrieval_decisions (retrieval_id TEXT)")
+    conn.execute("CREATE TABLE retrieval_candidate_decisions (retrieval_id TEXT)")
     conn.commit()
+    eng.close()
 
-    assert eng._feedback.backfill_legacy_decision_traces() == 1
-    parent = conn.execute(
-        "SELECT policy_role, trace_origin, trace_complete, source_policy_version, source_created_at, reconstruction_reason "
-        "FROM retrieval_decisions WHERE retrieval_id = 'rec_legacy'"
-    ).fetchone()
-    item = conn.execute(
-        "SELECT decision, reason_code FROM retrieval_candidate_decisions WHERE retrieval_id = 'rec_legacy'"
-    ).fetchone()
-    exposure_count = conn.execute(
-        "SELECT COUNT(*) FROM context_recall_items WHERE context_id = 'rec_legacy' AND admitted = 1"
-    ).fetchone()[0]
-
-    assert tuple(parent[:4]) == ("historical", "legacy_observed", 0, "strict-v9")
-    assert parent[4] is not None
-    assert parent[5] == "historical_candidate_decisions_not_persisted"
-    assert tuple(item) == ("selected", "direct")
-    assert exposure_count == 1
-    assert eng._feedback.backfill_legacy_decision_traces() == 0
+    eng = SlowaveEngine(SlowaveConfig(db_path=str(db_path), dim=8, disable_encoder=True))
+    try:
+        names = {
+            row["name"]
+            for row in eng.db.connect().execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        eng.close()
+    assert "retrieval_decisions" not in names
+    assert "retrieval_candidate_decisions" not in names
 
 
 def test_identical_activation_has_canonical_public_response_excluding_generated_ids(
@@ -163,28 +166,59 @@ def test_identical_activation_has_canonical_public_response_excluding_generated_
     assert _without_generated_ids(first) == _without_generated_ids(second)
 
 
-def test_shadow_interpretation_is_bounded_deterministic_and_nonoperative() -> None:
-    task = "1. Export the evidence bundle\n2. Verify the hash\n3. Archive the result\n4. Notify the owner\n5. Update the ticket"
-    first = _shadow_task_interpretation(task, {})
-    second = _shadow_task_interpretation(task, {})
-
-    assert first == second
-    assert first["action_intent"] == "action"
-    assert len(first["task_needs"]) == 4
-
-
-def test_action_advice_questions_require_procedural_evidence_not_execution() -> None:
-    for task in (
-        "Should I deploy directly to production and skip health checks?",
-        "Could we migrate the billing database?",
-    ):
-        interpretation = _shadow_task_interpretation(task, {})
-        assert interpretation["action_intent"] == "uncertain"
-        assert interpretation["action_intent_reason"] == "action_advice_question"
-        assert all(need["kind"] == "mixed" for need in interpretation["task_needs"])
-    assert (
-        _shadow_task_interpretation("Can we see which database stores the ledger?", {})[
-            "action_intent"
-        ]
-        == "non_action"
+def test_retrieval_trace_keeps_scores_and_counts_gate_rejections(tmp_path) -> None:
+    eng = _trace_engine(tmp_path, "scores.db")
+    eng.record_retrieval(retrieval_id="rec_scores", response={"schemas": []})
+    conn = eng.db.connect()
+    retrieval_trace.record(
+        conn,
+        retrieval_id="rec_scores",
+        policy_version="activation-pool-relative-v1",
+        mode="default",
+        limit=5,
+        catalog_truncated=False,
+        selected=[],
+        filtered_items=[],
+        decision_candidates=[
+            {
+                "candidate_kind": "memory",
+                "candidate_id": "sch_2",
+                "decision": "rejected",
+                "reason_code": "insufficient_applicability",
+                "channel_evidence": [
+                    {
+                        "dense_cosine": 0.41,
+                        "lexical_rank": 7,
+                        "rrf_score": 0.3,
+                        "applicability_score": -1.5,
+                        "threshold": 0.0,
+                    },
+                    {
+                        "dense_cosine": 0.52,
+                        "lexical_rank": 3,
+                        "rrf_score": 0.2,
+                        "applicability_score": -1.5,
+                        "threshold": 0.0,
+                    },
+                ],
+            },
+            {
+                "candidate_kind": "memory",
+                "candidate_id": "sch_3",
+                "decision": "rejected",
+                "reason_code": "wrong_task_facet",
+            },
+            {
+                "candidate_kind": "memory",
+                "candidate_id": "sch_4",
+                "decision": "rejected",
+                "reason_code": "wrong_task_facet",
+            },
+        ],
     )
+    run = conn.execute("SELECT * FROM retrieval_trace_runs").fetchone()
+    row = conn.execute("SELECT * FROM retrieval_trace_candidates").fetchone()
+    assert json.loads(run["gate_rejections_json"]) == {"wrong_task_facet": 2}
+    assert run["scored_total"] == 1
+    assert (row["candidate_id"], row["dense_cosine"], row["lexical_rank"]) == ("sch_2", 0.52, 3)
+    assert (row["applicability"], row["threshold"]) == (-1.5, 0.0)

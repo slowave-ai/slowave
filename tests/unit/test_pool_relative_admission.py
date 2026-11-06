@@ -304,3 +304,36 @@ def test_delivery_facets_mark_episode_derived_without_source():
     schema.facets = {}
     schema.supporting_episode_ids = []
     assert "episode_derived" not in RetrievalService._delivery_facets(None, schema)
+
+
+def test_recall_trace_records_scores_and_policy_label(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOWAVE_RETRIEVAL_TRACE", "1")
+    engine = _stub_engine(tmp_path)
+    try:
+        memory = engine._seed(
+            "Rest light roasts seven days before brewing; naturals are ready after three days.",
+            facets={"source_kind": "explicit_remember"},
+        )
+        result = ops.recall(
+            engine,
+            query="How long should lightly roasted coffee rest before brewing?",
+            scope="project:test",
+            relevant_set=True,
+        )
+        conn = engine.db.connect()
+        run = conn.execute(
+            "SELECT policy_version FROM retrieval_trace_runs WHERE retrieval_id = ?",
+            (result["retrieval_id"],),
+        ).fetchone()
+        row = conn.execute(
+            "SELECT decision, dense_cosine, rrf_score, applicability, threshold "
+            "FROM retrieval_trace_candidates WHERE retrieval_id = ? AND candidate_id = ?",
+            (result["retrieval_id"], f"sch_{memory}"),
+        ).fetchone()
+        assert run["policy_version"] == "recall-pool-relative-v1"
+        assert row["decision"] == "selected"
+        assert row["applicability"] is not None
+        assert row["rrf_score"] is not None
+        assert row["threshold"] == pytest.approx(pool_relative.signal_floor())
+    finally:
+        engine.close()

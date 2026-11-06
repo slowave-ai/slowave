@@ -269,11 +269,6 @@ class SQLiteDB:
             ("context_recall_items", "final_rank_score", "REAL"),
             ("context_recall_items", "score_margin", "REAL"),
             ("context_recall_items", "phase", "TEXT NOT NULL DEFAULT 'focus'"),
-            ("retrieval_decisions", "observed_at", "INTEGER"),
-            ("retrieval_decisions", "source_created_at", "INTEGER"),
-            ("retrieval_decisions", "reconstruction_reason", "TEXT"),
-            ("retrieval_decisions", "replayed_at", "INTEGER"),
-            ("retrieval_decisions", "replay_config_hash", "TEXT"),
         ]
 
         for table, column, type_spec in missing_columns:
@@ -360,6 +355,12 @@ class SQLiteDB:
         # Procedural behavior is now implicit via schemas + prototypes +
         # TransitionModel + spreading activation.
         for tbl in ("procedural_memory_evidence", "procedural_memories"):
+            conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+        # The decision-trace tables were a maintainer-only diagnostic that
+        # grew without bound (~half of a typical DB). They are replaced by the
+        # opt-in slowave.core.retrieval_trace tables, so drop them for everyone.
+        # Child first: it holds the foreign key to its parent.
+        for tbl in ("retrieval_candidate_decisions", "retrieval_decisions"):
             conn.execute(f"DROP TABLE IF EXISTS {tbl}")
         # Legacy schema declared PRIMARY KEY (episode_id) which constrained
         # an episode to one prototype. Stage 9 needs one mapping per

@@ -207,82 +207,6 @@ class _SkippedRecall:
     related_schema_relations: dict[int, list[str]] = field(default_factory=dict)
 
 
-_ACTION_LEAD = re.compile(
-    r"^\s*(?:please\s+)?(?:add|apply|archive|build|change|create|deploy|execute|export|"
-    r"fix|grant|implement|issue|migrate|re-?drive|remove|repair\w*|retrain|run|ship|upgrade|update|"
-    r"verify|write|crea|reintenta|val[ií]d\w*|action\s*=)\b",
-    re.IGNORECASE,
-)
-_AMBIGUOUS_ACTION = re.compile(
-    r"\b(?:take care of whatever|sort out|handle).*(?:situation|needs|check)\b", re.IGNORECASE
-)
-_ACTION_QUESTION = re.compile(r"^\s*(?:should|shall|can|could)\s+(?:i|we)\s+(.+)", re.IGNORECASE)
-
-
-def _shadow_task_interpretation(task: str, task_context: dict[str, Any] | None) -> dict[str, Any]:
-    """Derive bounded, deterministic Phase-2 interpretation; never selects."""
-    explicit = _explicit_task_facets(task, cap=4)
-    clauses = (
-        explicit
-        or [
-            clause.strip()
-            for clause in re.split(r"\s+(?:and|y)\s+", task, flags=re.IGNORECASE)
-            if clause.strip()
-        ][:4]
-    )
-    needs = [
-        {
-            "index": index,
-            "kind": (
-                "action"
-                if (_ACTION_LEAD.match(clause) or "action=" in clause.casefold())
-                else "factual"
-            ),
-            "source": "explicit_list_item" if explicit else "whole_task",
-            "text": clause,
-            "confidence": "high" if explicit else "medium",
-            "reason": "explicit_list_item" if explicit else "single_task_clause",
-        }
-        for index, clause in enumerate(clauses)
-        if clause
-    ]
-    context = task_context or {}
-    explicit_procedure = bool(context.get("procedure_id") or context.get("procedure_ids"))
-    action_count = sum(need["kind"] == "action" for need in needs)
-    factual_count = len(needs) - action_count
-    if _AMBIGUOUS_ACTION.search(task):
-        intent, confidence, reason = "uncertain", 0.5, "ambiguous_delegation"
-        if not explicit:
-            needs = [
-                {**needs[0], "kind": "mixed", "reason": "ambiguous_delegation"},
-                {
-                    "index": 1,
-                    "kind": "factual",
-                    "source": "task_clause",
-                    "text": "status or summary requested",
-                    "confidence": "medium",
-                    "reason": "explicit_status_clause",
-                },
-            ]
-    elif (question := _ACTION_QUESTION.match(task)) and _ACTION_LEAD.match(question.group(1)):
-        # Advice about performing an action still needs procedural evidence,
-        # including failed precedents. It is not authorization to execute it.
-        intent, confidence, reason = "uncertain", 0.7, "action_advice_question"
-        needs = [{**need, "kind": "mixed"} for need in needs]
-    elif explicit_procedure:
-        intent, confidence, reason = "action", 1.0, "explicit_procedure_context"
-    elif action_count:
-        intent, confidence, reason = "action", 0.9 if explicit else 0.7, "imperative_clause"
-    else:
-        intent, confidence, reason = "non_action", 0.8, "no_imperative_clause"
-    return {
-        "task_needs": needs,
-        "action_intent": intent,
-        "action_intent_confidence": confidence,
-        "action_intent_reason": reason,
-    }
-
-
 def _merge_facet_briefs(briefs: list[Any]) -> Any:
     """Join one direct answer per explicit facet into a bounded context brief."""
     base = briefs[0]
@@ -804,13 +728,6 @@ def activate(
     cold_start = eng.schemas.count_by_scope(scope_id) == 0 if scope_id else eng.schemas.count() == 0
     scope_warning = _scope_fragmentation_warning(eng, scope_id) if cold_start and scope_id else None
 
-    procedure_interpretation = _shadow_task_interpretation(query, resolved_context)
-    if (
-        procedure_interpretation["action_intent"] == "non_action"
-        and resolved_goal
-        and _ACTION_LEAD.match(resolved_goal)
-    ):
-        procedure_interpretation = _shadow_task_interpretation(resolved_goal, resolved_context)
     procedures = load_procedures(eng.db.connect(), scope=scope_id)
     procedure_suppressions: list[dict[str, str]] = []
     procedure_hits = (
@@ -938,7 +855,6 @@ def activate(
                 for decision in (catalog.decisions if catalog is not None else [])
             ]
         ),
-        shadow_interpretation=procedure_interpretation,
         retrieval_policy_version=_retrieval_policy_version(
             relevant_set=relevant_set,
             complementary_activation=complementary_activation,
@@ -1206,7 +1122,6 @@ def recall(
         )
         eng.db.connect().commit()
     recall_id = f"rec_{uuid.uuid4().hex[:12]}"
-    procedure_interpretation = _shadow_task_interpretation(query, retrieval_context)
     procedures = load_procedures(eng.db.connect(), scope=scope)
     procedure_suppressions: list[dict[str, str]] = []
     procedure_hits = (
@@ -1299,10 +1214,16 @@ def recall(
                 "decision": "selected" if decision.selected else "rejected",
                 "reason_code": decision.reason,
                 "selected_position": decision.selected_position,
+                "channel_evidence": list(decision.channel_evidence),
             }
             for decision in (catalog.decisions if catalog is not None else [])
         ],
-        shadow_interpretation=procedure_interpretation,
+        retrieval_policy_version=_retrieval_policy_version(
+            relevant_set=relevant_set,
+            complementary_activation=False,
+            facet_mode=False,
+            recall=True,
+        ),
         cue_embedding=shadow_cue_embedding,
     )
     memories = [
