@@ -70,11 +70,12 @@ _PRODUCT_LIST_ROUTES = {
     "/retrieval",
     "/procedures",
     "/activity",
+    "/sessions",
     "/diagnostics",
     "/graph",
     "/docs",
 }
-_PRODUCT_DETAIL_ROUTE = re.compile(r"^/(memory|retrieval|procedures|activity)/[^/]+$")
+_PRODUCT_DETAIL_ROUTE = re.compile(r"^/(memory|retrieval|procedures|activity|sessions)/[^/]+$")
 # Schema routes must be exact.  In particular, an action suffix such as
 # ``/delete-preview`` is not a schema id and must never reach ``int()`` in the
 # generic detail handler.
@@ -109,6 +110,17 @@ def run_dashboard(
             f"binding to {host!r} may expose private memories on your network.",
             flush=True,
         )
+
+    if os.path.exists(db_path):
+        # Additive schema first so no query ever meets a pre-migration database;
+        # the session-log backfill then runs in the background.
+        try:
+            from slowave.storage import session_events
+
+            session_events.ensure_schema(db_path).close()
+            session_events.start_backfill_thread(db_path)
+        except Exception as exc:  # the dashboard must still start (e.g. read-only DB)
+            print(f"warning: could not prepare session log ({exc})", flush=True)
 
     handler = _make_handler(
         db_path=db_path,
@@ -183,9 +195,15 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
                     self._send_json(_retrievals_payload(db_path, qs))
                 elif path.startswith("/api/retrievals/"):
                     self._send_json(_retrieval_detail(db_path, unquote(path.split("/")[-1])))
-                elif path == "/api/activity":
+                elif path in ("/api/activity", "/api/sessions"):
                     self._send_json(_activity_payload(db_path, qs))
-                elif path.startswith("/api/activity/"):
+                elif path.startswith("/api/sessions/") and path.endswith("/events"):
+                    self._send_json(
+                        _session_events_payload(db_path, unquote(path.split("/")[-2]), qs)
+                    )
+                elif path.startswith(("/api/activity/", "/api/sessions/")) and not path.endswith(
+                    "/timeline"
+                ):
                     self._send_json(_activity_detail(db_path, unquote(path.split("/")[-1])))
                 elif path.startswith("/api/procedures/") and path.endswith("/delete-preview"):
                     self._send_json(
@@ -356,8 +374,11 @@ def _make_handler(*, db_path: str, refresh_ms: int, allow_actions: bool):
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # Wait for a writer (MCP daemon, backfill, consolidation) like the daemon
+    # does instead of failing instantly with "database is locked".
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys = ON")
     # SQLite performance pragmas: WAL mode allows concurrent readers while a writer is active
     conn.execute("PRAGMA journal_mode=WAL")
@@ -1603,10 +1624,10 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
         try:
             scope_rows = conn.execute(
                 "SELECT DISTINCT cre.scope_id FROM context_recall_items cri "
-                "JOIN context_recall_events cre ON cre.id = cri.context_recall_id "
-                "WHERE cri.schema_id = ? AND cri.admitted = 1 AND cre.scope_id IS NOT NULL "
+                "JOIN context_recall_events cre ON cre.context_id = cri.context_id "
+                "WHERE cri.memory_id IN (?, ?) AND cri.admitted = 1 AND cre.scope_id IS NOT NULL "
                 "ORDER BY cre.scope_id LIMIT 30",
-                (schema_id,),
+                (str(schema_id), f"sch_{schema_id}"),
             ).fetchall()
             schema["recalled_scopes"] = [str(r["scope_id"]) for r in scope_rows]
         except Exception:
@@ -1696,9 +1717,17 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             schema["use_history_totals"] = history(occasions(conn), "memory", f"sch_{schema_id}")
         except sqlite3.Error as exc:
             schema["use_history_totals"] = {"available": False, "unavailable_reason": str(exc)}
+        sessions_linked: list[dict[str, Any]] = []
+        sessions_total = 0
+        try:
+            sessions_linked, sessions_total = _memory_sessions(conn, schema_id)
+        except sqlite3.Error:
+            pass
         return {
             "schema": schema,
             "evidence": evidence,
+            "sessions": sessions_linked,
+            "sessions_total": sessions_total,
             "outgoing": outgoing,
             "incoming": incoming,
             "coact_outgoing": coact_outgoing,
@@ -2489,7 +2518,7 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                         "title": f"Feedback incomplete in {int(incomplete['n'])} ended sessions",
                         "observed_at": incomplete["ts"],
                         "rule": "Counts ended sessions explicitly recorded with incomplete feedback; pending active sessions are excluded.",
-                        "href": "/activity?feedback=incomplete",
+                        "href": "/sessions?feedback=incomplete",
                     }
                 )
         except sqlite3.Error:
@@ -2559,12 +2588,12 @@ def _home_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                 {
                     "kind": "activity",
                     "id": str(r["id"]),
-                    "title": "Activity completed",
+                    "title": "Session completed",
                     "preview": r["goal"] or "Completed session",
                     "scope": r["scope_id"],
                     "state": r["feedback_status"] or r["outcome"] or "Complete",
                     "observed_at": r["ended_ts"],
-                    "href": f"/activity/{r['id']}",
+                    "href": f"/sessions/{r['id']}",
                     "source": "session close",
                 }
                 for r in rows
@@ -3297,31 +3326,85 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
                     "total": int(total["n"] if total else 0),
                 },
             }
+        # Sorting by a column that lives on ``sessions`` lets us page first and
+        # aggregate only the visible rows (cost independent of total history).
+        # Sorting by an aggregate must still compute it for every session.
+        plain_sorts = {
+            "started": "s.started_ts",
+            "task": "COALESCE(s.final_goal,s.initial_goal,s.goal,'')",
+            "scope": "s.scope_id",
+            "outcome": "s.outcome",
+            "closure": "s.feedback_status",
+            "feedback_coverage": "s.feedback_status",
+            "duration": "CASE WHEN s.ended_ts IS NULL THEN NULL ELSE MAX(0, s.ended_ts-s.started_ts) END",
+            "verification": "COALESCE(json_extract(s.verification_json, '$.status'), '')",
+        }
+        paged = sort in plain_sorts
+        pg = " IN (SELECT id FROM page)" if paged else ""
+
+        def only(column: str) -> str:
+            return f" WHERE {column}{pg}" if paged else ""
+
+        def also(column: str) -> str:
+            return f" AND {column}{pg}" if paged else ""
+
+        direction_sql = direction.upper()
+        page_cte = (
+            "WITH page AS ("
+            f" SELECT s.*, ROW_NUMBER() OVER (ORDER BY {plain_sorts[sort]} {direction_sql},"
+            " s.started_ts DESC, s.id DESC) AS rn"
+            f" FROM sessions s WHERE {where}"
+            f" ORDER BY {plain_sorts[sort]} {direction_sql}, s.started_ts DESC, s.id DESC"
+            " LIMIT ? OFFSET ?), "
+            if paged
+            else "WITH "
+        )
+        base = "page p" if paged else "sessions s"
+        alias = "p" if paged else "s"
+        order = (
+            "p.rn"
+            if paged
+            else f"{activity_sorts[sort]} {direction_sql}, s.started_ts DESC, s.id DESC"
+        )
+        tail = "" if paged else f" WHERE {where}"
+        tail_limit = "" if paged else " LIMIT ? OFFSET ?"
         rows = conn.execute(
-            "WITH retrieval_counts AS ("
+            page_cte + "retrieval_counts AS ("
             " SELECT session_id, COUNT(*) AS retrieval_count"
-            " FROM context_recall_events WHERE retrieval_type IN ('context','activate','recall') GROUP BY session_id"
+            " FROM context_recall_events WHERE retrieval_type IN ('context','activate','recall')"
+            + also("session_id")
+            + " GROUP BY session_id"
             "), retrieved_counts AS ("
             " SELECT r.session_id,"
             " COUNT(CASE WHEN i.admitted = 1 AND i.memory_type IN ('schema','related') THEN 1 END) AS retrieved_memory_count,"
             " COUNT(CASE WHEN i.admitted = 1 AND i.memory_type IN ('procedure','procedural_memory') THEN 1 END) AS retrieved_procedure_count"
             " FROM context_recall_events r LEFT JOIN context_recall_items i ON i.context_id = r.context_id"
-            " GROUP BY r.session_id"
+            + only("r.session_id")
+            + " GROUP BY r.session_id"
             "), memory_counts AS ("
             " SELECT session_id, COUNT(DISTINCT schema_id) AS memory_count FROM ("
-            "  SELECT re.session_id, se.schema_id FROM schema_evidence se JOIN raw_events re ON re.id = se.raw_event_id"
-            "  UNION ALL"
-            "  SELECT et.session_id, se.schema_id FROM schema_evidence se JOIN episode_text et ON et.episode_id = se.episode_id"
-            " ) WHERE session_id IS NOT NULL GROUP BY session_id"
+            "  SELECT se.session_id, se.schema_id FROM schema_evidence se WHERE se.session_id IS NOT NULL"
+            + also("se.session_id")
+            + "  UNION ALL"
+            "  SELECT re.session_id, se.schema_id FROM schema_evidence se JOIN raw_events re ON re.id = se.raw_event_id WHERE se.session_id IS NULL"
+            + also("re.session_id")
+            + "  UNION ALL"
+            "  SELECT et.session_id, se.schema_id FROM schema_evidence se JOIN episode_text et ON et.episode_id = se.episode_id WHERE se.session_id IS NULL"
+            + also("et.session_id")
+            + " ) WHERE session_id IS NOT NULL GROUP BY session_id"
             "), episode_counts AS ("
             " SELECT re.session_id, COUNT(*) AS episode_count"
-            " FROM episodic_memories em JOIN raw_events re ON re.id = em.event_id GROUP BY re.session_id"
+            " FROM episodic_memories em JOIN raw_events re ON re.id = em.event_id"
+            + only("re.session_id")
+            + " GROUP BY re.session_id"
             "), event_counts AS ("
             " SELECT session_id, COUNT(*) AS timeline_event_count, MAX(ts) AS last_event_ts,"
             " MAX(CASE WHEN type = 'task_complete' AND metadata_json LIKE '%\"procedure\"%' THEN 1 ELSE 0 END) AS has_procedure"
-            " FROM raw_events GROUP BY session_id"
+            " FROM raw_events"
+            + only("session_id")
+            + " GROUP BY session_id"
             ")"
-            " SELECT s.*, COALESCE(s.final_goal,s.initial_goal,s.goal,'') AS goal_preview,"
+            f" SELECT {alias}.*, COALESCE({alias}.final_goal,{alias}.initial_goal,{alias}.goal,'') AS goal_preview,"
             " COALESCE(rc.retrieval_count, 0) AS retrieval_count,"
             " COALESCE(xc.retrieved_memory_count, 0) AS retrieved_memory_count,"
             " COALESCE(xc.retrieved_procedure_count, 0) AS retrieved_procedure_count,"
@@ -3329,16 +3412,18 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             " COALESCE(ec.episode_count, 0) AS episode_count,"
             " COALESCE(ev.timeline_event_count, 0) AS timeline_event_count,"
             " ev.last_event_ts,"
-            " CASE WHEN s.ended_ts IS NULL THEN 'pending' WHEN COALESCE(ev.has_procedure, 0) = 1 THEN 'captured' ELSE 'none' END AS procedure_state,"
-            " CASE WHEN s.ended_ts IS NULL THEN NULL ELSE MAX(0, s.ended_ts-s.started_ts) END AS duration_s,"
-            " COALESCE(json_extract(s.verification_json, '$.status'), '') AS verification_status"
-            " FROM sessions s"
-            " LEFT JOIN retrieval_counts rc ON rc.session_id = s.id"
-            " LEFT JOIN retrieved_counts xc ON xc.session_id = s.id"
-            " LEFT JOIN memory_counts mc ON mc.session_id = s.id"
-            " LEFT JOIN episode_counts ec ON ec.session_id = s.id"
-            " LEFT JOIN event_counts ev ON ev.session_id = s.id"
-            f" WHERE {where} ORDER BY {activity_sorts[sort]} {direction.upper()}, s.started_ts DESC, s.id DESC LIMIT ? OFFSET ?",
+            f" CASE WHEN {alias}.ended_ts IS NULL THEN 'pending' WHEN COALESCE(ev.has_procedure, 0) = 1 THEN 'captured' ELSE 'none' END AS procedure_state,"
+            f" CASE WHEN {alias}.ended_ts IS NULL THEN NULL ELSE MAX(0, {alias}.ended_ts-{alias}.started_ts) END AS duration_s,"
+            f" COALESCE(json_extract({alias}.verification_json, '$.status'), '') AS verification_status"
+            f" FROM {base}"
+            f" LEFT JOIN retrieval_counts rc ON rc.session_id = {alias}.id"
+            f" LEFT JOIN retrieved_counts xc ON xc.session_id = {alias}.id"
+            f" LEFT JOIN memory_counts mc ON mc.session_id = {alias}.id"
+            f" LEFT JOIN episode_counts ec ON ec.session_id = {alias}.id"
+            f" LEFT JOIN event_counts ev ON ev.session_id = {alias}.id"
+            + tail
+            + f" ORDER BY {order}"
+            + tail_limit,
             [*args, per_page, (page - 1) * per_page],
         ).fetchall()
         activities = []
@@ -3346,6 +3431,7 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             item = dict(row)
             for key in ("verification_json", "retrieval_context_json", "task_context_json"):
                 item.pop(key, None)
+            item.pop("rn", None)
             item["client"] = client_info(item.get("agent"))
             activities.append(item)
         activity_summary = _activity_summary(db_path, where, args) if include_summary else {}
@@ -3395,8 +3481,9 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
                 "FROM schemas s JOIN schema_evidence se ON se.schema_id=s.id "
                 "LEFT JOIN raw_events re ON re.id=se.raw_event_id "
                 "LEFT JOIN episode_text et ON et.episode_id=se.episode_id "
-                "WHERE re.session_id=? OR et.session_id=? ORDER BY s.first_formed_ts",
-                (session_id, session_id),
+                "WHERE se.session_id=? OR (se.session_id IS NULL AND (re.session_id=? OR et.session_id=?)) "
+                "ORDER BY s.first_formed_ts",
+                (session_id, session_id, session_id),
             ).fetchall()
         ]
         related: list[dict[str, Any]] = []
@@ -3410,8 +3497,13 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
                 ).fetchall()
             ]
         procedure = _procedure_detail(db_path, f"proc_{session_id}", conn=conn, missing_ok=True)
+        call_log = _session_call_log(conn, session_id, limit=500)
         payload.update(
             {
+                "call_log": call_log["events"],
+                "call_log_total": call_log["total"],
+                "call_log_kinds": call_log["kind_counts"],
+                "call_log_approximate": call_log["approximate"],
                 "retrievals": retrievals,
                 "feedback": feedback,
                 "memories": memories,
@@ -3435,6 +3527,183 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
         conn.close()
 
 
+def _session_call_log(
+    conn: sqlite3.Connection, session_id: str, *, after_id: int = 0, limit: int = 200,
+    kinds: list[str] | None = None,
+) -> dict[str, Any]:
+    """Ordered Slowave call log of one session (keyset-paginated on ``session_events.id``)."""
+    limit = max(1, min(int(limit), 500))
+    where = "e.session_id = ? AND e.id > ?"
+    args: list[Any] = [session_id, int(after_id)]
+    if kinds:
+        where += f" AND e.kind IN ({','.join('?' * len(kinds))})"
+        args.extend(kinds)
+    try:
+        rows = conn.execute(
+            "SELECT e.id, e.ts, e.kind, e.status, e.error_code, e.duration_ms, e.response_chars, "
+            "e.estimated_tokens, e.retrieval_id, e.raw_event_id, e.summary, e.origin, "
+            "r.query AS query, r.goal AS goal, r.count_n AS count_n, "
+            "r.retrieval_type AS retrieval_type, "
+            "substr(x.content, 1, 200) AS raw_text, "
+            "(SELECT COUNT(*) FROM session_events o WHERE o.session_id = e.session_id "
+            " AND o.id <= e.id) AS ordinal, "
+            "(SELECT se.schema_id FROM schema_evidence se WHERE se.raw_event_id = e.raw_event_id "
+            " LIMIT 1) AS created_schema_id, "
+            "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id = e.retrieval_id "
+            " AND i.admitted = 1) AS admitted_count, "
+            "(SELECT COUNT(*) FROM feedback_events f WHERE f.retrieval_id = e.retrieval_id "
+            " AND f.status = 'accepted' AND f.target_kind != 'retrieval') AS feedback_count "
+            "FROM session_events e LEFT JOIN context_recall_events r ON r.context_id = e.retrieval_id "
+            "LEFT JOIN raw_events x ON x.id = e.raw_event_id "
+            f"WHERE {where} ORDER BY e.id LIMIT ?",
+            [*args, limit],
+        ).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*), MAX(origin = 'backfill') FROM session_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        kind_counts = {
+            r[0]: int(r[1])
+            for r in conn.execute(
+                "SELECT kind, COUNT(*) FROM session_events WHERE session_id = ? GROUP BY kind",
+                (session_id,),
+            )
+        }
+        filtered_total = sum(kind_counts.get(k, 0) for k in kinds) if kinds else total[0]
+        outcome_row = conn.execute(
+            "SELECT outcome FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        session_outcome = outcome_row[0] if outcome_row else None
+    except sqlite3.Error:
+        return {"events": [], "total": 0, "approximate": False, "kind_counts": {}}
+    exposure_ids = [r["retrieval_id"] for r in rows
+                    if r["kind"] in ("activate", "recall", "recall_page") and r["retrieval_id"]]
+    feedback_ids = [r["retrieval_id"] for r in rows if r["kind"] == "feedback" and r["retrieval_id"]]
+    items_by_retrieval: dict[str, list[dict[str, Any]]] = {}
+    assessments_by_retrieval: dict[str, list[dict[str, Any]]] = {}
+    try:
+        if exposure_ids:
+            marks = ",".join("?" * len(exposure_ids))
+            for r in conn.execute(
+                "SELECT i.context_id, i.memory_id, i.memory_type, i.rank,"
+                " substr(CASE WHEN i.memory_type IN ('procedure', 'procedural_memory') THEN"
+                "  COALESCE((SELECT NULLIF(p.strategy_text, '') FROM procedure_search_documents p"
+                "   WHERE p.procedure_id = i.memory_id), NULLIF(i.content_text, ''))"
+                " ELSE COALESCE(NULLIF(i.content_text, ''),"
+                "  (SELECT sc.content_text FROM schemas sc WHERE i.memory_id LIKE 'sch\\_%' ESCAPE '\\'"
+                "   AND sc.id = CAST(substr(i.memory_id, 5) AS INTEGER))) END, 1, 220) AS text"
+                f" FROM context_recall_items i WHERE i.admitted = 1 AND i.context_id IN ({marks})"
+                " ORDER BY i.context_id, i.rank",
+                exposure_ids,
+            ):
+                is_proc = r["memory_type"] in ("procedure", "procedural_memory")
+                items_by_retrieval.setdefault(r["context_id"], []).append(
+                    {
+                        "id": r["memory_id"],
+                        "kind": "procedure" if is_proc else "memory",
+                        "text": r["text"],
+                    }
+                )
+        if feedback_ids:
+            marks = ",".join("?" * len(feedback_ids))
+            for r in conn.execute(
+                "SELECT retrieval_id, target_kind, target_id, assessment, effect"
+                f" FROM feedback_events WHERE status = 'accepted' AND target_kind != 'retrieval'"
+                f" AND retrieval_id IN ({marks}) ORDER BY created_at, rowid",
+                feedback_ids,
+            ):
+                assessments_by_retrieval.setdefault(r["retrieval_id"], []).append(
+                    {
+                        "target_kind": r["target_kind"],
+                        "target_id": r["target_id"],
+                        "assessment": r["assessment"],
+                        "effect": r["effect"],
+                    }
+                )
+    except sqlite3.Error:
+        pass
+    events = []
+    for row in rows:
+        item = dict(row)
+        rid = item.get("retrieval_id")
+        if item["kind"] in ("activate", "recall", "recall_page"):
+            item["items"] = items_by_retrieval.get(rid, [])
+        elif item["kind"] == "feedback":
+            item["assessments"] = assessments_by_retrieval.get(rid, [])
+        elif item["kind"] == "remember":
+            item["summary"] = item.get("summary") or item.get("raw_text")
+            if item.get("created_schema_id"):
+                item["memory_id"] = f"sch_{item['created_schema_id']}"
+        elif item["kind"] == "commit" and not item.get("summary"):
+            item["summary"] = session_outcome
+        item.pop("raw_text", None)
+        item.pop("created_schema_id", None)
+        # Exposure kinds show the stored query; others the short summary preview.
+        if item["kind"] in ("activate", "recall", "recall_page") and not item.get("summary"):
+            item["summary"] = item.get("query") or item.get("goal")
+        item.pop("query", None)
+        item.pop("goal", None)
+        events.append(item)
+    return {
+        "events": events,
+        "total": int(total[0] or 0),
+        "filtered_total": int(filtered_total or 0),
+        "kind_counts": kind_counts,
+        "approximate": bool(total[1]),
+        "next_after_id": events[-1]["id"] if len(events) == limit else None,
+    }
+
+
+def _session_events_payload(
+    db_path: str, session_id: str, qs: dict[str, list[str]]
+) -> dict[str, Any]:
+    if not os.path.exists(db_path):
+        return {"error": "db not found"}
+    conn = _connect(db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+            return {"error": "session not found"}
+        kinds = [k for k in (qs.get("kinds", [""])[0] or "").split(",") if k]
+        return _session_call_log(
+            conn,
+            session_id,
+            after_id=int((qs.get("after_id") or ["0"])[0] or 0),
+            limit=int((qs.get("limit") or ["200"])[0] or 200),
+            kinds=kinds or None,
+        )
+    finally:
+        conn.close()
+
+
+_MEMORY_SESSIONS_LIMIT = 50
+
+
+def _memory_sessions(conn: sqlite3.Connection, schema_id: int) -> tuple[list[dict[str, Any]], int]:
+    """Sessions that created (evidence) or were exposed to a memory, newest first, plus the total."""
+    total = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT session_id FROM schema_evidence WHERE schema_id = ?"
+        " AND session_id IS NOT NULL UNION SELECT r.session_id FROM context_recall_items i"
+        " JOIN context_recall_events r ON r.context_id = i.context_id"
+        " WHERE i.memory_id IN (?, ?) AND i.admitted = 1 AND r.session_id IS NOT NULL)",
+        (schema_id, str(schema_id), f"sch_{schema_id}"),
+    ).fetchone()[0]
+    rows = conn.execute(
+        "WITH links AS ("
+        " SELECT se.session_id AS session_id, 1 AS origin, 0 AS recalled, 0 AS retrieval_n"
+        " FROM schema_evidence se WHERE se.schema_id = ? AND se.session_id IS NOT NULL"
+        " UNION ALL"
+        " SELECT r.session_id, 0, 1, 1 FROM context_recall_items i"
+        " JOIN context_recall_events r ON r.context_id = i.context_id"
+        " WHERE i.memory_id IN (?, ?) AND i.admitted = 1 AND r.session_id IS NOT NULL"
+        ") SELECT l.session_id, MAX(l.origin) AS is_origin, SUM(l.retrieval_n) AS retrieval_count,"
+        " s.started_ts, s.agent, s.outcome, COALESCE(s.final_goal, s.initial_goal, s.goal, '') AS goal"
+        " FROM links l JOIN sessions s ON s.id = l.session_id"
+        f" GROUP BY l.session_id ORDER BY s.started_ts DESC LIMIT {_MEMORY_SESSIONS_LIMIT}",
+        (schema_id, str(schema_id), f"sch_{schema_id}"),
+    ).fetchall()
+    return [dict(r) for r in rows], int(total or 0)
+
+
 def _procedure_detail(
     db_path: str,
     procedure_id: str,
@@ -3456,7 +3725,7 @@ def _procedure_detail(
             return {"error": "procedure not found", "procedure_id": procedure_id}
         session_id = procedure_id.removeprefix("proc_")
         session_row = connection.execute(
-            "SELECT id, agent, scope_id, started_ts, ended_ts, verification_json, feedback_status, lifecycle_version FROM sessions WHERE id=?",
+            "SELECT id, agent, scope_id, started_ts, ended_ts, verification_json, feedback_status, lifecycle_version, COALESCE(final_goal, initial_goal, goal, '') AS goal FROM sessions WHERE id=?",
             (session_id,),
         ).fetchone()
         source_session = dict(session_row) if session_row else None

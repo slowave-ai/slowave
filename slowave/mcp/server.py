@@ -224,6 +224,14 @@ def main() -> None:
     # -- session-idle reaper -------------------------------------------------
     session_reaper.start(build_engine=_build_engine_with_touch, poll_interval_s=120)
 
+    # -- one-off session-log backfill (resumable, bounded batches) -----------
+    try:
+        from slowave.storage import session_events
+
+        session_events.start_backfill_thread(str(_server_paths().database))
+    except Exception:
+        log.warning("Could not start session-log backfill", exc_info=True)
+
     # -- run -----------------------------------------------------------------
     try:
         mcp.run()

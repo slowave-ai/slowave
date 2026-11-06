@@ -2511,6 +2511,20 @@ span.formation-legend-item:hover { background: transparent; }
 .retrieval-usage-memory .retrieval-usage-track { background: color-mix(in srgb, var(--accent-memory) 16%, var(--border)); }
 .retrieval-usage-procedure .retrieval-usage-track { background: color-mix(in srgb, var(--accent-procedure) 16%, var(--border)); }
 
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+.chip.active { background: color-mix(in srgb, var(--link) 15%, transparent); border-color: var(--link); }
+.chip:disabled { opacity: 0.6; cursor: default; }
+.session-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
 /* Coding-agent client badges */
 .client-badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text); }
 .client-badge.client-unknown { color: var(--muted, #888); }
@@ -2529,3 +2543,41 @@ td:has(> .client-badge, > .client-stack) { white-space: nowrap; }
 .activity-table th { white-space: normal; line-height: 1.25; }
 .activity-table th, .activity-table td { padding: 10px 8px; }
 .activity-table td.primary-cell { min-width: clamp(160px, 22cqw, 320px); }
+
+.call-log { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; }
+.call-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-left: 3px solid var(--call-accent, var(--border));
+}
+.call-row + .call-row { border-top: 1px solid var(--border); }
+.call-row.kind-activate, .call-row.kind-recall, .call-row.kind-recall_page { --call-accent: var(--accent-retrieval); }
+.call-row.kind-feedback { --call-accent: var(--accent-usage); }
+.call-row.kind-remember { --call-accent: var(--accent-memory); }
+.call-row.kind-commit { --call-accent: var(--accent-procedure); }
+.call-row.failed { --call-accent: var(--danger); }
+.call-row.highlighted { background: color-mix(in srgb, var(--link) 10%, transparent); }
+.call-ordinal { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; padding-top: 1px; }
+.call-main { min-width: 0; display: grid; gap: 4px; }
+.call-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.call-kind { font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--call-accent, var(--muted)); flex: none; }
+.call-failed { font-size: 0.78em; color: var(--danger); font-weight: 600; }
+.call-title { min-width: 0; overflow-wrap: anywhere; }
+.call-time { margin-left: auto; color: var(--muted); font-size: 0.82em; white-space: nowrap; }
+.call-meta { color: var(--muted); font-size: 0.88em; }
+.call-items { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 3px; font-size: 0.92em; }
+.call-items li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.call-items li > a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-chip { flex: none; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.call-chip.procedure { color: var(--accent-procedure); }
+.call-chip.memory { color: var(--accent-memory); }
+.call-link { align-self: start; background: none; border: 0; color: var(--muted); font: inherit; font-size: 0.8em; cursor: pointer; padding: 0; opacity: 0; }
+.call-row:hover .call-link, .call-link:focus-visible { opacity: 1; }
+@media (hover: none) { .call-link { opacity: 1; } }
+.link-button { background: none; border: 0; padding: 0; font: inherit; color: var(--link); cursor: pointer; text-decoration: underline; }
+@media (max-width: 640px) { .call-row { grid-template-columns: 22px minmax(0, 1fr); } .call-link { grid-column: 2; justify-self: start; } }
+.detail-list > a.session-link > div { display: block; }
+.detail-list > a.session-link small { display: block; margin-top: 2px; }

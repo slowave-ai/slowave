@@ -31,7 +31,7 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
         "/api/schemas",
         "/api/schemas/",
         "/api/retrievals",
-        "/api/activity",
+        "/api/sessions",
         "/api/worker/runs",
         "/api/procedural-memory",
         "/api/graph/schemas",
@@ -66,11 +66,11 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "retrieval.requested_page_size" in source
     assert 'visible("page_limit")' not in source
     assert "Procedure not found" in source
-    assert "Activity not found" in source
+    assert "Session not found" in source
     assert "No memory metrics available" in source
     assert "No retrieval summary available" in source
     assert "No procedure summary available" in source
-    assert "No activity summary available" in source
+    assert "No session summary available" in source
     assert "Evidence quality for the retrieval metrics above" not in source
     assert "Active memories is the current library denominator" not in source
     assert "`${name} usage rate`" in source

@@ -538,8 +538,11 @@ class SchemaStore:
         for episode_id, raw_event_id, quote, weight in evidence or []:
             conn.execute(
                 "INSERT OR REPLACE INTO schema_evidence "
-                "(schema_id, episode_id, raw_event_id, quote, weight) VALUES (?, ?, ?, ?, ?)",
-                (sid, episode_id, raw_event_id, quote, float(weight)),
+                "(schema_id, episode_id, raw_event_id, quote, weight, session_id) "
+                "VALUES (?, ?, ?, ?, ?, COALESCE("
+                "(SELECT session_id FROM raw_events WHERE id = ?),"
+                "(SELECT session_id FROM episode_text WHERE episode_id = ?)))",
+                (sid, episode_id, raw_event_id, quote, float(weight), raw_event_id, episode_id),
             )
         conn.commit()
         return sid
@@ -683,8 +686,11 @@ class SchemaStore:
         for episode_id, raw_event_id, quote, weight in evidence or []:
             conn.execute(
                 "INSERT OR REPLACE INTO schema_evidence "
-                "(schema_id, episode_id, raw_event_id, quote, weight) VALUES (?, ?, ?, ?, ?)",
-                (int(schema_id), episode_id, raw_event_id, quote, float(weight)),
+                "(schema_id, episode_id, raw_event_id, quote, weight, session_id) "
+                "VALUES (?, ?, ?, ?, ?, COALESCE("
+                "(SELECT session_id FROM raw_events WHERE id = ?),"
+                "(SELECT session_id FROM episode_text WHERE episode_id = ?)))",
+                (int(schema_id), episode_id, raw_event_id, quote, float(weight), raw_event_id, episode_id),
             )
         conn.commit()
         self._update_utility_scores(schema_id, recall_hit=False)

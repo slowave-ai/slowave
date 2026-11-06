@@ -61,7 +61,7 @@ export const glossary: Record<string, string> = {
   retrievals_demonstrated_value:
     "Feedback-complete retrievals with at least one returned memory assessed as used or returned procedure assessed as helpful. This demonstrates recorded value, not causal impact on task success.",
   activity_context_use:
-    "Activities with complete feedback and retrieval where at least one returned memory was assessed as used or procedure as helpful. This is recorded context use, not proof Slowave caused the outcome.",
+    "Sessions with complete feedback and retrieval where at least one returned memory was assessed as used or procedure as helpful. This is recorded context use, not proof Slowave caused the outcome.",
 };
 
 const iconPaths: Record<string, ReactNode> = {
@@ -192,8 +192,8 @@ export function Link({
           event.preventDefault();
           const current = window.location.pathname + window.location.search;
           const routeState = window.history.state;
-          const fromInspector = /^\/(memory|retrieval|procedures|activity)\/[^/]+/.test(window.location.pathname);
-          const toInspector = /^\/(memory|retrieval|procedures|activity)\/[^/]+/.test(to);
+          const fromInspector = /^\/(memory|retrieval|procedures|activity|sessions)\/[^/]+/.test(window.location.pathname);
+          const toInspector = /^\/(memory|retrieval|procedures|activity|sessions)\/[^/]+/.test(to);
           const inspectorContent = document.querySelector<HTMLElement>(".inspector-content");
           navigate(to, {
             state: state ?? (fromInspector
@@ -224,7 +224,7 @@ const navigation = [
   ["/memory", "Memories", "memory"],
   ["/procedures", "Procedures", "procedure"],
   ["/retrieval", "Retrieval", "retrieval"],
-  ["/activity", "Activity", "activity"],
+  ["/sessions", "Sessions", "activity"],
   ["/graph", "Memory graph", "graph"],
   ["/diagnostics", "Diagnostics", "diagnostics"],
 ] as const;
@@ -386,7 +386,7 @@ const labels: Record<string, string> = {
   failure: "Failure",
   unknown: "Unknown",
   retrieval: "Retrieval",
-  activity: "Activity",
+  activity: "Session",
   procedure: "Procedure",
   memory: "Memory",
   event: "Raw Events",
