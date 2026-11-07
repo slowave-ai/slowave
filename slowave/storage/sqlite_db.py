@@ -269,6 +269,7 @@ class SQLiteDB:
             ("context_recall_items", "final_rank_score", "REAL"),
             ("context_recall_items", "score_margin", "REAL"),
             ("context_recall_items", "phase", "TEXT NOT NULL DEFAULT 'focus'"),
+            ("schema_evidence", "session_id", "TEXT"),
         ]
 
         for table, column, type_spec in missing_columns:

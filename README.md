@@ -25,7 +25,7 @@
 ---
 
 
-https://github.com/user-attachments/assets/2d4eeb4e-419f-46fa-b23e-cf501a715d1e
+https://github.com/user-attachments/assets/55d057f2-72ad-41bf-aa63-022d10e7ac6f
 
 
 ---
@@ -156,7 +156,7 @@ From the dashboard you can:
 - **Inspect memories:** see what was saved, where it came from, its current state, and when it was later retrieved or used.
 - **Inspect procedures:** review reusable methods captured from previous work and see when they are retrieved and reused.
 - **Trace retrievals:** see the request, the context Slowave actually returned, and the feedback reported by the agent.
-- **Follow activity:** inspect tasks, retrievals, feedback, memory updates, and their links to each other.
+- **Follow sessions:** open the session behind any memory, procedure, or retrieval and step through its ordered Slowave calls, feedback, and linked memories.
 - **Explore memory connections:** browse relationships and associations between memories.
 - **Check system health:** inspect the database, background maintenance, backups, and local services.
 
@@ -173,7 +173,7 @@ Slowave also shows a rough estimate of the context returned through all MCP endp
     <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="17%"></a>
     <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="17%"></a>
     <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="17%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Activity" width="17"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Sessions" width="17"></a>
 </p>
 
 

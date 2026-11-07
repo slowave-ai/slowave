@@ -648,9 +648,22 @@ def _log_tool_response(
     response_data: dict[str, Any],
     response_chars: int | None = None,
     estimated_tokens: int | None = None,
+    event_retrieval_id: str | None = None,
+    duration_ms: int | None = None,
+    status: str = "ok",
+    error_code: str | None = None,
+    summary: str | None = None,
+    record_event: bool = True,
+    raw_event_id: int | None = None,
 ) -> None:
-    """Record response size for any MCP tool in context_recall_events."""
+    """Record response size for any MCP tool in context_recall_events.
+
+    Dual-writes one ``session_events`` row in the same transaction (legacy
+    ledger rows stay for one release: older MCP processes and token metrics
+    still read them).
+    """
     from slowave.lifecycle import LIFECYCLE_VERSION
+    from slowave.storage import session_events
 
     chars = _serialized_chars(response_data) if response_chars is None else response_chars
     try:
@@ -673,9 +686,56 @@ def _log_tool_response(
                     LIFECYCLE_VERSION,
                 ),
             )
+            # Only exposures own their ledger row; feedback points at the
+            # retrieval it assessed; remember/commit reference no retrieval.
+            if record_event:
+                session_events.record(
+                    conn,
+                    session_id=session_id,
+                    kind=session_events.LEDGER_KINDS.get(retrieval_type, retrieval_type),
+                    retrieval_id=event_retrieval_id
+                    or (context_id if retrieval_type in ("recall", "recall_page") else None),
+                    raw_event_id=raw_event_id,
+                    status=status,
+                    error_code=error_code,
+                    duration_ms=duration_ms,
+                    summary=summary,
+                    response_chars=chars,
+                    estimated_tokens=(
+                        math.ceil(chars / 4) if estimated_tokens is None else estimated_tokens
+                    ),
+                )
     except Exception:
         # Observability must not turn a completed mutation into a reported failure.
         log.warning("Could not record %s response size", retrieval_type, exc_info=True)
+
+
+def _source_event_id(result: Any) -> int | None:
+    """Raw-event id behind a remember result (``evt_<id>``), if present."""
+    try:
+        value = str(result.get("source_event_id") or "")
+        return int(value.removeprefix("evt_")) if value else None
+    except (AttributeError, ValueError):
+        return None
+
+
+def _log_remember_events(eng: Any, session_id: str, results: list[dict[str, Any]]) -> None:
+    """One ordered event per remembered claim of a batch (each links to its raw event)."""
+    from slowave.storage import session_events
+
+    try:
+        conn = eng.db.connect()
+        with conn:
+            for item in results:
+                if item.get("ok"):
+                    session_events.record(
+                        conn,
+                        session_id=session_id,
+                        kind="remember",
+                        raw_event_id=_source_event_id(item.get("data") or {}),
+                    )
+    except Exception:
+        log.warning("Could not record remember session events", exc_info=True)
 
 
 def _log_feedback_batch(eng: Any, items: Any, results: list[dict[str, Any]]) -> None:
@@ -712,7 +772,28 @@ def _log_feedback_batch(eng: Any, items: Any, results: list[dict[str, Any]]) -> 
             response_data={},
             response_chars=share,
             estimated_tokens=token_share,
+            record_event=False,
         )
+    # One ordered event per assessed retrieval (a call can assess several).
+    from slowave.storage import session_events
+
+    try:
+        with conn:
+            for item, result in zip(items, results):
+                row = conn.execute(
+                    "SELECT session_id FROM context_recall_events WHERE context_id=?",
+                    (item.retrieval_id,),
+                ).fetchone()
+                if row is not None:
+                    session_events.record(
+                        conn,
+                        session_id=row[0],
+                        kind="feedback",
+                        retrieval_id=item.retrieval_id,
+                        status="ok" if result.get("ok", True) else "error",
+                    )
+    except Exception:
+        log.warning("Could not record feedback session events", exc_info=True)
 
 
 def _candidate_kind(item: dict[str, Any]) -> str:
@@ -1745,6 +1826,15 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     _restrict_activation_exposure(
                         eng, retrieval_id=result["retrieval_id"], data=data, commit=False
                     )
+                    from slowave.storage import session_events
+
+                    session_events.record(
+                        conn,
+                        session_id=result["session_id"],
+                        kind="activate",
+                        retrieval_id=result["retrieval_id"],
+                        summary=request.initial_goal,
+                    )
             except Exception:
                 session_resolver.clear(request.scope)
                 if prior_resolver_binding:
@@ -1935,6 +2025,15 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 _restrict_activation_exposure(
                     eng, retrieval_id=result["retrieval_id"], data=data, commit=False
                 )
+                from slowave.storage import session_events
+
+                session_events.record(
+                    conn,
+                    session_id=request.session_id,
+                    kind="recall",
+                    retrieval_id=result["retrieval_id"],
+                    summary=request.query,
+                )
             response = {"ok": True, "data": data}
             _spawn_bg_task(
                 _bg_log_event(
@@ -2095,6 +2194,8 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                     scope=request.scope,
                     retrieval_type="remember",
                     response_data={"ok": True, "data": result},
+                    summary=str(item["content"])[:200],
+                    raw_event_id=_source_event_id(result),
                 )
                 return {"ok": True, "data": result}
             # Scalar writes retain independent batch-item error reporting;
@@ -2144,7 +2245,9 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope=request.scope,
                 retrieval_type="remember",
                 response_data={"ok": True, "data": {"results": results}},
+                record_event=False,
             )
+            _log_remember_events(eng, request.session_id, results)
             return {"ok": True, "data": {"results": results}}
         except Exception as e:
             log.error("slowave_remember failed: %s", e, exc_info=True)
@@ -2353,6 +2456,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope=scope,
                 retrieval_type="feedback",
                 response_data={"ok": True, "data": data},
+                event_retrieval_id=request.retrieval_id,
             )
             return {"ok": True, "data": data}
         except Exception as e:
@@ -2470,6 +2574,7 @@ def register_tools(mcp: FastMCP, build_engine: Callable) -> None:
                 scope=scope,
                 retrieval_type="commit",
                 response_data={"ok": True, "data": result},
+                summary=str(getattr(request, "outcome", "") or ""),
             )
             return {"ok": True, "data": result}
         except ops.IncompleteFeedbackError as e:
