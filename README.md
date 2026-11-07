@@ -22,6 +22,12 @@
   Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Antigravity, Claude Desktop
 </p>
 
+Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
+
+Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
+
+It runs on your machine and requires no LLM API key for memory maintenance. The local dashboard lets you inspect what your agent remembers and which memories it finds valuable.
+
 ---
 
 
@@ -29,11 +35,6 @@ https://github.com/user-attachments/assets/2d4eeb4e-419f-46fa-b23e-cf501a715d1e
 
 
 ---
-Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
-
-Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
-
-It runs on your machine and requires no LLM API key for memory maintenance. The local dashboard lets you inspect what your agent remembers and which memories it finds valuable.
 
 At the core Slowave is built around a simple concept:
 
@@ -54,14 +55,14 @@ Slowave retains what helps agents achieve their goals, weakens what does not, an
 > **activate → remember → recall → feedback → commit**
 
 
-Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
+Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved:
 
-- **Keep context across tasks:** Your agents can reuse recorded decisions, preferences, constraints, and lessons.
-- **Evolves through feedback:** Useful memories grow stronger, irrelevant ones lose priority, stale knowledge can be superseded.
-- **Learns from experience:** Decisions, outcomes, and multi-step solutions can become reusable context your agents can act on.
-- **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
-- **No LLM API key:** The memory core performs maintenance and retrieval without LLM calls or an LLM API key.
-- **Inspectable and measurable:** Review memories, retrievals, feedback, procedures, and system performance in the local dashboard.
+- Keep context across tasks
+- Evolves through feedback
+- Learns from experience
+- Runs locally
+- No LLM API key
+- Inspectable and measurable
 
 The first useful payoff is simply not having to repeat the same constraint in the next task. 
 
@@ -94,10 +95,8 @@ When upgrading to a new version:
 slowave stop
 pipx upgrade slowave
 slowave setup
+slowave dashboard
 ```
-
-If you are in the middle of a coding client session while upgrading you might have to close the session and re-open it (via `/resume` command or similar, depending on client). 
-
 
 ## Workflow
 
@@ -109,6 +108,7 @@ Slowave enriches your agents context with relevant memories and procedures. Your
 
 
 
+
 ```mermaid
 sequenceDiagram
     actor User as You
@@ -117,21 +117,18 @@ sequenceDiagram
     participant Worker as Slowave Worker
 
     User->>Agent: Prompt
-    Agent->>Slowave: Activate: Start task (set goal)
+    Agent->>Slowave: activate: Start task (set goal)
     Slowave-->>Agent: Relevant memories and procedures
 
-    opt 
-        Agent->>Slowave: Remember: Save new knowledge
-    end
-
-    opt 
-        Agent->>Slowave: Recall: Look up more context
+    opt Remember / Recall
+        Agent->>Slowave: remember: Save new knowledge
+        Agent->>Slowave: recall: Look up more context
         Slowave-->>Agent: Matching memories and procedures
     end
 
     Agent->>Agent: Reason upon enriched context, work on the task
-    Agent->>Slowave: Feedback: Assess retrieved context
-    Agent->>Slowave: Commit: Record outcome
+    Agent->>Slowave: reinforce: Assess retrieved context
+    Agent->>Slowave: session_end: Record outcome
     Slowave-->>Agent: Task outcome saved, session closed
     Agent-->>User: Deliver the result
 
@@ -139,11 +136,8 @@ sequenceDiagram
 ```
 
 
+
 ## Dashboard
-
-The local dashboard shows what Slowave is actually doing with your agent's memory over time: what it remembers, what it retrieves, and what your agent reports using.
-
-As your history grows, you can follow a memory from where it came from to the tasks where it was later retrieved and used. You can inspect learned procedures, see when retrieved context was useful or irrelevant, and understand whether Slowave is helping your agent reuse past work rather than simply accumulating memories.
 
 Start the dashboard with:
 
@@ -151,30 +145,27 @@ Start the dashboard with:
 slowave dashboard
 ```
 
+<p align="center">
+    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave local dashboard" width="95%"></a>
+</p>
+
+<p align="center">
+    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="Memory detail" width="18%"></a>
+    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="18%"></a>
+    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="18%"></a>
+    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="18%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Sessions" width="18%"></a>
+</p>
+
+
 From the dashboard you can:
 
-- **Inspect memories:** see what was saved, where it came from, its current state, and when it was later retrieved or used.
-- **Inspect procedures:** review reusable methods captured from previous work and see when they are retrieved and reused.
-- **Trace retrievals:** see the request, the context Slowave actually returned, and the feedback reported by the agent.
-- **Follow sessions:** open the session behind any memory, procedure, or retrieval and step through its ordered Slowave calls, feedback, and linked memories.
-- **Explore memory connections:** browse relationships and associations between memories.
-- **Check system health:** inspect the database, background maintenance, backups, and local services.
-
-The overview also helps answer whether the memory loop is working: how many memories and procedures exist, how often retrieved context is reported as used, how much is marked irrelevant, whether feedback is being recorded, and how creation, retrieval, and use change over time.
-
-Slowave also shows a rough estimate of the context returned through all MCP endpoints, so you can keep an eye on memory overhead.
-
-<p align="center">
-    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave local dashboard" width="90%"></a>
-</p>
-
-<p align="center">
-    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="Memory detail" width="17%"></a>
-    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="17%"></a>
-    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="17%"></a>
-    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="17%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Sessions" width="17"></a>
-</p>
+- Inspect memories and their lifecycle
+- Review learned procedures and their reuse
+- Trace retrievals and agent feedback
+- Explore session history and activity
+- Visualize memory connections and associations
+- Monitor system health, maintenance, backups, token consumption
 
 
 ## Supported clients
