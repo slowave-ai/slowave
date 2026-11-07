@@ -37,8 +37,8 @@
 
 
 <p align="center">Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and sessions.</p>
-<p align="center">Slowave adapts as you use it, building reusable context over time so your agent can learn from its past experience.</p>
-<p align="center">It runs on your machine and requires no LLM API key for memory maintenance. </p>
+<p align="center">Adapts as you use it, building reusable context over time so your agent can learn from its past experience.</p>
+<p align="center">Slowave runs on your machine and requires no LLM API key for memory maintenance. </p>
 <p align="center">The local dashboard lets you inspect your memories and how they support your agent achieving your coding tasks and goals.</p>
 
 ---
@@ -152,7 +152,7 @@ sequenceDiagram
 
 ## Dashboard
 
-Start the dashboard with:
+Start the local dashboard with:
 
 ```bash
 slowave dashboard
@@ -201,12 +201,6 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 | All the above |  |  |  | `slowave setup` |
 
 ¹ requires one manual paste after setup
-
-Copilot support targets local CLI execution. Automated integration tests pass, and
-native configuration discovery is verified on macOS. A user also confirmed memory
-reads and writes through Copilot CLI on macOS. Full model-driven lifecycle and native
-Windows/Linux qualification remain pending. IDE, desktop, and hosted/cloud
-Copilot support is deferred.
 
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
