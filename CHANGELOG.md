@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.3...slowave-v0.23.4) (2026-11-07)
+
+
+### Bug Fixes
+
+* UX review pass over tables and detail drawers ([#236](https://github.com/slowave-ai/slowave/issues/236)) ([e18979d](https://github.com/slowave-ai/slowave/commit/e18979d6f597faf6a16c6aefa4c64bd17793cdfc))
+
+
+### Documentation
+
+* restore public README video link ([ae96662](https://github.com/slowave-ai/slowave/commit/ae966628e5ddafdd7a89632257091674b663e132))
+
 ## [0.23.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.2...slowave-v0.23.3) (2026-11-07)
 
 
