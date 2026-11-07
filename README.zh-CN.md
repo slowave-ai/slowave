@@ -151,7 +151,7 @@ slowave dashboard
 - **查看记忆：** 查看保存了什么、来自哪里、当前状态，以及后来何时被检索或使用。
 - **查看流程：** 回顾从以往工作中沉淀的可复用方法，并了解它们何时被检索和复用。
 - **追踪检索：** 查看请求、Slowave 实际返回的上下文，以及智能体报告的反馈。
-- **跟踪活动：** 查看任务、检索、反馈、记忆更新，以及它们之间的关联。
+- **跟踪会话：** 从任意记忆、流程或检索打开其所属会话，按顺序查看 Slowave 调用、反馈和关联的记忆。
 - **探索记忆关联：** 浏览记忆之间的关系和联想。
 - **检查系统健康：** 查看数据库、后台维护、备份和本地服务。
 
@@ -168,7 +168,7 @@ Slowave 还会显示通过所有 MCP 端点返回的上下文量的粗略估算�
     <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="流程" width="17%"></a>
     <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="检索" width="17%"></a>
     <a href="img/graph.jpg"><img src="img/graph.jpg" alt="记忆图谱" width="17%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="活动" width="17%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="会话" width="17%"></a>
 </p>
 
 

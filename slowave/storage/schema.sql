@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS schema_evidence (
   raw_event_id INTEGER,
   quote        TEXT,
   weight       REAL NOT NULL DEFAULT 1.0,
+  session_id   TEXT,                  -- originating session, denormalized for reverse navigation
   PRIMARY KEY (schema_id, episode_id, raw_event_id),
   FOREIGN KEY (schema_id) REFERENCES schemas(id) ON DELETE CASCADE,
   FOREIGN KEY (episode_id) REFERENCES episodic_memories(id) ON DELETE SET NULL,
@@ -219,6 +220,34 @@ CREATE TABLE IF NOT EXISTS schema_evidence (
 CREATE INDEX IF NOT EXISTS idx_schema_evidence_schema ON schema_evidence(schema_id);
 CREATE INDEX IF NOT EXISTS idx_schema_evidence_episode ON schema_evidence(episode_id);
 CREATE INDEX IF NOT EXISTS idx_schema_evidence_raw_event ON schema_evidence(raw_event_id);
+CREATE INDEX IF NOT EXISTS idx_schema_evidence_session ON schema_evidence(session_id);
+
+-- Ordered per-session call log (telemetry/index only). Content stays in the
+-- domain tables and is referenced, never copied. `id` is the ordering key.
+CREATE TABLE IF NOT EXISTS session_events (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id       TEXT NOT NULL,
+  ts               INTEGER NOT NULL,
+  kind             TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'ok',
+  error_code       TEXT,
+  duration_ms      INTEGER,
+  response_chars   INTEGER,
+  estimated_tokens INTEGER,
+  retrieval_id     TEXT,
+  raw_event_id     INTEGER,
+  summary          TEXT,
+  origin           TEXT NOT NULL DEFAULT 'live',
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (retrieval_id) REFERENCES context_recall_events(context_id) ON DELETE SET NULL,
+  FOREIGN KEY (raw_event_id) REFERENCES raw_events(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_session_events_retrieval ON session_events(retrieval_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_events_backfill_retrieval
+  ON session_events(retrieval_id, kind) WHERE origin='backfill' AND retrieval_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_events_backfill_raw
+  ON session_events(raw_event_id, kind) WHERE origin='backfill' AND raw_event_id IS NOT NULL;
 
 -- Many-to-many link between symbolic schemas and latent prototypes.
 CREATE TABLE IF NOT EXISTS schema_prototype_map (

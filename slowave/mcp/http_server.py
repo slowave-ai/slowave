@@ -318,6 +318,13 @@ def main(
             if not eng.prepare_retrieval(wait=True)["ready"]:
                 raise RuntimeError("Retrieval preparation is incomplete")
             log.info("Engine warmed up; DB ready at %s", paths.database)
+            # One-off, resumable, bounded-batch backfill of the session log.
+            try:
+                from slowave.storage import session_events
+
+                session_events.start_backfill_thread(str(paths.database))
+            except Exception:
+                log.warning("Could not start session-log backfill", exc_info=True)
         except Exception:
             log.warning(
                 "Engine warm-up failed; will retry lazily on first tool call", exc_info=True

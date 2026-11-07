@@ -95,7 +95,7 @@ function updateParams(
   navigate(`${path}${query.size ? `?${query}` : ""}`);
 }
 function openDetail(to: string, location: LocationState) {
-  const entityId = decodeURIComponent(to.match(/^\/(?:memory|retrieval|procedures|activity)\/([^/?]+)/)?.[1] || "");
+  const entityId = decodeURIComponent(to.match(/^\/(?:memory|retrieval|procedures|activity|sessions)\/([^/?]+)/)?.[1] || "");
   navigate(to, {
     state: {
       listUrl: `${location.path}${location.search.size ? `?${location.search}` : ""}`,
@@ -398,7 +398,7 @@ function ReportedOutcomesCard({ summary }: { summary: Json }) {
     <MetricCard
       className="distribution-card"
       title="Reported outcomes"
-      tooltip="Distribution over ended activities, including not reported outcomes. Missing closure is not failure."
+      tooltip="Distribution over ended sessions, including not reported outcomes. Missing closure is not failure."
       value={
         <div className="stage-distribution">
           <div className="distribution-bar">
@@ -721,12 +721,12 @@ export function HomePage({ location }: PageProps) {
                 }
                 actions={
                   <Link
-                    to={structuralUrl("/activity", {
+                    to={structuralUrl("/sessions", {
                       from: home.window?.from,
                       to: home.window?.to,
                     })}
                   >
-                    View all activity
+                    View all sessions
                   </Link>
                 }
               >
@@ -1284,7 +1284,7 @@ export function MemoryPage({ location }: PageProps) {
                       />
                     </th>
                   )}
-                  {visible("source_activity") && <th className="numeric"><SortButton label="Source activity count" active={sort === "source_activity"} direction={dir} onClick={() => changeSort("source_activity")} /></th>}
+                  {visible("source_activity") && <th className="numeric"><SortButton label="Source sessions" active={sort === "source_activity"} direction={dir} onClick={() => changeSort("source_activity")} /></th>}
                   {visible("last_used") && <th>
                     <SortButton
                       label="Last used"
@@ -1454,6 +1454,7 @@ function MemoryDetail({ id, onClose, onDeleted }: {
       sections={[
         { id: "memory-detail", label: "Memory" },
         { id: "memory-history", label: "Use history" },
+        { id: "memory-sessions", label: "Sessions" },
         { id: "memory-sources", label: "Sources" },
         { id: "memory-connections", label: "Connections" },
         { id: "memory-technical", label: "Technical details" },
@@ -1526,6 +1527,16 @@ function MemoryDetail({ id, onClose, onDeleted }: {
               </div> : <p className="neutral">Not exposed in a recorded retrieval yet.</p>}
               {data.retrievals?.length >= 50 && <p className="neutral">Showing the latest 50 retrieval occasions.</p>}
             </Section>
+            <Section title="Sessions" id="memory-sessions">
+              <p className="neutral">Sessions where this memory was created from evidence or exposed in a retrieval.</p>
+              {data.sessions?.length ? <div className="detail-list evidence-list">{data.sessions.map((item: any) => (
+                <Link key={item.session_id} className="session-link" to={`/sessions/${encodeURIComponent(item.session_id)}`}>
+                  <div><strong>{truncate(item.goal || "Untitled session", 130)}</strong><small>{formatDate(item.started_ts)} · {item.is_origin ? "Source evidence" : "Not a source"}{item.retrieval_count ? ` · retrieved ${item.retrieval_count}×` : ""}</small></div>
+                  <StatusBadge value={item.outcome || "unknown"} />
+                </Link>
+              ))}</div> : <p className="neutral">No linked sessions.</p>}
+              {data.sessions_total > (data.sessions?.length || 0) && <p className="neutral">Showing the latest {data.sessions.length} of {data.sessions_total} sessions.</p>}
+            </Section>
             <Section title="Sources" id="memory-sources">
               {data.evidence?.length ? (
                 <div className="detail-list">
@@ -1547,9 +1558,9 @@ function MemoryDetail({ id, onClose, onDeleted }: {
                       </p>
                       {item.episode_session && (
                         <Link
-                          to={`/activity/${encodeURIComponent(item.episode_session)}`}
+                          to={`/sessions/${encodeURIComponent(item.episode_session)}`}
                         >
-                          Source activity
+                          Source session
                         </Link>
                       )}
                     </div>
@@ -1699,7 +1710,7 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns] = useState<string[]>(["when", "task", "client", "type", "used", "feedback"]);
+  const [visibleColumns] = useState<string[]>(["when", "task", "client", "type", "used", "feedback", "session"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1973,7 +1984,7 @@ export function RetrievalPage({ location }: PageProps) {
                         </td>
                       ))}
                       {visible("feedback") && <td data-label="Feedback"><StatusBadge value={row.feedback_state} /></td>}
-                      {visible("session") && <td>{row.session_id ? truncate(row.session_id, 18) : "Standalone"}</td>}
+                      {visible("session") && <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>{row.session_id ? <Link to={`/sessions/${encodeURIComponent(row.session_id)}#retrieval-${encodeURIComponent(row.context_id)}`}>{truncate(row.session_id, 18)}</Link> : "Standalone"}</td>}
                     </tr>
                   );
                 })}
@@ -2092,11 +2103,11 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   ? `${retrieval.response_chars} characters`
                   : "Not recorded"}
               </dd>
-              <dt>Activity</dt>
+              <dt>Session</dt>
               <dd>
                 {retrieval.session_id ? (
                   <Link
-                    to={`/activity/${encodeURIComponent(retrieval.session_id)}`}
+                    to={`/sessions/${encodeURIComponent(retrieval.session_id)}#retrieval-${encodeURIComponent(retrieval.context_id || retrieval.retrieval_id || "")}`}
                   >
                     {retrieval.session_id}
                   </Link>
@@ -2281,7 +2292,7 @@ export function ProceduresPage({ location }: PageProps) {
   const sort = param(location, "sort", "recent");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
-  const [visibleColumns] = useState<string[]>(["procedure", "client", "scope", "effect", "created", "used", "last_used"]);
+  const [visibleColumns] = useState<string[]>(["procedure", "client", "scope", "effect", "created", "used", "last_used", "source_activity"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
     `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`,
@@ -2530,7 +2541,7 @@ export function ProceduresPage({ location }: PageProps) {
                   {visible("source_activity") && (
                     <th>
                       <SortButton
-                        label="Source activity / session"
+                        label="Source session"
                         active={sort === "source_activity"}
                         direction={dir}
                         onClick={() => changeSort("source_activity")}
@@ -2575,7 +2586,7 @@ export function ProceduresPage({ location }: PageProps) {
                       {visible("unknown") && <td className="numeric">{evidence.unknown || 0}</td>}
                       {visible("feedback_coverage") && <td className="numeric">{row.feedback_complete || 0}</td>}
                       {visible("last_retrieved") && <td title={formatDate(row.last_retrieved_ts)}>{row.last_retrieved_ts ? relativeDate(row.last_retrieved_ts) : "—"}</td>}
-                      {visible("source_activity") && <td>{row.source_activity_id ? truncate(row.source_activity_id, 18) : "—"}</td>}
+                      {visible("source_activity") && <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>{row.source_activity_id ? <Link to={`/sessions/${encodeURIComponent(row.source_activity_id)}`}>{truncate(row.source_activity_id, 18)}</Link> : "—"}</td>}
                     </tr>
                   );
                 })}
@@ -2738,7 +2749,7 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
               {p.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Submission audit ({p.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{p.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.assessment || "Submission"} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></div>)}</div></details>}
             </Section>
             <Section title="Source task" id="procedure-source">
-              <dl className="key-values"><dt>Goal</dt><dd>{p.goal || "No goal recorded"}</dd><dt>Created</dt><dd>{formatDate(p.created_at)}</dd><dt>Source activity</dt><dd>{source?.id ? <Link to={`/activity/${encodeURIComponent(source.id)}`}>{source.id}</Link> : "Unavailable"}</dd></dl>
+              <dl className="key-values"><dt>Goal</dt><dd>{p.goal || "No goal recorded"}</dd><dt>Created</dt><dd>{formatDate(p.created_at)}</dd><dt>Source session</dt><dd>{source?.id ? <Link to={`/sessions/${encodeURIComponent(source.id)}`}>{source.goal ? truncate(source.goal, 120) : source.id}</Link> : "Unavailable"}</dd></dl>
               {p.outcome_summary && <details><summary>Outcome summary</summary><p>{p.outcome_summary}</p></details>}
               {source?.verification?.summary && <details><summary>Verification summary</summary><p>{source.verification.summary}</p></details>}
             </Section>
@@ -2756,7 +2767,7 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
 }
 
 export function ActivityPage({ location }: PageProps) {
-  const detailId = location.path.startsWith("/activity/")
+  const detailId = location.path.startsWith("/sessions/") || location.path.startsWith("/activity/")
     ? decodeURIComponent(location.path.split("/")[2])
     : "";
   const page = pageNumber(location);
@@ -2785,8 +2796,8 @@ export function ActivityPage({ location }: PageProps) {
     return () => clearTimeout(timer);
   }, [search]);
   const activityFilters = `scope=${encodeURIComponent(param(location, "scope"))}&outcome=${param(location, "outcome")}&feedback=${param(location, "feedback")}&agent=${encodeURIComponent(param(location, "agent"))}&continuity=${encodeURIComponent(param(location, "continuity"))}&lane=${param(location, "lane")}&hours=${param(location, "hours", "all")}&from=${param(location, "from")}&to=${param(location, "to")}&q=${encodeURIComponent(debounced)}`;
-  const rowsRequest = useApi<Json>(`/api/activity?${activityFilters}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&include_summary=false`);
-  const summaryRequest = useApi<Json>(`/api/activity?${activityFilters}&summary_only=true`);
+  const rowsRequest = useApi<Json>(`/api/sessions?${activityFilters}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&include_summary=false`);
+  const summaryRequest = useApi<Json>(`/api/sessions?${activityFilters}&summary_only=true`);
   const reloadActivity = () => {
     void rowsRequest.reload();
     void summaryRequest.reload();
@@ -2798,7 +2809,7 @@ export function ActivityPage({ location }: PageProps) {
     total: 0,
   };
   const changeSort = (column: string) =>
-    updateParams("/activity", location, {
+    updateParams("/sessions", location, {
       sort: column,
       dir: sort === column && dir === "desc" ? "asc" : "desc",
       page: 1,
@@ -2806,14 +2817,14 @@ export function ActivityPage({ location }: PageProps) {
   return (
     <div className="page">
       <PageHeader
-        title="Activity"
-        description="Recorded task segments and the consequential links Slowave observed."
+        title="Sessions"
+        description="Every Slowave session with its ordered calls, and the memories and procedures linked to it."
         updatedAt={rowsRequest.updatedAt || summaryRequest.updatedAt}
         refreshing={rowsRequest.refreshing || summaryRequest.refreshing}
         onRefresh={reloadActivity}
       />
       <div className="filter-bar">
-        <PeriodFilter location={location} path="/activity" />
+        <PeriodFilter location={location} path="/sessions" />
         <label>
           Search
           <input
@@ -2827,7 +2838,7 @@ export function ActivityPage({ location }: PageProps) {
           <select
             value={param(location, "outcome")}
             onChange={(e) =>
-              updateParams("/activity", location, {
+              updateParams("/sessions", location, {
                 outcome: e.target.value,
                 page: 1,
               })
@@ -2844,7 +2855,7 @@ export function ActivityPage({ location }: PageProps) {
           <select
             value={param(location, "feedback")}
             onChange={(e) =>
-              updateParams("/activity", location, {
+              updateParams("/sessions", location, {
                 feedback: e.target.value,
                 page: 1,
               })
@@ -2868,7 +2879,7 @@ export function ActivityPage({ location }: PageProps) {
                 : ""
             }
             onChange={(event) =>
-              updateParams("/activity", location, {
+              updateParams("/sessions", location, {
                 from: event.target.value
                   ? Math.floor(new Date(event.target.value).getTime() / 1000)
                   : undefined,
@@ -2888,10 +2899,10 @@ export function ActivityPage({ location }: PageProps) {
         <div className="filter-chips">
           <button
             onClick={() =>
-              updateParams("/activity", location, { lane: undefined, page: 1 })
+              updateParams("/sessions", location, { lane: undefined, page: 1 })
             }
           >
-            Activity lane: {param(location, "lane").replaceAll("_", " ")} ×
+            Session lane: {param(location, "lane").replaceAll("_", " ")} ×
           </button>
         </div>
       )}
@@ -2899,7 +2910,7 @@ export function ActivityPage({ location }: PageProps) {
         <MetricCardsSkeleton count={3} />
       ) : summaryRequest.error && !summaryRequest.data ? (
         <ErrorState
-          title="Activity summary unavailable"
+          title="Session summary unavailable"
           error={summaryRequest.error}
           retry={reloadActivity}
         />
@@ -2907,34 +2918,34 @@ export function ActivityPage({ location }: PageProps) {
         <>
           <div
             className="metric-card-grid activity-metric-card-grid"
-            aria-label="Activity summary"
+            aria-label="Session summary"
           >
             <MetricCard
-              title="Activities"
+              title="Sessions"
               value={Number(
                 summaryRequest.data?.summary?.eligible || 0,
               ).toLocaleString()}
               secondary={`${summaryRequest.data?.summary?.closed || 0} Ended · ${summaryRequest.data?.summary?.pending || 0} Ongoing`}
-              tooltip="Activity records started in period. An activity is a work segment; several may represent one human task."
+              tooltip="Sessions started in the period. A session is one task from activate to commit; several may belong to one conversation."
             />
             <RateMetricCard
               title="Feedback completion"
               numerator={summaryRequest.data?.summary?.complete}
               denominator={summaryRequest.data?.summary?.closure_eligible}
               secondary={`${summaryRequest.data?.summary?.closure_unclassified || 0} older untracked ended records excluded`}
-              tooltip="Ended activities with finalized item accountability divided by ended activities with supported feedback tracking. Ongoing activities are excluded."
+              tooltip="Ended sessions with finalized item accountability divided by ended sessions with supported feedback tracking. Ongoing sessions are excluded."
             />
             <RateMetricCard
               title="Context usage rate"
               numerator={summaryRequest.data?.summary?.context_use}
               denominator={summaryRequest.data?.summary?.context_denominator}
-              secondary="Among activities receiving supported context"
-              tooltip="Activities with a delivered item reported used divided by activities receiving supported context. Each activity counts once."
+              secondary="Among sessions receiving supported context"
+              tooltip="Sessions with a delivered item reported used divided by sessions receiving supported context. Each session counts once."
             />
           </div>
           <div
             className="metric-card-grid distribution-card-grid outcome-card-grid"
-            aria-label="Activity reported outcomes"
+            aria-label="Session reported outcomes"
           >
             <ReportedOutcomesCard
               summary={summaryRequest.data?.summary || {}}
@@ -2942,8 +2953,8 @@ export function ActivityPage({ location }: PageProps) {
           </div>
         </>
       ) : (
-        <EmptyState title="No activity summary available">
-          Summary metrics will appear when the activity service returns a
+        <EmptyState title="No session summary available">
+          Summary metrics will appear when the sessions service returns a
           result.
         </EmptyState>
       )}
@@ -2955,10 +2966,10 @@ export function ActivityPage({ location }: PageProps) {
       {rowsRequest.loading && !rowsRequest.data ? (
         <LoadingRows />
       ) : rowsRequest.error && !rowsRequest.data ? (
-        <ErrorState title="Activity results unavailable" error={rowsRequest.error} retry={reloadActivity} />
+        <ErrorState title="Session results unavailable" error={rowsRequest.error} retry={reloadActivity} />
       ) : rows.length ? (
         <>
-          <TableFrame label="Activity results">
+          <TableFrame label="Session results">
             <table className="activity-table">
               <thead>
                 <tr>
@@ -2987,7 +2998,7 @@ export function ActivityPage({ location }: PageProps) {
               </thead>
               <tbody>
                 {rows.map((row: any) => {
-                  const href = `/activity/${encodeURIComponent(row.id)}${location.search.size ? `?${location.search}` : ""}`;
+                  const href = `/sessions/${encodeURIComponent(row.id)}${location.search.size ? `?${location.search}` : ""}`;
                   return (
                     <tr
                       key={row.id}
@@ -3003,7 +3014,7 @@ export function ActivityPage({ location }: PageProps) {
                       </td>}
                       {visible("task") && <td className="primary-cell">
                         <ClampedText
-                          text={row.goal_preview || "Untitled activity"}
+                          text={row.goal_preview || "Untitled session"}
                         />
                       </td>}
                       {visible("client") && <td><ClientBadge client={row.client} /></td>}
@@ -3040,7 +3051,7 @@ export function ActivityPage({ location }: PageProps) {
             perPage={pagination.per_page}
             total={pagination.total}
             onPage={(next) =>
-              updateParams("/activity", location, { page: next })
+              updateParams("/sessions", location, { page: next })
             }
           />
         </>
@@ -3048,27 +3059,242 @@ export function ActivityPage({ location }: PageProps) {
         <EmptyState
           title={
             search || location.search.size
-              ? "No activity matches these filters"
-              : "No activity yet"
+              ? "No session matches these filters"
+              : "No session yet"
           }
         >
           {search || location.search.size
             ? "Clear or broaden the filters to inspect other recorded task segments."
-            : "An activity appears when an agent uses Slowave. A zero count is normal on a new installation."}
+            : "A session appears when an agent uses Slowave. A zero count is normal on a new installation."}
         </EmptyState>
       )}
       {detailId && (
         <ActivityDetail
           id={detailId}
-          onClose={() => closeDetail("/activity", location)}
+          onClose={() => closeDetail("/sessions", location)}
         />
       )}
     </div>
   );
 }
 
+const CALL_LABELS: Record<string, string> = {
+  activate: "Activate", recall: "Recall", recall_page: "Recall page", remember: "Remember",
+  feedback: "Feedback", commit: "Commit", session_reaped: "Idle close", session_start: "Start",
+};
+const EXPOSURE_KINDS = ["activate", "recall", "recall_page"];
+const CALL_PAGE = 200;
+
+function itemHref(item: any) {
+  return item.kind === "procedure"
+    ? `/procedures/${encodeURIComponent(item.id)}`
+    : `/memory/${encodeURIComponent(item.id)}`;
+}
+
+function formatOffset(seconds: number) {
+  if (seconds < 60) return `+${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  return `+${m}m ${seconds % 60}s`;
+}
+
+function capitalize(value: string) {
+  const text = String(value || "").replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function SessionCallLog({ sessionId, data }: { sessionId: string; data: Json }) {
+  const [extra, setExtra] = useState<any[]>([]);
+  const [kind, setKind] = useState("");
+  const [filtered, setFiltered] = useState<{ kind: string; events: any[]; total: number } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState("");
+  const [highlight, setHighlight] = useState("");
+  const [copied, setCopied] = useState("");
+  const all: any[] = [...(data.call_log || []), ...extra];
+  const total: number = data.call_log_total || 0;
+  const kindCounts: Record<string, number> = data.call_log_kinds || {};
+  const shown: any[] = kind && filtered?.kind === kind ? filtered.events : kind ? [] : all;
+  const shownTotal = kind ? (filtered?.kind === kind ? filtered.total : kindCounts[kind] || 0) : total;
+  const start = Number(all[0]?.ts || 0);
+
+  const fetchPage = async (afterId: number, kinds: string) => {
+    const query = `after_id=${afterId}&limit=${CALL_PAGE}${kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""}`;
+    return api<Json>(`/api/sessions/${encodeURIComponent(sessionId)}/events?${query}`);
+  };
+
+  // Filtering happens on the server so chip counts and results cover the whole session.
+  useEffect(() => {
+    if (!kind) return;
+    let cancelled = false;
+    fetchPage(0, kind)
+      .then((page) => { if (!cancelled) setFiltered({ kind, events: page.events || [], total: page.filtered_total || 0 }); })
+      .catch((error) => { if (!cancelled) setMoreError(error instanceof Error ? error.message : "Could not filter calls"); });
+    return () => { cancelled = true; };
+  }, [kind, sessionId]);
+
+  const exposureByRetrieval = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const item of all) if (EXPOSURE_KINDS.includes(item.kind) && item.retrieval_id) map.set(item.retrieval_id, item);
+    return map;
+  }, [all.length]);
+
+  const focusCall = (id: number) => {
+    setHighlight(`call-${id}`);
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}#call-${id}`);
+    window.requestAnimationFrame(() => document.getElementById(`call-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
+  };
+
+  // Deep links (#call-<event id> / #retrieval-<retrieval id>): keep loading pages until the target is found.
+  useEffect(() => {
+    const hash = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+    if (!hash || kind) return;
+    const find = (list: any[]) =>
+      hash.startsWith("call-")
+        ? list.find((item) => `call-${item.id}` === hash)
+        : hash.startsWith("retrieval-")
+          ? list.find((item) => item.retrieval_id === hash.slice("retrieval-".length) && EXPOSURE_KINDS.includes(item.kind))
+          : undefined;
+    let cancelled = false;
+    (async () => {
+      let list = all;
+      let target = find(list);
+      let guard = 0;
+      while (!target && list.length < total && guard++ < 25 && !cancelled) {
+        const page = await fetchPage(list[list.length - 1].id, "");
+        const more: any[] = page.events || [];
+        if (!more.length) break;
+        list = [...list, ...more];
+        target = find(list);
+        if (!cancelled) setExtra((items) => [...items, ...more.filter((m) => !items.some((i) => i.id === m.id))]);
+      }
+      if (!target || cancelled) return;
+      setHighlight(`call-${target.id}`);
+      window.requestAnimationFrame(() => document.getElementById(`call-${target.id}`)?.scrollIntoView({ block: "center" }));
+    })().catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [sessionId, all.length === 0, window.location.hash]);
+
+  const loadMore = async () => {
+    const last = shown[shown.length - 1];
+    if (!last) return;
+    setLoadingMore(true);
+    setMoreError("");
+    try {
+      const page = await fetchPage(last.id, kind);
+      if (kind) setFiltered((current) => current && { ...current, events: [...current.events, ...(page.events || [])] });
+      else setExtra((items) => [...items, ...(page.events || [])]);
+    } catch (error) {
+      setMoreError(error instanceof Error ? error.message : "Could not load more calls");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const copyLink = (rowId: string) => {
+    navigator.clipboard?.writeText(`${window.location.origin}/sessions/${encodeURIComponent(sessionId)}#${rowId}`);
+    setCopied(rowId);
+    window.setTimeout(() => setCopied((current) => (current === rowId ? "" : current)), 1500);
+  };
+
+  const chipKinds = Object.entries(kindCounts);
+  return (
+    <>
+      <p className="neutral">Slowave calls in the order they were received.{data.call_log_approximate ? " Older calls were reconstructed from stored records, so order within the same second is approximate." : ""} Prompts and replies of the host client are not stored.</p>
+      {chipKinds.length > 1 && (
+        <div className="chip-row" role="group" aria-label="Filter calls by kind">
+          <button type="button" className={`chip${kind ? "" : " active"}`} aria-pressed={!kind} onClick={() => setKind("")}>All {total}</button>
+          {chipKinds.map(([name, count]) => (
+            <button key={name} type="button" className={`chip${kind === name ? " active" : ""}`} aria-pressed={kind === name} onClick={() => setKind(kind === name ? "" : name)}>{CALL_LABELS[name] || name} {count}</button>
+          ))}
+        </div>
+      )}
+      {shown.length ? (
+        <ol className="call-log">
+          {shown.map((item: any) => {
+            const ordinal = item.ordinal;
+            const rowId = `call-${item.id}`;
+            const exposure = EXPOSURE_KINDS.includes(item.kind);
+            const assessed = item.kind === "feedback" ? exposureByRetrieval.get(item.retrieval_id) : undefined;
+            const textById = new Map<string, string>((assessed?.items || []).map((x: any) => [x.id, x.text]));
+            const itemsShown = (item.items || []).slice(0, 5);
+            const hiddenItems = (item.items || []).length - itemsShown.length;
+            const offset = start && item.ts ? formatOffset(Math.max(0, Number(item.ts) - start)) : "";
+            const title = exposure
+              ? (item.summary ? truncate(item.summary, 160) : item.kind === "recall_page" ? "Next page of results" : "No query recorded")
+              : item.kind === "feedback" ? (assessed ? `Assessed the result of call ${assessed.ordinal}` : "Assessed a retrieval")
+              : item.kind === "commit" ? (item.summary ? `Closed the task · ${item.summary}` : "Closed the task")
+              : truncate(item.summary || (item.kind === "remember" ? "Saved a memory" : CALL_LABELS[item.kind] || item.kind), 160);
+            return (
+              <li key={item.id} id={rowId} className={`call-row kind-${item.kind}${highlight === rowId ? " highlighted" : ""}${item.status === "error" ? " failed" : ""}`}>
+                <span className="call-ordinal" aria-hidden="true">{ordinal}</span>
+                <div className="call-main">
+                  <div className="call-head">
+                    <span className="call-kind">{CALL_LABELS[item.kind] || item.kind}</span>
+                    {item.status === "error" && <span className="call-failed">failed</span>}
+                    <span className="call-title">{title}</span>
+                    <time className="call-time" title={formatDate(item.ts)}>{new Date(Number(item.ts) * 1000).toLocaleTimeString()}{offset ? ` · ${offset}` : ""}</time>
+                  </div>
+                  {exposure && (
+                    <div className="call-meta">
+                      {item.count_n ?? item.items?.length ?? 0} returned
+                      {item.feedback_count ? ` · ${item.feedback_count} assessed` : ""}
+                      {item.retrieval_id && <> · <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></>}
+                    </div>
+                  )}
+                  {exposure && itemsShown.length > 0 && (
+                    <ul className="call-items">
+                      {itemsShown.map((x: any) => (
+                        <li key={x.id}><span className={`call-chip ${x.kind}`}>{x.kind === "procedure" ? "Procedure" : "Memory"}</span><Link to={itemHref(x)}>{truncate(x.text || x.id, 120)}</Link></li>
+                      ))}
+                      {hiddenItems > 0 && item.retrieval_id && <li><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>+{hiddenItems} more in the retrieval</Link></li>}
+                    </ul>
+                  )}
+                  {item.kind === "remember" && item.memory_id && (
+                    <ul className="call-items">
+                      <li><span className="call-chip memory">Memory</span><Link to={`/memory/${encodeURIComponent(item.memory_id)}`}>Open saved memory</Link></li>
+                    </ul>
+                  )}
+                  {item.kind === "feedback" && (
+                    <>
+                      <div className="call-meta">
+                        {assessed
+                          ? <>On <button type="button" className="link-button" onClick={() => focusCall(assessed.id)}>call {assessed.ordinal} ({CALL_LABELS[assessed.kind]})</button></>
+                          : item.retrieval_id ? <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open assessed retrieval</Link> : null}
+                      </div>
+                      {(item.assessments || []).length > 0 ? (
+                        <ul className="call-items">
+                          {item.assessments.map((x: any, i: number) => (
+                            <li key={`${x.target_id}-${i}`}>
+                              <StatusBadge value={capitalize(x.assessment || "unknown")} />
+                              <Link to={itemHref({ id: x.target_id, kind: x.target_kind === "procedure" ? "procedure" : "memory" })}>{truncate(textById.get(x.target_id) || x.target_id, 120)}</Link>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : <div className="call-meta">No accepted assessments</div>}
+                    </>
+                  )}
+                </div>
+                <button type="button" className="call-link" aria-label={`Copy link to call ${ordinal}`} onClick={() => copyLink(rowId)}>{copied === rowId ? "Copied" : "Copy link"}</button>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="neutral">{kind ? (filtered?.kind === kind ? "No calls of this kind." : "Loading…") : "No call log was recorded for this session."}</p>
+      )}
+      {shown.length > 0 && shown.length < shownTotal && (
+        <p className="neutral">
+          Showing {shown.length} of {shownTotal} calls.{" "}
+          <button type="button" className="chip" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button>
+        </p>
+      )}
+      {moreError && <p className="neutral">{moreError}</p>}
+    </>
+  );
+}
+
 function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const request = useApi<Json>(`/api/activity/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
+  const request = useApi<Json>(`/api/sessions/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const data = request.data;
   const session = data?.session;
   const feedbackByRetrieval = new Map<string, any[]>();
@@ -3115,12 +3341,13 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
   }, [data]);
   return (
     <Inspector
-      title="Activity"
+      title="Session"
       id={id}
-      label={session ? truncate(session.final_goal || session.initial_goal || session.goal || "Untitled activity", 96) : undefined}
+      label={session ? truncate(session.final_goal || session.initial_goal || session.goal || "Untitled session", 96) : undefined}
       state={session && <StatusBadge value={session.outcome} />}
       sections={[
         { id: "activity-task", label: "Task" },
+        { id: "call-log", label: "Call log" },
         { id: "activity-loop", label: "Memory loop" },
         { id: "activity-linked", label: "Linked records" },
         { id: "activity-technical", label: "Technical details" },
@@ -3135,7 +3362,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
       {request.loading && !data ? (
         <LoadingRows />
       ) : request.error && !data ? (
-        <ErrorState title="Activity details unavailable" error={request.error} retry={request.reload} />
+        <ErrorState title="Session details unavailable" error={request.error} retry={request.reload} />
       ) : session ? (
           <>
             <Section title="Task" id="activity-task">
@@ -3143,7 +3370,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               {session.final_goal ||
                 session.initial_goal ||
                 session.goal ||
-                "Untitled activity"}
+                "Untitled session"}
             </h2>
             <dl className="key-values">
               {session.initial_goal && session.final_goal && session.initial_goal !== session.final_goal && <><dt>Initial goal</dt><dd>{session.initial_goal}</dd></>}
@@ -3173,6 +3400,20 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <dt>Ended</dt><dd>{session.ended_ts ? formatDate(session.ended_ts) : "Open · end time not recorded"}</dd>
               <dt>Duration</dt><dd>{session.ended_ts && session.started_ts ? formatDuration(session.ended_ts - session.started_ts) : "Not available"}</dd>
             </dl>
+            {(() => {
+              const chain: any[] = [...(data.related_sessions || [])].sort((x, y) => Number(x.started_ts) - Number(y.started_ts));
+              const at = chain.findIndex((item) => item.id === session.id);
+              if (chain.length < 2 || at < 0) return null;
+              const prev = chain[at - 1];
+              const next = chain[at + 1];
+              return (
+                <nav className="session-nav" aria-label="Sessions in this conversation">
+                  {prev ? <Link to={`/sessions/${encodeURIComponent(prev.id)}`}>← Older session</Link> : <span />}
+                  <span className="neutral">{at + 1} of {chain.length} in this conversation</span>
+                  {next ? <Link to={`/sessions/${encodeURIComponent(next.id)}`}>Newer session →</Link> : <span />}
+                </nav>
+              );
+            })()}
             {session.continuity_id && (
               <div className="notice info">
                 <Icon name="info" />
@@ -3186,6 +3427,9 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               </div>
             )}
             </Section>
+            <Section title="Call log" id="call-log">
+              <SessionCallLog sessionId={id} data={data} />
+            </Section>
             <Section title="Memory loop" id="activity-loop">
               <p className="neutral">Recorded retrievals and their effective accepted feedback. Optional actions may be absent.</p>
               {data.retrievals?.length ? <div className="detail-list evidence-list">{data.retrievals.map((item: any) => {
@@ -3193,13 +3437,13 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 for (const feedback of feedbackByRetrieval.get(item.context_id) || []) if (feedback.status === "accepted" && feedback.target_kind !== "retrieval") effective.set(`${feedback.target_kind}:${feedback.target_id}`, feedback);
                 const signals = [...effective.entries()];
                 return <Link key={item.context_id} to={`/retrieval/${encodeURIComponent(item.context_id)}`}><div><strong>{truncate(item.query || item.goal || "Context exposure", 150)}</strong><small>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"} · {item.count_n} items returned</small><small>{signals.length ? signals.map(([, signal]) => `${signal.target_kind}: ${signal.assessment}${signal.effect ? ` · ${signal.effect}` : ""}`).join("; ") : "Feedback pending or none accepted"}</small></div><Icon name="chevron" size={14} /></Link>;
-              })}</div> : <p className="neutral">No retrievals were recorded for this activity.</p>}
+              })}</div> : <p className="neutral">No retrievals were recorded for this session.</p>}
               {data.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Rejected submissions ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.target_kind} · {item.target_id} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p></div>)}</div></details>}
             </Section>
             <Section title="Linked records" id="activity-linked">
-              {data.memories?.length ? <><p className="neutral">These memories have source evidence linked to this activity; their presence does not always mean they were created during it.</p><div className="detail-list">{data.memories.map((item: any) => <Link key={item.schema_id} to={`/memory/sch_${item.schema_id}`}><div><strong>{truncate(item.content_text, 160)}</strong><small>Linked through source evidence · {item.status || "state not recorded"} · first formed {formatDate(item.first_formed_ts)}</small></div><Icon name="chevron" size={14} /></Link>)}</div></> : <p className="neutral">No memories are linked through source evidence.</p>}
-              {data.procedure && <div className="detail-list compact"><Link to={`/procedures/${encodeURIComponent(data.procedure.id)}`}><span>Procedure from this activity · {data.procedure.summary}</span><Icon name="chevron" size={14} /></Link></div>}
-              {data.related_sessions?.length > 1 && <><h3>Related sessions</h3><p className="neutral">Grouped by continuity ID; this is a correlation, not a verified work chain.</p><div className="detail-list compact">{data.related_sessions.map((item: any) => <Link key={item.id} to={`/activity/${encodeURIComponent(item.id)}`}><span>{formatDate(item.started_ts)} · {truncate(item.goal, 100)}</span><Icon name="chevron" size={14} /></Link>)}</div></>}
+              {data.memories?.length ? <><p className="neutral">These memories have source evidence linked to this session; their presence does not always mean they were created during it.</p><div className="detail-list">{data.memories.map((item: any) => <Link key={item.schema_id} to={`/memory/sch_${item.schema_id}`}><div><strong>{truncate(item.content_text, 160)}</strong><small>Linked through source evidence · {item.status || "state not recorded"} · first formed {formatDate(item.first_formed_ts)}</small></div><Icon name="chevron" size={14} /></Link>)}</div></> : <p className="neutral">No memories are linked through source evidence.</p>}
+              {data.procedure && <div className="detail-list compact"><Link to={`/procedures/${encodeURIComponent(data.procedure.id)}`}><span>Procedure from this session · {data.procedure.summary}</span><Icon name="chevron" size={14} /></Link></div>}
+              {data.related_sessions?.length > 1 && <><h3>Related sessions</h3><p className="neutral">Grouped by continuity ID; this is a correlation, not a verified work chain.</p><div className="detail-list compact">{data.related_sessions.map((item: any) => <Link key={item.id} to={`/sessions/${encodeURIComponent(item.id)}`}><span>{formatDate(item.started_ts)} · {truncate(item.goal, 100)}</span><Icon name="chevron" size={14} /></Link>)}</div></>}
             </Section>
             <details className="advanced" id="activity-technical">
               <summary>Technical details · raw events and episodes</summary>
@@ -3224,7 +3468,7 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <dl className="key-values wide">{Object.entries(session.task_context || {}).map(([key, value]) => <><dt key={`${key}-label`}>{key.replaceAll("_", " ")}</dt><dd key={key}>{typeof value === "object" ? Array.isArray(value) ? value.join(", ") : Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}: ${String(v)}`).join(" · ") : String(value)}</dd></>)}</dl>
             </details>
           </>
-        ) : <EmptyState title="Activity not found">This activity no longer exists or is not available in the current database.</EmptyState>
+        ) : <EmptyState title="Session not found">This session no longer exists or is not available in the current database.</EmptyState>
       }
     </Inspector>
   );

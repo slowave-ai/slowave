@@ -41,7 +41,7 @@ def _reap_once(build_engine: Callable, timeout_s: int) -> list[str]:
     Implementation notes:
     - Sessions with ended_ts IS NULL (still open)
     - AND last event is older than now - timeout_s
-    - (LEFT JOIN raw_events, use COALESCE(MAX(ts), started_ts))
+    - last activity = MAX(raw_events.ts, live session_events.ts), else started_ts
     """
     if timeout_s < 0:
         # Disabled
@@ -57,12 +57,18 @@ def _reap_once(build_engine: Callable, timeout_s: int) -> list[str]:
         # Find idle open sessions
         rows = conn.execute(
             """
-            SELECT sessions.id, MAX(raw_events.ts) as last_event_ts
+            SELECT sessions.id,
+                   MAX(
+                     COALESCE((SELECT MAX(ts) FROM raw_events
+                               WHERE raw_events.session_id = sessions.id), 0),
+                     COALESCE((SELECT MAX(ts) FROM session_events
+                               WHERE session_events.session_id = sessions.id
+                                 AND session_events.origin = 'live'), 0)
+                   ) AS last_event_ts
             FROM sessions
-            LEFT JOIN raw_events ON raw_events.session_id = sessions.id
             WHERE sessions.ended_ts IS NULL
             GROUP BY sessions.id
-            HAVING COALESCE(MAX(raw_events.ts), sessions.started_ts) < ?
+            HAVING COALESCE(NULLIF(last_event_ts, 0), sessions.started_ts) < ?
             """,
             (cutoff_ts,),
         ).fetchall()
@@ -79,6 +85,15 @@ def _reap_once(build_engine: Callable, timeout_s: int) -> list[str]:
                     enforce_feedback=False,
                 )
                 closed_ids.append(sid)
+                try:
+                    from slowave.storage import session_events
+
+                    with conn:
+                        session_events.record(
+                            conn, session_id=sid, kind="session_reaped", summary="idle timeout"
+                        )
+                except Exception:
+                    log.debug("Could not record session_reaped event", exc_info=True)
                 log.info(f"Reaped idle session {sid}")
             except Exception as e:
                 log.warning(f"Failed to reap session {sid}: {e}")
