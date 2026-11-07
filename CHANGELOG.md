@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.4...slowave-v0.23.5) (2026-11-07)
+
+
+### Documentation
+
+* align Chinese README with English format ([72f68d8](https://github.com/slowave-ai/slowave/commit/72f68d8ea69a5a4bee8bdd375ed8f7b00c012d45))
+
 ## [0.23.4](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.3...slowave-v0.23.4) (2026-11-07)
 
 
