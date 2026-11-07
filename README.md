@@ -42,6 +42,7 @@ Slowave adapts as you use it, building reusable context over time so your agent 
 It runs on your machine and requires no LLM API key for memory maintenance. 
 
 The local dashboard lets you inspect your memories and how they support your agent in your day to day work.
+
 ---
 
 
