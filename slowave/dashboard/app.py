@@ -1272,8 +1272,10 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         raise ValueError(f"unknown status filter: {','.join(states)!r}")
     args: list[Any] = []
     where = " WHERE 1=1"
+    status_clause = ""
     if states:
-        where += f" AND status IN ({','.join(['?'] * len(states))})"
+        status_clause = f" AND status IN ({','.join(['?'] * len(states))})"
+        where += status_clause
         args.extend(states)
     if scope:
         where += " AND scope_id = ?"
@@ -1313,9 +1315,10 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
     sql = (
         "SELECT schemas.*, (SELECT COUNT(*) FROM schema_evidence se "
         "WHERE se.schema_id = schemas.id) AS evidence_count, "
-        "(SELECT COUNT(DISTINCT cri.context_id) FROM context_recall_items cri "
-        "WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 "
-        "AND cri.memory_type IN ('schema','related')) AS times_exposed, "
+        # Delivered-occasion definition (delivered_sql): DISTINCT requests that
+        # actually delivered this memory; same helper as the session/retrieval counters.
+        f"(SELECT COUNT(DISTINCT dx.context_id) FROM ({delivered_sql()}) dx "
+        "WHERE dx.target_kind = 'memory' AND dx.target_id = 'sch_' || schemas.id) AS times_exposed, "
         f"(SELECT COUNT(*) {feedback_population} "
         f"AND fe.assessment IN ({supported_assessments})) AS times_assessed, "
         f"(SELECT COUNT(*) {feedback_population} AND fe.assessment = 'used') AS times_used, "
@@ -1329,10 +1332,9 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         "LEFT JOIN episode_text et ON et.episode_id = se.episode_id "
         "WHERE se.schema_id = schemas.id "
         "AND COALESCE(re.session_id, et.session_id) IS NOT NULL) AS source_activity_count, "
-        "(SELECT MAX(cre.created_at) FROM context_recall_items cri "
-        "JOIN context_recall_events cre ON cre.context_id = cri.context_id "
-        "WHERE cri.memory_id = 'sch_' || schemas.id AND cri.admitted = 1 "
-        "AND cri.memory_type IN ('schema','related')) AS last_retrieved_ts, "
+        f"(SELECT MAX(cre.created_at) FROM ({delivered_sql()}) dx "
+        "JOIN context_recall_events cre ON cre.context_id = dx.context_id "
+        "WHERE dx.target_kind = 'memory' AND dx.target_id = 'sch_' || schemas.id) AS last_retrieved_ts, "
         f"(SELECT MAX(request.created_at) {feedback_population} "
         "AND fe.assessment = 'used') AS last_used_ts FROM schemas" + where
     )
@@ -1358,6 +1360,7 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         for item, row in zip(items, rows):
             item["clients"] = clients_by_schema.get(int(row["id"]), [])
             item["evidence_count"] = int(row["evidence_count"] or 0)
+            item["created_ts"] = item["first_formed_ts"]
             item["times_exposed"] = int(row["times_exposed"] or 0)
             item["times_used"] = int(row["times_used"] or 0)
             item["times_assessed"] = int(row["times_assessed"] or 0)
@@ -1372,11 +1375,12 @@ def _schemas_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             item["last_used_ts"] = int(row["last_used_ts"] or 0) if row["last_used_ts"] else None
         count_args = args[:-2]
         total_row = conn.execute("SELECT COUNT(*) AS n FROM schemas" + where, count_args).fetchone()
+        # status_counts respects every filter except status itself, so the tabs stay complete.
         status_rows = conn.execute(
             "SELECT status, COUNT(*) AS n FROM schemas"
-            + (" WHERE scope_id = ?" if scope else "")
+            + where.replace(status_clause, "", 1)
             + " GROUP BY status",
-            [scope] if scope else [],
+            count_args[len(states) :],
         ).fetchall()
         metrics = _effectiveness_payload(db_path, {**qs, "library": ["memory"]})
         return {
@@ -1619,6 +1623,25 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             # session), use the raw_event's session_id from the LEFT JOIN.
             if not ev.get("episode_session"):
                 ev["episode_session"] = str(ev.get("event_session") or "")
+            ev["session_id"] = ev.get("session_id") or ev["episode_session"] or None
+            ev["has_text"] = bool(str(ev.get("quote") or ev.get("event_content") or "").strip())
+        evidence_total = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM schema_evidence WHERE schema_id = ?", (schema_id,)
+            ).fetchone()[0]
+        )
+        ev_sessions = sorted({e["session_id"] for e in evidence if e.get("session_id")})
+        ev_goals: dict[str, str] = {}
+        if ev_sessions:
+            marks = ",".join("?" * len(ev_sessions))
+            for g in conn.execute(
+                "SELECT id, COALESCE(NULLIF(final_goal,''), NULLIF(initial_goal,''), NULLIF(goal,''), '') AS g"
+                f" FROM sessions WHERE id IN ({marks})",
+                ev_sessions,
+            ):
+                ev_goals[g["id"]] = g["g"]
+        for ev in evidence:
+            ev["session_goal"] = ev_goals.get(ev.get("session_id") or "", "")
         # Collect scopes this schema was actually recalled in
         schema["recalled_scopes"] = []
         try:
@@ -1723,9 +1746,77 @@ def _schema_detail(db_path: str, schema_id: int) -> dict[str, Any]:
             sessions_linked, sessions_total = _memory_sessions(conn, schema_id)
         except sqlite3.Error:
             pass
+        # --- connections: de-duplicated, with preview/status of the other memory ---
+        edges: dict[tuple[int, str], dict[str, Any]] = {}
+        for direction, rows_ in (
+            ("out", outgoing + coact_outgoing),
+            ("in", incoming + coact_incoming),
+        ):
+            for r in rows_:
+                other = int(r["dst_schema_id"] if direction == "out" else r["src_schema_id"])
+                key = (other, str(r.get("relation")))
+                edge = edges.get(key)
+                if edge is None:
+                    edges[key] = {
+                        "schema_id": other,
+                        "id": f"sch_{other}",
+                        "relation": r.get("relation"),
+                        "direction": direction,
+                        "weight": r.get("weight", r.get("confidence")),
+                        "reason": r.get("reason"),
+                    }
+                elif edge["direction"] != direction:
+                    edge["direction"] = "both"
+        previews: dict[int, sqlite3.Row] = {}
+        if edges:
+            others = sorted({k[0] for k in edges})
+            marks = ",".join("?" * len(others))
+            for r in conn.execute(
+                f"SELECT id, content_text, status FROM schemas WHERE id IN ({marks})", others
+            ):
+                previews[r["id"]] = r
+        connections = []
+        for edge in edges.values():
+            row_ = previews.get(edge["schema_id"])
+            edge["preview"] = _short_preview(row_["content_text"], 100) if row_ else ""
+            edge["status"] = row_["status"] if row_ else "deleted"
+            connections.append(edge)
+        # --- truth maintenance: why a memory is stale / what replaced it ---
+        stale_fb = next(
+            (
+                f
+                for f in feedback
+                if f.get("status") == "accepted" and f.get("assessment") == "stale"
+            ),
+            None,
+        )
+        replacement = next(
+            (
+                f["replacement_target_id"]
+                for f in feedback
+                if f.get("status") == "accepted" and f.get("replacement_target_id")
+            ),
+            None,
+        )
+        feedback_reasons = [
+            {
+                "assessment": f.get("assessment"),
+                "stale_reason": f.get("stale_reason"),
+                "reason": f.get("reason"),
+                "retrieval_id": f.get("retrieval_id"),
+                "created_at": f.get("created_at"),
+            }
+            for f in feedback
+            if f.get("status") == "accepted" and (f.get("reason") or f.get("stale_reason"))
+        ][:20]
         return {
             "schema": schema,
             "evidence": evidence,
+            "evidence_total": evidence_total,
+            "connections": connections,
+            "stale_reason": schema.get("stale_reason") or (stale_fb or {}).get("stale_reason"),
+            "replacement_memory_id": replacement,
+            "feedback_reasons": feedback_reasons,
             "sessions": sessions_linked,
             "sessions_total": sessions_total,
             "outgoing": outgoing,
@@ -2237,7 +2328,8 @@ def _worker_runs_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, An
         "episodes": "episodes_processed",
         "formed": "schemas_created",
         "reinforced": "schemas_reinforced",
-        "retired": "schemas_decayed",
+        "decayed": "schemas_decayed",
+        "retired": "schemas_decayed",  # alias of "decayed"
         "errors": "error_text",
         "skipped": "schemas_skipped",
         "pass": "id",
@@ -2770,6 +2862,21 @@ def _retrieval_filters(qs: dict[str, list[str]]) -> tuple[str, list[Any]]:
         clauses.append(f"({complete_request_sql()})")
     elif feedback == "incomplete":
         clauses.append(f"NOT ({complete_request_sql()})")
+    elif feedback == "partial":
+        clauses.append(
+            f"NOT ({complete_request_sql()}) AND EXISTS(SELECT 1 FROM feedback_events pf "
+            "WHERE pf.retrieval_id=r.context_id AND pf.status='accepted' AND pf.target_kind != 'retrieval')"
+        )
+    elif feedback == "none":
+        clauses.append(
+            "NOT EXISTS(SELECT 1 FROM feedback_events pf WHERE pf.retrieval_id=r.context_id "
+            "AND pf.status='accepted' AND pf.target_kind != 'retrieval')"
+        )
+    returned = (qs.get("returned") or [""])[0].strip()
+    if returned == "none" and not no_match:
+        no_match = "true"
+    elif returned == "any" and not no_match:
+        no_match = "false"
     if no_match == "true":
         clauses.append(
             f"NOT EXISTS(SELECT 1 FROM ({delivered_sql()}) d WHERE d.context_id=r.context_id)"
@@ -2821,6 +2928,34 @@ def _effective_memory_page_size(conn: sqlite3.Connection, retrieval: dict[str, A
     # Before requested_page_size was persisted, context retrievals used this
     # shared server default. Keep legacy dashboard rows consistent with that API.
     return DEFAULT_MEMORY_PAGE_SIZE
+
+
+def _session_status(conn: sqlite3.Connection, session: dict[str, Any]) -> str:
+    """running = no ended_ts; idle_closed = closed by the idle reaper without a commit; else ended."""
+    if session.get("ended_ts") is None:
+        return "running"
+    flags = conn.execute(
+        "SELECT MAX(kind='session_reaped'), MAX(kind='commit') FROM session_events WHERE session_id=?",
+        (session["id"],),
+    ).fetchone()
+    verification = session.get("verification")
+    if verification is None:
+        verification = _json_dict(session.get("verification_json"))
+    if (flags[0] and not flags[1]) or (verification or {}).get("summary") == "Idle reaper closure":
+        return "idle_closed"
+    return "ended"
+
+
+_RETRIEVAL_TYPE_LABELS = {
+    "activate": "Activation",
+    "context": "Activation",
+    "recall": "Recall",
+    "recall_page": "Recall page",
+}
+
+
+def _retrieval_type_label(retrieval_type: Any) -> str:
+    return _RETRIEVAL_TYPE_LABELS.get(str(retrieval_type), str(retrieval_type or ""))
 
 
 def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
@@ -2881,9 +3016,26 @@ def _retrievals_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any
                 feedback_by_id[str(row["retrieval_id"])].append(dict(row))
         retrievals = []
         clients_by_session = session_clients(conn, (r["session_id"] for r in rows))
+        goals_by_session: dict[str, str] = {}
+        sess_ids = sorted({str(r["session_id"]) for r in rows if r["session_id"]})
+        if sess_ids:
+            marks = ",".join("?" * len(sess_ids))
+            for g in conn.execute(
+                "SELECT id, COALESCE(NULLIF(final_goal,''), NULLIF(initial_goal,''), NULLIF(goal,''), '') AS g"
+                f" FROM sessions WHERE id IN ({marks})",
+                sess_ids,
+            ):
+                goals_by_session[str(g["id"])] = g["g"]
         for row in rows:
             item = dict(row)
             item.pop("cue_embedding", None)
+            # Delivered-occasion definitions (delivered_sql, DISTINCT context/target):
+            # returned_count = exposed_count, returned_*_count = memory_/procedure_count.
+            item["returned_count"] = int(item.get("exposed_count") or 0)
+            item["returned_memory_count"] = int(item.get("memory_count") or 0)
+            item["returned_procedure_count"] = int(item.get("procedure_count") or 0)
+            item["session_goal"] = goals_by_session.get(str(item.get("session_id")), "")
+            item["type_label"] = _retrieval_type_label(item.get("retrieval_type"))
             item["client"] = clients_by_session.get(str(item.get("session_id")))
             item["requested_page_size"] = _effective_memory_page_size(conn, item)
             item["task_preview"] = item.get("query") or item.get("goal") or "Context exposure"
@@ -3122,8 +3274,29 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
                 latest[key] = fb
             elif fb.get("status") == "legacy" and latest.get(key, {}).get("status") != "accepted":
                 latest[key] = fb
+        proc_titles = _procedure_titles(
+            conn,
+            [
+                str(i["memory_id"])
+                for i in items
+                if kind_map.get(str(i.get("memory_type")), "memory") == "procedure"
+            ]
+            + [str(f["target_id"]) for f in feedback if f.get("target_kind") == "procedure"],
+        )
         for item in items:
             kind = kind_map.get(str(item.get("memory_type")), "memory")
+            item["kind"] = kind
+            if kind == "procedure":
+                item["title"] = (
+                    proc_titles.get(str(item["memory_id"]))
+                    or _short_preview(item.get("content_text"), 120)
+                    or str(item["memory_id"])
+                )
+            else:
+                item["title"] = _short_preview(item.get("content_text"), 120) or str(
+                    item["memory_id"]
+                )
+            item["rank"] = item.get("rank")
             fb = latest.get((kind, str(item.get("memory_id"))))
             item["assessment"] = fb.get("assessment") if fb else None
             item["effect"] = fb.get("effect") if fb else None
@@ -3132,25 +3305,120 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         session = None
         if retrieval.get("session_id"):
             session_row = conn.execute(
-                "SELECT id, agent, scope_id, started_ts, ended_ts, feedback_status, outcome, "
+                "SELECT id, agent, scope_id, started_ts, ended_ts, feedback_status, outcome, verification_json, "
                 "COALESCE(final_goal, initial_goal, goal, '') AS goal FROM sessions WHERE id = ?",
                 (retrieval["session_id"],),
             ).fetchone()
             session = dict(session_row) if session_row else None
             if session:
                 session["client"] = client_info(session.get("agent"))
+        item_titles = {(i["kind"], str(i["memory_id"])): i["title"] for i in items}
+        for fb in feedback:
+            tk = str(fb.get("target_kind"))
+            if tk in ("memory", "procedure"):
+                fb["target_title"] = item_titles.get((tk, str(fb.get("target_id")))) or (
+                    proc_titles.get(str(fb.get("target_id"))) if tk == "procedure" else None
+                )
+                if (
+                    tk == "memory"
+                    and not fb["target_title"]
+                    and str(fb.get("target_id")).startswith("sch_")
+                ):
+                    sc = conn.execute(
+                        "SELECT content_text FROM schemas WHERE id=?",
+                        (str(fb["target_id"])[4:] if str(fb["target_id"])[4:].isdigit() else -1,),
+                    ).fetchone()
+                    fb["target_title"] = _short_preview(sc[0], 120) if sc else None
+            else:
+                fb["target_title"] = None
+        # The synthetic target_kind='retrieval' row (coverage declaration) is an audit
+        # record, not an assessment: keep it out of ``feedback`` and its counts.
+        audit_rows = [fb for fb in feedback if fb.get("target_kind") == "retrieval"]
+        feedback = [fb for fb in feedback if fb.get("target_kind") != "retrieval"]
+        retrieval["assessed_count"] = sum(assessed(o) for o in delivered)
+        retrieval["feedback_count"] = sum(1 for fb in feedback if fb.get("status") == "accepted")
+        retrieval["type_label"] = _retrieval_type_label(retrieval.get("retrieval_type"))
+        retrieval["parent_retrieval_id"] = None
+        if retrieval.get("retrieval_type") == "recall_page" and retrieval.get("session_id"):
+            parent = conn.execute(
+                "SELECT retrieval_id FROM retrieval_continuations WHERE session_id=?"
+                " AND retrieval_id != ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1",
+                (retrieval["session_id"], retrieval_id, retrieval.get("created_at") or 0),
+            ).fetchone()
+            retrieval["parent_retrieval_id"] = parent[0] if parent else None
         retrieval["feedback_complete"] = bool(
             conn.execute(
                 f"SELECT ({complete_request_sql()}) AS complete FROM context_recall_events r WHERE r.context_id=?",
                 (retrieval_id,),
             ).fetchone()["complete"]
         )
-        retrieval["feedback_observed"] = any(item.get("status") == "accepted" for item in feedback)
-        return {"retrieval": retrieval, "items": items, "feedback": feedback, "session": session}
+        retrieval["feedback_observed"] = any(
+            item.get("status") == "accepted" for item in [*feedback, *audit_rows]
+        )
+        if session:
+            session["status"] = _session_status(conn, session)
+            session.pop("verification_json", None)
+        return {
+            "retrieval": retrieval,
+            "items": items,
+            "feedback": feedback,
+            "session": session,
+            "audit": {"retrieval_observations": audit_rows},
+        }
     except sqlite3.Error as exc:
         return {"error": str(exc), "retrieval_id": retrieval_id}
     finally:
         conn.close()
+
+
+def _session_feedback_state(session: dict[str, Any], occ: list[dict[str, Any]]) -> str:
+    """The single feedback-state predicate (list rows AND summary tiles).
+
+    ``pending_open``: session not ended. ``complete``: feedback_status is
+    complete and every delivered occasion has a supported assessment (vacuously
+    true when nothing was delivered). ``partial``: some delivered occasion is
+    assessed but not all/complete. ``none``: nothing assessed.
+    """
+    if session.get("ended_ts") is None:
+        return "pending_open"
+    flags = [assessed(item) for item in occ]
+    if session.get("feedback_status") == "complete" and all(flags):
+        return "complete"
+    return "partial" if any(flags) else "none"
+
+
+def _decorate_session(
+    item: dict[str, Any], occ: list[dict[str, Any]], fallback_goals: dict[str, str] | None = None
+) -> None:
+    """Add derived list fields to a session row (additive).
+
+    returned_count   = DISTINCT delivered (kind, target) pairs of the session
+    used_count       = distinct delivered targets whose latest assessment is ``used``
+    assessed_count   = distinct delivered targets with a supported assessment
+    (all three use ``metrics.occasions`` / ``delivered_sql``).
+    """
+    targets = {(o["target_kind"], o["target_id"]) for o in occ}
+    item["returned_count"] = len(targets)
+    item["assessed_count"] = len({(o["target_kind"], o["target_id"]) for o in occ if assessed(o)})
+    item["used_count"] = len(
+        {(o["target_kind"], o["target_id"]) for o in occ if o["assessment"] == "used"}
+    )
+    item["saved_count"] = int(item.get("saved_count") or 0)
+    item["goal"] = (
+        (item.get("goal_preview") or "").strip()
+        or (fallback_goals or {}).get(str(item.get("id")), "")
+        or ""
+    )
+    if item["goal"] and not item.get("goal_preview"):
+        item["goal_preview"] = item["goal"]
+    if item.get("ended_ts") is None:
+        item["status"] = "running"
+    elif item.get("idle_closed"):
+        item["status"] = "idle_closed"
+    else:
+        item["status"] = "ended"
+    item["idle_closed"] = bool(item.get("idle_closed"))
+    item["feedback_state"] = _session_feedback_state(item, occ)
 
 
 def _activity_summary(db_path: str, where: str, args: list[Any]) -> dict[str, int]:
@@ -3189,11 +3457,16 @@ def _activity_summary(db_path: str, where: str, args: list[Any]) -> dict[str, in
             "pending": len(activities) - len(ended),
             "closed": len(ended),
             "complete": sum(
-                a["feedback_status"] == "complete"
-                and all(assessed(item) for item in by_task.get(a["id"], []))
-                for a in tracked
+                _session_feedback_state(a, by_task.get(a["id"], [])) == "complete" for a in tracked
             ),
             "incomplete": sum(a["feedback_status"] == "incomplete" for a in ended),
+            "feedback_states": {
+                state: sum(
+                    _session_feedback_state(a, by_task.get(a["id"], [])) == state
+                    for a in activities
+                )
+                for state in ("complete", "partial", "none", "pending_open")
+            },
             "closure_eligible": len(tracked),
             "closure_unclassified": len(ended) - len(tracked),
             "context_denominator": sum(bool(by_task.get(a["id"])) for a in activities),
@@ -3259,9 +3532,27 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         ("continuity", "s.continuity_id"),
     ):
         value = (qs.get(key) or [""])[0].strip()
-        if value:
+        if key == "agent" and not value:
+            value = (qs.get("client") or [""])[0].strip()
+        if key == "outcome" and value == "unreported":
+            clauses.append(
+                "(s.outcome IS NULL OR s.outcome NOT IN ('success','partial','failure'))"
+            )
+        elif value:
             clauses.append(f"{column} = ?")
             args.append(value)
+    preset = (qs.get("preset") or [""])[0].strip()
+    if preset == "problems":
+        clauses.append("s.outcome IN ('partial','failure')")
+    elif preset == "no_feedback":
+        clauses.append("(s.ended_ts IS NOT NULL AND COALESCE(s.feedback_status,'') != 'complete')")
+    elif preset == "idle_closed":
+        clauses.append(
+            "(s.ended_ts IS NOT NULL AND ("
+            "json_extract(s.verification_json, '$.summary') = 'Idle reaper closure' "
+            "OR (EXISTS (SELECT 1 FROM session_events e WHERE e.session_id=s.id AND e.kind='session_reaped') "
+            "AND NOT EXISTS (SELECT 1 FROM session_events e WHERE e.session_id=s.id AND e.kind='commit'))))"
+        )
     from_ts, to_ts = bounds(qs)
     lane = (qs.get("lane") or [""])[0].strip()
     if from_ts and not lane:
@@ -3375,10 +3666,12 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             + also("session_id")
             + " GROUP BY session_id"
             "), retrieved_counts AS ("
+            # DISTINCT delivered targets per session (delivered_sql collapses
+            # kind aliases and duplicate rows), same definition as ``returned_count``.
             " SELECT r.session_id,"
-            " COUNT(CASE WHEN i.admitted = 1 AND i.memory_type IN ('schema','related') THEN 1 END) AS retrieved_memory_count,"
-            " COUNT(CASE WHEN i.admitted = 1 AND i.memory_type IN ('procedure','procedural_memory') THEN 1 END) AS retrieved_procedure_count"
-            " FROM context_recall_events r LEFT JOIN context_recall_items i ON i.context_id = r.context_id"
+            " COUNT(DISTINCT CASE WHEN d.target_kind = 'memory' THEN d.target_id END) AS retrieved_memory_count,"
+            " COUNT(DISTINCT CASE WHEN d.target_kind = 'procedure' THEN d.target_id END) AS retrieved_procedure_count"
+            f" FROM context_recall_events r JOIN ({delivered_sql()}) d ON d.context_id = r.context_id"
             + only("r.session_id")
             + " GROUP BY r.session_id"
             "), memory_counts AS ("
@@ -3399,10 +3692,14 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             + " GROUP BY re.session_id"
             "), event_counts AS ("
             " SELECT session_id, COUNT(*) AS timeline_event_count, MAX(ts) AS last_event_ts,"
-            " MAX(CASE WHEN type = 'task_complete' AND metadata_json LIKE '%\"procedure\"%' THEN 1 ELSE 0 END) AS has_procedure"
-            " FROM raw_events"
-            + only("session_id")
-            + " GROUP BY session_id"
+            " MAX(CASE WHEN type = 'task_complete' AND metadata_json LIKE '%\"procedure\"%' THEN 1 ELSE 0 END) AS has_procedure,"
+            " SUM(CASE WHEN type LIKE 'remember:%' THEN 1 ELSE 0 END) AS saved_count"
+            " FROM raw_events" + only("session_id") + " GROUP BY session_id"
+            "), close_flags AS ("
+            " SELECT session_id,"
+            " MAX(CASE WHEN kind = 'session_reaped' THEN 1 ELSE 0 END) AS reaped,"
+            " MAX(CASE WHEN kind = 'commit' THEN 1 ELSE 0 END) AS committed"
+            " FROM session_events" + only("session_id") + " GROUP BY session_id"
             ")"
             f" SELECT {alias}.*, COALESCE({alias}.final_goal,{alias}.initial_goal,{alias}.goal,'') AS goal_preview,"
             " COALESCE(rc.retrieval_count, 0) AS retrieval_count,"
@@ -3412,6 +3709,11 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             " COALESCE(ec.episode_count, 0) AS episode_count,"
             " COALESCE(ev.timeline_event_count, 0) AS timeline_event_count,"
             " ev.last_event_ts,"
+            " COALESCE(ev.saved_count, 0) AS saved_count,"
+            f" CASE WHEN {alias}.ended_ts IS NULL THEN 0"
+            f" WHEN COALESCE(cf.reaped, 0) = 1 AND COALESCE(cf.committed, 0) = 0 THEN 1"
+            f" WHEN json_extract({alias}.verification_json, '$.summary') = 'Idle reaper closure' THEN 1"
+            f" ELSE 0 END AS idle_closed,"
             f" CASE WHEN {alias}.ended_ts IS NULL THEN 'pending' WHEN COALESCE(ev.has_procedure, 0) = 1 THEN 'captured' ELSE 'none' END AS procedure_state,"
             f" CASE WHEN {alias}.ended_ts IS NULL THEN NULL ELSE MAX(0, {alias}.ended_ts-{alias}.started_ts) END AS duration_s,"
             f" COALESCE(json_extract({alias}.verification_json, '$.status'), '') AS verification_status"
@@ -3421,18 +3723,39 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
             f" LEFT JOIN memory_counts mc ON mc.session_id = {alias}.id"
             f" LEFT JOIN episode_counts ec ON ec.session_id = {alias}.id"
             f" LEFT JOIN event_counts ev ON ev.session_id = {alias}.id"
+            f" LEFT JOIN close_flags cf ON cf.session_id = {alias}.id"
             + tail
             + f" ORDER BY {order}"
             + tail_limit,
             [*args, per_page, (page - 1) * per_page],
         ).fetchall()
         activities = []
+        page_ids = [str(r["id"]) for r in rows]
+        by_session: dict[str, list[dict[str, Any]]] = {sid: [] for sid in page_ids}
+        fallback_goals: dict[str, str] = {}
+        if page_ids:
+            marks = ",".join("?" * len(page_ids))
+            # Same delivered-occasion helper as the summary tiles and retrieval rows.
+            for occ in occasions(conn, f"r.session_id IN ({marks})", page_ids):
+                by_session[occ["session_id"]].append(occ)
+            missing = [str(r["id"]) for r in rows if not (r["goal_preview"] or "").strip()]
+            if missing:
+                mm = ",".join("?" * len(missing))
+                for g in conn.execute(
+                    "SELECT session_id, COALESCE(NULLIF(goal,''), NULLIF(query,'')) AS g"
+                    f" FROM context_recall_events WHERE session_id IN ({mm})"
+                    " AND COALESCE(NULLIF(goal,''), NULLIF(query,'')) IS NOT NULL"
+                    " ORDER BY created_at DESC",
+                    missing,
+                ):
+                    fallback_goals[str(g["session_id"])] = str(g["g"])
         for row in rows:
             item = dict(row)
             for key in ("verification_json", "retrieval_context_json", "task_context_json"):
                 item.pop(key, None)
             item.pop("rn", None)
             item["client"] = client_info(item.get("agent"))
+            _decorate_session(item, by_session.get(str(item["id"]), []), fallback_goals)
             activities.append(item)
         activity_summary = _activity_summary(db_path, where, args) if include_summary else {}
         return {
@@ -3450,6 +3773,75 @@ def _activity_payload(db_path: str, qs: dict[str, list[str]]) -> dict[str, Any]:
         return {"activities": [], "pagination": {"page": page, "per_page": per_page, "total": 0}}
     finally:
         conn.close()
+
+
+def _unwrap_json_text(value: Any) -> Any:
+    """Return display text for a value that may be a JSON-encoded string."""
+    if isinstance(value, str) and value.lstrip()[:1] in ("{", "["):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return value
+        if isinstance(parsed, dict):
+            for key in ("summary", "text", "goal", "title"):
+                if isinstance(parsed.get(key), str) and parsed[key].strip():
+                    return parsed[key]
+            return ", ".join(
+                f"{k}: {v}" for k, v in parsed.items() if isinstance(v, (str, int, float))
+            )
+        if isinstance(parsed, list):
+            return "; ".join(str(x) for x in parsed if isinstance(x, (str, int, float)))
+    return value
+
+
+def _decorate_procedure(item: dict[str, Any]) -> None:
+    """Additive display fields for a procedure (list row or detail).
+
+    ``evidence`` must already be the delivered-occasion history (``metrics.history``):
+    helped/no_effect/harmed count ``used`` occasions by effect; ``assessed_count``
+    counts delivered occasions with a supported assessment.
+    """
+    evidence = item.get("evidence") or {}
+    steps = item.get("steps") or []
+    item["source_goal"] = str(item.get("goal") or "")
+    item["step_count"] = len(steps)
+    item["helped_count"] = int(evidence.get("helped") or 0)
+    item["no_effect_count"] = int(evidence.get("no_effect") or 0)
+    item["harmed_count"] = int(evidence.get("harmed") or 0)
+    item["assessed_count"] = int(evidence.get("assessed") or 0)
+    item.setdefault("verification_status", "unknown")
+    item["summary"] = _unwrap_json_text(item.get("summary"))
+    context = item.get("context")
+    if isinstance(context, str):
+        try:
+            context = json.loads(context)
+        except ValueError:
+            context = {"note": context}
+    item["context"] = context if isinstance(context, dict) else {}
+    item["steps"] = [
+        (
+            {**step, "summary": str(_unwrap_json_text(step.get("summary")))}
+            if isinstance(step, dict)
+            else {"summary": str(_unwrap_json_text(step))}
+        )
+        for step in steps
+    ]
+
+
+def _procedure_titles(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+    """Procedure title = source session goal (``proc_<session_id>``), else the strategy summary."""
+    out: dict[str, str] = {}
+    sids = {pid: pid.removeprefix("proc_") for pid in ids}
+    if not sids:
+        return out
+    marks = ",".join("?" * len(sids))
+    for r in conn.execute(
+        "SELECT id, COALESCE(NULLIF(final_goal,''), NULLIF(initial_goal,''), NULLIF(goal,''), '') AS g"
+        f" FROM sessions WHERE id IN ({marks})",
+        list(sids.values()),
+    ):
+        out["proc_" + r["id"]] = r["g"]
+    return out
 
 
 def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
@@ -3498,12 +3890,39 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
             ]
         procedure = _procedure_detail(db_path, f"proc_{session_id}", conn=conn, missing_ok=True)
         call_log = _session_call_log(conn, session_id, limit=500)
+        retrieved_items, retrieved_total = _session_retrieved_items(conn, session_id)
+        saved_items, saved_total = _session_saved_items(conn, session_id)
+        sess = payload["session"]
+        occ_all = occasions(conn, "r.session_id = ?", [session_id])
+        sess["status"] = _session_status(conn, sess)
+        sess["goal"] = (
+            sess.get("final_goal")
+            or sess.get("initial_goal")
+            or sess.get("goal")
+            or next((r["goal"] or r["query"] for r in retrievals if r["goal"] or r["query"]), "")
+            or ""
+        )
+        sess["feedback_state"] = _session_feedback_state(sess, occ_all)
+        sess["returned_count"] = len({(o["target_kind"], o["target_id"]) for o in occ_all})
+        sess["assessed_count"] = len(
+            {(o["target_kind"], o["target_id"]) for o in occ_all if assessed(o)}
+        )
+        sess["used_count"] = len(
+            {(o["target_kind"], o["target_id"]) for o in occ_all if o["assessment"] == "used"}
+        )
+        sess["saved_count"] = saved_total
         payload.update(
             {
+                "retrieved_items": retrieved_items,
+                "retrieved_items_total": retrieved_total,
+                "saved_items": saved_items,
+                "saved_items_total": saved_total,
                 "call_log": call_log["events"],
                 "call_log_total": call_log["total"],
                 "call_log_kinds": call_log["kind_counts"],
-                "call_log_approximate": call_log["approximate"],
+                "call_log_approximate": call_log[
+                    "approximate"
+                ],  # true only if any row is reconstructed (backfilled)
                 "retrievals": retrievals,
                 "feedback": feedback,
                 "memories": memories,
@@ -3527,60 +3946,196 @@ def _activity_detail(db_path: str, session_id: str) -> dict[str, Any]:
         conn.close()
 
 
+_CALL_LOG_MAX_ROWS = 5000
+_EXPOSURE_KINDS = ("activate", "recall", "recall_page")
+
+
+_SESSION_ITEMS_CAP = 50
+
+
+def _session_retrieved_items(
+    conn: sqlite3.Connection, session_id: str
+) -> tuple[list[dict[str, Any]], int]:
+    """Distinct delivered memories/procedures of a session (latest occasion wins), capped.
+
+    Shape: {kind: memory|procedure, id, title, status, assessment, effect, retrieval_id}.
+    Uses ``metrics.occasions`` (the delivered-occasion definition).
+    """
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for occ in sorted(
+        occasions(conn, "r.session_id = ?", [session_id]), key=lambda o: o["request_ts"] or 0
+    ):
+        latest[(occ["target_kind"], occ["target_id"])] = occ
+    total = len(latest)
+    chosen = list(latest.values())[:_SESSION_ITEMS_CAP]
+    mem_ids = [int(o["target_id"][4:]) for o in chosen if o["target_kind"] == "memory"]
+    proc_ids = [o["target_id"] for o in chosen if o["target_kind"] == "procedure"]
+    schema_rows: dict[int, sqlite3.Row] = {}
+    if mem_ids:
+        marks = ",".join("?" * len(mem_ids))
+        for r in conn.execute(
+            f"SELECT id, content_text, status FROM schemas WHERE id IN ({marks})", mem_ids
+        ):
+            schema_rows[r["id"]] = r
+    titles = _procedure_titles(conn, proc_ids)
+    items = []
+    for occ in chosen:
+        if occ["target_kind"] == "memory":
+            row = schema_rows.get(int(occ["target_id"][4:]))
+            title = _short_preview(row["content_text"], 120) if row else occ["target_id"]
+            status = row["status"] if row else "deleted"
+        else:
+            title = titles.get(occ["target_id"]) or occ["target_id"]
+            status = None
+        items.append(
+            {
+                "kind": occ["target_kind"],
+                "id": occ["target_id"],
+                "title": title,
+                "status": status,
+                "assessment": occ["assessment"],
+                "effect": occ["effect"],
+                "retrieval_id": occ["context_id"],
+            }
+        )
+    return items, total
+
+
+def _session_saved_items(
+    conn: sqlite3.Connection, session_id: str
+) -> tuple[list[dict[str, Any]], int]:
+    """Memories created from this session's remember events: {schema_id, text, created_at}."""
+    rows = conn.execute(
+        "SELECT DISTINCT sc.id AS schema_id, substr(sc.content_text, 1, 200) AS text, sc.status,"
+        " sc.first_formed_ts AS created_at FROM schema_evidence se"
+        " JOIN schemas sc ON sc.id = se.schema_id JOIN raw_events x ON x.id = se.raw_event_id"
+        " WHERE x.session_id = ? AND x.type LIKE 'remember:%' ORDER BY sc.first_formed_ts, sc.id",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows[:_SESSION_ITEMS_CAP]], len(rows)
+
+
 def _session_call_log(
-    conn: sqlite3.Connection, session_id: str, *, after_id: int = 0, limit: int = 200,
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    after_id: int = 0,
+    limit: int = 200,
     kinds: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Ordered Slowave call log of one session (keyset-paginated on ``session_events.id``)."""
+    """Ordered Slowave call log of one session (keyset-paginated on the first ``session_events.id`` of a row).
+
+    One row per real tool call:
+    - ``fbk_`` envelope rows (old data) are dropped; consecutive feedback rows written
+      within one second (one call assessing several retrievals) are merged into one row
+      carrying every ``assessments`` entry and ``merged_event_ids``.
+    - Duplicate commit rows of one session within 5 seconds collapse to the richest one.
+    - ``ordinal`` is the 1-based position among the visible rows (stable across pages).
+    All per-row lookups are batched; the whole (bounded) session is processed once.
+    """
     limit = max(1, min(int(limit), 500))
-    where = "e.session_id = ? AND e.id > ?"
-    args: list[Any] = [session_id, int(after_id)]
-    if kinds:
-        where += f" AND e.kind IN ({','.join('?' * len(kinds))})"
-        args.extend(kinds)
     try:
-        rows = conn.execute(
+        raw = conn.execute(
             "SELECT e.id, e.ts, e.kind, e.status, e.error_code, e.duration_ms, e.response_chars, "
             "e.estimated_tokens, e.retrieval_id, e.raw_event_id, e.summary, e.origin, "
             "r.query AS query, r.goal AS goal, r.count_n AS count_n, "
             "r.retrieval_type AS retrieval_type, "
-            "substr(x.content, 1, 200) AS raw_text, "
-            "(SELECT COUNT(*) FROM session_events o WHERE o.session_id = e.session_id "
-            " AND o.id <= e.id) AS ordinal, "
-            "(SELECT se.schema_id FROM schema_evidence se WHERE se.raw_event_id = e.raw_event_id "
-            " LIMIT 1) AS created_schema_id, "
-            "(SELECT COUNT(*) FROM context_recall_items i WHERE i.context_id = e.retrieval_id "
-            " AND i.admitted = 1) AS admitted_count, "
-            "(SELECT COUNT(*) FROM feedback_events f WHERE f.retrieval_id = e.retrieval_id "
-            " AND f.status = 'accepted' AND f.target_kind != 'retrieval') AS feedback_count "
+            "substr(x.content, 1, 200) AS raw_text "
             "FROM session_events e LEFT JOIN context_recall_events r ON r.context_id = e.retrieval_id "
             "LEFT JOIN raw_events x ON x.id = e.raw_event_id "
-            f"WHERE {where} ORDER BY e.id LIMIT ?",
-            [*args, limit],
+            "WHERE e.session_id = ? ORDER BY e.id LIMIT ?",
+            (session_id, _CALL_LOG_MAX_ROWS),
         ).fetchall()
-        total = conn.execute(
-            "SELECT COUNT(*), MAX(origin = 'backfill') FROM session_events WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        kind_counts = {
-            r[0]: int(r[1])
-            for r in conn.execute(
-                "SELECT kind, COUNT(*) FROM session_events WHERE session_id = ? GROUP BY kind",
-                (session_id,),
-            )
-        }
-        filtered_total = sum(kind_counts.get(k, 0) for k in kinds) if kinds else total[0]
         outcome_row = conn.execute(
             "SELECT outcome FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         session_outcome = outcome_row[0] if outcome_row else None
     except sqlite3.Error:
         return {"events": [], "total": 0, "approximate": False, "kind_counts": {}}
-    exposure_ids = [r["retrieval_id"] for r in rows
-                    if r["kind"] in ("activate", "recall", "recall_page") and r["retrieval_id"]]
-    feedback_ids = [r["retrieval_id"] for r in rows if r["kind"] == "feedback" and r["retrieval_id"]]
+
+    # --- collapse duplicates -------------------------------------------------
+    visible: list[dict[str, Any]] = []
+    for row in raw:
+        item = dict(row)
+        item["merged_event_ids"] = [item["id"]]
+        rid = item.get("retrieval_id")
+        if item["kind"] == "feedback" and isinstance(rid, str) and rid.startswith("fbk_"):
+            continue  # envelope ledger row, never a retrieval
+        if (
+            item["kind"] == "feedback"
+            and visible
+            and visible[-1]["kind"] == "feedback"
+            and abs(int(item["ts"] or 0) - int(visible[-1]["ts"] or 0)) <= 1
+        ):
+            leader = visible[-1]
+            leader["merged_event_ids"].append(item["id"])
+            leader.setdefault("retrieval_ids", [leader.get("retrieval_id")])
+            if rid and rid not in leader["retrieval_ids"]:
+                leader["retrieval_ids"].append(rid)
+            for key in ("duration_ms", "response_chars", "estimated_tokens"):
+                if item.get(key) is not None:
+                    leader[key] = (leader.get(key) or 0) + item[key]
+            if item.get("status") != "ok":
+                leader["status"] = item["status"]
+                leader["error_code"] = leader.get("error_code") or item.get("error_code")
+            continue
+        if item["kind"] == "commit":
+            prev = next(
+                (
+                    v
+                    for v in reversed(visible)
+                    if v["kind"] == "commit" and abs(int(item["ts"] or 0) - int(v["ts"] or 0)) <= 5
+                ),
+                None,
+            )
+            if prev is not None:
+
+                def richness(v: dict[str, Any]) -> tuple[int, int]:
+                    return (
+                        int(bool(v.get("retrieval_id"))) + int(bool(v.get("raw_event_id"))),
+                        int(bool(v.get("summary"))),
+                    )
+
+                if richness(item) > richness(prev):
+                    item["merged_event_ids"] = prev["merged_event_ids"] + [item["id"]]
+                    visible[visible.index(prev)] = item
+                else:
+                    prev["merged_event_ids"].append(item["id"])
+                continue
+        visible.append(item)
+
+    for ordinal, item in enumerate(visible, start=1):
+        item["ordinal"] = ordinal
+        item.setdefault("retrieval_ids", [item["retrieval_id"]] if item.get("retrieval_id") else [])
+
+    kind_counts: dict[str, int] = {}
+    for item in visible:
+        kind_counts[item["kind"]] = kind_counts.get(item["kind"], 0) + 1
+    approximate = any(i["origin"] == "backfill" for i in visible)
+    total = len(visible)
+    filtered = [i for i in visible if not kinds or i["kind"] in kinds]
+    filtered_total = len(filtered)
+    page_rows = [i for i in filtered if i["id"] > int(after_id)][:limit]
+
+    # --- batched lookups -------------------------------------------------------
+    exposure_ordinal = {
+        i["retrieval_id"]: i["ordinal"]
+        for i in visible
+        if i["kind"] in _EXPOSURE_KINDS and i.get("retrieval_id")
+    }
+    exposure_ids = [
+        i["retrieval_id"]
+        for i in page_rows
+        if i["kind"] in _EXPOSURE_KINDS and i.get("retrieval_id")
+    ]
+    feedback_ids = [rid for i in page_rows if i["kind"] == "feedback" for rid in i["retrieval_ids"]]
+    raw_ids = [
+        i["raw_event_id"] for i in page_rows if i["kind"] == "remember" and i.get("raw_event_id")
+    ]
     items_by_retrieval: dict[str, list[dict[str, Any]]] = {}
     assessments_by_retrieval: dict[str, list[dict[str, Any]]] = {}
+    admitted_by_retrieval: dict[str, int] = {}
+    saved_by_raw: dict[int, list[dict[str, Any]]] = {}
     try:
         if exposure_ids:
             marks = ",".join("?" * len(exposure_ids))
@@ -3604,53 +4159,87 @@ def _session_call_log(
                         "text": r["text"],
                     }
                 )
+                admitted_by_retrieval[r["context_id"]] = (
+                    admitted_by_retrieval.get(r["context_id"], 0) + 1
+                )
         if feedback_ids:
             marks = ",".join("?" * len(feedback_ids))
             for r in conn.execute(
-                "SELECT retrieval_id, target_kind, target_id, assessment, effect"
+                "SELECT retrieval_id, target_kind, target_id, assessment, effect, reason"
                 f" FROM feedback_events WHERE status = 'accepted' AND target_kind != 'retrieval'"
                 f" AND retrieval_id IN ({marks}) ORDER BY created_at, rowid",
                 feedback_ids,
             ):
                 assessments_by_retrieval.setdefault(r["retrieval_id"], []).append(
                     {
+                        "retrieval_id": r["retrieval_id"],
+                        "target_ordinal": exposure_ordinal.get(r["retrieval_id"]),
                         "target_kind": r["target_kind"],
                         "target_id": r["target_id"],
                         "assessment": r["assessment"],
                         "effect": r["effect"],
                     }
                 )
+        if raw_ids:
+            marks = ",".join("?" * len(raw_ids))
+            for r in conn.execute(
+                "SELECT se.raw_event_id, sc.id AS schema_id, substr(sc.content_text, 1, 160) AS preview,"
+                f" sc.status FROM schema_evidence se JOIN schemas sc ON sc.id = se.schema_id"
+                f" WHERE se.raw_event_id IN ({marks}) ORDER BY sc.id",
+                raw_ids,
+            ):
+                saved_by_raw.setdefault(r["raw_event_id"], []).append(
+                    {"schema_id": r["schema_id"], "preview": r["preview"], "status": r["status"]}
+                )
     except sqlite3.Error:
         pass
+
     events = []
-    for row in rows:
-        item = dict(row)
+    for item in page_rows:
         rid = item.get("retrieval_id")
-        if item["kind"] in ("activate", "recall", "recall_page"):
+        item["reconstructed"] = item.get("origin") == "backfill"
+        item["target_ordinal"] = None
+        if item["kind"] in _EXPOSURE_KINDS:
             item["items"] = items_by_retrieval.get(rid, [])
+            item["admitted_count"] = admitted_by_retrieval.get(rid, 0)
         elif item["kind"] == "feedback":
-            item["assessments"] = assessments_by_retrieval.get(rid, [])
+            assessments: list[dict[str, Any]] = []
+            for target_rid in item["retrieval_ids"]:
+                assessments.extend(assessments_by_retrieval.get(target_rid, []))
+            item["assessments"] = assessments
+            item["feedback_count"] = len(assessments)
+            item["assessed_count"] = len(assessments)
+            effects: dict[str, int] = {}
+            for a in assessments:
+                if a["effect"]:
+                    effects[a["effect"]] = effects.get(a["effect"], 0) + 1
+            item["effects"] = effects
+            for key in ("helped", "harmed", "no_effect"):
+                item[f"{key}_count"] = effects.get(key, 0)
+            item["target_ordinal"] = exposure_ordinal.get(rid)
+            item["target_ordinals"] = [exposure_ordinal.get(t) for t in item["retrieval_ids"]]
         elif item["kind"] == "remember":
             item["summary"] = item.get("summary") or item.get("raw_text")
-            if item.get("created_schema_id"):
-                item["memory_id"] = f"sch_{item['created_schema_id']}"
+            saved = saved_by_raw.get(item.get("raw_event_id"), [])
+            item["saved_memories"] = saved
+            item["pending_consolidation"] = not saved
+            if saved:
+                item["memory_id"] = f"sch_{saved[0]['schema_id']}"
         elif item["kind"] == "commit" and not item.get("summary"):
             item["summary"] = session_outcome
         item.pop("raw_text", None)
-        item.pop("created_schema_id", None)
-        # Exposure kinds show the stored query; others the short summary preview.
-        if item["kind"] in ("activate", "recall", "recall_page") and not item.get("summary"):
+        if item["kind"] in _EXPOSURE_KINDS and not item.get("summary"):
             item["summary"] = item.get("query") or item.get("goal")
         item.pop("query", None)
         item.pop("goal", None)
         events.append(item)
     return {
         "events": events,
-        "total": int(total[0] or 0),
-        "filtered_total": int(filtered_total or 0),
+        "total": total,
+        "filtered_total": filtered_total,
         "kind_counts": kind_counts,
-        "approximate": bool(total[1]),
-        "next_after_id": events[-1]["id"] if len(events) == limit else None,
+        "approximate": approximate,
+        "next_after_id": events[-1]["id"] if events and len(events) == limit else None,
     }
 
 
@@ -3760,6 +4349,9 @@ def _procedure_detail(
         procedure["retrievals"] = retrievals
         procedure["feedback"] = feedback
         procedure["source_session"] = source_session
+        _decorate_procedure(procedure)
+        if source_session:
+            source_session["goal"] = source_session.get("goal") or ""
         return {"procedure": procedure}
     except sqlite3.Error as exc:
         return {"error": str(exc), "procedure_id": procedure_id}
@@ -4346,6 +4938,7 @@ def _procedural_memory_payload(db_path: str, qs: dict[str, list[str]]) -> dict[s
             precedent["evidence"] = history(canonical_occasions, "procedure", precedent["id"])
             precedent["last_retrieved_ts"] = precedent["evidence"]["last_retrieved"]
             precedent["last_used_ts"] = precedent["evidence"]["last_used"]
+            _decorate_procedure(precedent)
         outcome_filter = (qs.get("outcome") or [""])[0].strip()
         verification_filter = (qs.get("verification") or [""])[0].strip()
         retrieved_filter = (qs.get("retrieved") or [""])[0].strip()
