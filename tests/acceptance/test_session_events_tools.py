@@ -21,9 +21,7 @@ def test_tools_write_ordered_session_events(tmp_path):
 
     async def flow():
         async with open_harness(db) as h:
-            act, _ = await h.activate(
-                "c", "Investigate widget cache", "investigate widget cache", "project:qa"
-            )
+            act, _ = await h.activate("c", "Investigate widget cache", "investigate widget cache", "project:qa")
             sid = act["session_id"]
             await h.remember_batch(
                 [
@@ -37,9 +35,7 @@ def test_tools_write_ordered_session_events(tmp_path):
             rec, _ = await h.recall("c", "widget cache ttl", sid, "project:qa")
             await h.feedback_all(act)
             await h.feedback_all(rec)
-            bad, _ = await h.raw_call(
-                "slowave_feedback", {"retrieval_id": "ctx_nope", "coverage": "complete"}
-            )
+            bad, _ = await h.raw_call("slowave_feedback", {"retrieval_id": "ctx_nope", "coverage": "complete"})
             await h.commit(sid, "investigate widget cache")
             return sid, act, rec, bad
 
@@ -70,10 +66,5 @@ def test_tools_write_ordered_session_events(tmp_path):
     assert log["kind_counts"]["remember"] == 3 and log["total"] == len(kinds)
 
     # legacy ledger rows are still written for the token metrics
-    ledger = {
-        r["retrieval_type"]
-        for r in _rows(
-            str(db), "SELECT retrieval_type FROM context_recall_events WHERE session_id=?", (sid,)
-        )
-    }
+    ledger = {r["retrieval_type"] for r in _rows(str(db), "SELECT retrieval_type FROM context_recall_events WHERE session_id=?", (sid,))}
     assert {"context", "recall", "remember", "feedback", "commit"} <= ledger
