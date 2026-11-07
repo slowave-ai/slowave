@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.slowave-ai/slowave -->
+
 ---
 
 <p align="center">
@@ -16,17 +18,38 @@
   <img src="https://img.shields.io/pypi/status/slowave?color=orange" />
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
+
 <p align="center">
-  支持：Claude Code、Copilot CLI、Codex、Cursor、OpenCode、Windsurf/Devin Desktop、Cline、Antigravity、Claude Desktop
+  <strong>支持的客户端：</strong>
 </p>
 
+<p align="center">
+  <img src="img/clients/claude.svg" alt="Claude Code" title="Claude Code" height="24" />&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/copilot-dark.svg" /><img src="img/clients/copilot.svg" alt="Copilot CLI" title="Copilot CLI" height="24" /></picture>&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/openai-dark.svg" /><img src="img/clients/openai.svg" alt="Codex" title="Codex" height="24" /></picture>&nbsp;&nbsp;
+  <img src="img/clients/cursor.svg" alt="Cursor" title="Cursor" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/opencode-mark.svg" alt="OpenCode" title="OpenCode" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/windsurf.svg" alt="Windsurf / Devin Desktop" title="Windsurf / Devin Desktop" height="24" />&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/cline-dark.svg" /><img src="img/clients/cline.svg" alt="Cline" title="Cline" height="24" /></picture>&nbsp;&nbsp;
+  <img src="img/clients/antigravity.svg" alt="Antigravity" title="Antigravity" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/claude.svg" alt="Claude Desktop" title="Claude Desktop" height="24" />
+</p>
 
----
 Slowave 是一个本地 MCP 记忆服务器，可在你的多次编码会话和各种 AI 工具之间传递你的决策、约束和流程。
 
 Slowave 会在使用中不断自适应，随时间积累可复用的上下文，让你的智能体能够从过往经验中学习。
 
-它运行在你自己的机器上，记忆维护不需要任何 LLM API 密钥。通过本地仪表盘，你可以查看智能体记住了什么，以及它认为哪些记忆有价值。
+它运行在你自己的机器上，记忆维护不需要任何 LLM API 密钥。
+
+本地仪表盘让你可以查看这些记忆，以及它们在你的日常工作中如何支持你的智能体。
+
+---
+
+
+https://github.com/user-attachments/assets/2d4eeb4e-419f-46fa-b23e-cf501a715d1e
+
+
+---
 
 Slowave 的核心基于一个简单的理念：
 
@@ -49,12 +72,12 @@ Slowave 会保留有助于智能体达成目标的内容，弱化无益的内容
 
 记忆会随着使用不断被重塑，而不是一个静待检索的静态事实集合。
 
-- **跨任务保留上下文：** 你的智能体可以复用已记录的决策、偏好、约束和经验教训。
-- **通过反馈演化：** 有用的记忆会变得更强，无关的记忆会降低优先级，过时的知识可以被取代。
-- **从经验中学习：** 决策、结果和多步骤的解决方案可以沉淀为智能体可直接据以行动的可复用上下文。
-- **本地运行：** Slowave 将记忆存储在 SQLite 中，不会发送到托管的记忆服务。
-- **无需 LLM API 密钥：** 记忆核心在执行维护和检索时无需调用 LLM，也不需要 LLM API 密钥。
-- **可检查、可度量：** 在本地仪表盘中查看记忆、检索、反馈、流程以及系统性能。
+- 跨任务保留上下文
+- 通过反馈演化
+- 从经验中学习
+- 本地运行
+- 无需 LLM API 密钥
+- 可检查、可度量
 
 最直接的回报，就是不必在下一个任务中重复同样的约束。
 
@@ -67,17 +90,14 @@ Slowave 会保留有助于智能体达成目标的内容，弱化无益的内容
 
 ## 安装
 
-### 安装
+一次性安装并配置所有客户端：
+
 ```bash
 pipx install slowave
-```
-
-### 设置
-```
 slowave setup
 ```
 
-快速开始会配置所有检测到的客户端。如需一次只配置一个客户端，请参阅[安装参考](docs/install.md)。
+如需一次只配置一个客户端，请参阅[安装参考](docs/install.md)。
 
 > [!IMPORTANT]
 > **无需 LLM API 密钥。**
@@ -90,9 +110,8 @@ slowave setup
 slowave stop
 pipx upgrade slowave
 slowave setup
+slowave dashboard
 ```
-
-如果升级时你正处于某个编码客户端的会话中，可能需要关闭该会话并重新打开（通过 `/resume` 命令或类似方式，取决于客户端）。
 
 ## 工作流程
 
@@ -112,21 +131,18 @@ sequenceDiagram
     participant Worker as Slowave 后台工作进程
 
     User->>Agent: 提示词
-    Agent->>Slowave: Activate：开始任务（设定目标）
+    Agent->>Slowave: activate：开始任务（设定目标）
     Slowave-->>Agent: 相关的记忆和流程
 
-    opt 
-        Agent->>Slowave: Remember：保存新知识
-    end
-
-    opt 
-        Agent->>Slowave: Recall：查找更多上下文
+    opt Remember / Recall
+        Agent->>Slowave: remember：保存新知识
+        Agent->>Slowave: recall：查找更多上下文
         Slowave-->>Agent: 匹配的记忆和流程
     end
 
     Agent->>Agent: 基于增强后的上下文进行推理，处理任务
-    Agent->>Slowave: Feedback：评估检索到的上下文
-    Agent->>Slowave: Commit：记录结果
+    Agent->>Slowave: feedback：评估检索到的上下文
+    Agent->>Slowave: commit：记录结果
     Slowave-->>Agent: 任务结果已保存，会话已关闭
     Agent-->>User: 交付结果
 
@@ -136,40 +152,33 @@ sequenceDiagram
 
 ## 仪表盘
 
-本地仪表盘展示 Slowave 随时间推移对智能体记忆的实际处理：它记住了什么、检索了什么，以及你的智能体报告使用了什么。
-
-随着历史记录的增长，你可以追踪一条记忆的来源，直至它后来被检索和使用的任务。你可以查看已学到的流程，了解检索到的上下文何时有用、何时无关，并判断 Slowave 是在帮助智能体复用过往工作，还是仅仅在堆积记忆。
-
 使用以下命令启动仪表盘：
 
 ```bash
 slowave dashboard
 ```
 
+<p align="center">
+    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave 本地仪表盘" width="95%"></a>
+</p>
+
+<p align="center">
+    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="记忆详情" width="18%"></a>
+    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="流程" width="18%"></a>
+    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="检索" width="18%"></a>
+    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="记忆图谱" width="18%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="会话" width="18%"></a>
+</p>
+
+
 在仪表盘中你可以：
 
-- **查看记忆：** 查看保存了什么、来自哪里、当前状态，以及后来何时被检索或使用。
-- **查看流程：** 回顾从以往工作中沉淀的可复用方法，并了解它们何时被检索和复用。
-- **追踪检索：** 查看请求、Slowave 实际返回的上下文，以及智能体报告的反馈。
-- **跟踪会话：** 从任意记忆、流程或检索打开其所属会话，按顺序查看 Slowave 调用、反馈和关联的记忆。
-- **探索记忆关联：** 浏览记忆之间的关系和联想。
-- **检查系统健康：** 查看数据库、后台维护、备份和本地服务。
-
-概览页还能帮助你判断记忆循环是否在正常运转：现有多少记忆和流程，检索到的上下文被报告为已使用的频率，被标记为无关的比例，反馈是否被记录，以及记忆的创建、检索和使用随时间如何变化。
-
-Slowave 还会显示通过所有 MCP 端点返回的上下文量的粗略估算，方便你留意记忆带来的开销。
-
-<p align="center">
-    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave 本地仪表盘" width="90%"></a>
-</p>
-
-<p align="center">
-    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="记忆详情" width="17%"></a>
-    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="流程" width="17%"></a>
-    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="检索" width="17%"></a>
-    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="记忆图谱" width="17%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="会话" width="17%"></a>
-</p>
+- 查看记忆及其生命周期
+- 回顾已学到的流程及其复用情况
+- 追踪检索与智能体反馈
+- 浏览会话历史与活动
+- 可视化记忆之间的连接与关联
+- 监控系统健康、维护、备份和 token 消耗
 
 
 ## 支持的客户端
