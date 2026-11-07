@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -19,15 +20,20 @@ import {
   type LocationState,
 } from "./api";
 import {
+  ActiveFilters,
   allowActions,
   ClampedText,
   ClientBadge,
   ClientStack,
+  CodeBlock,
   ColumnsControl,
   CopyValue,
   DefinitionTooltip,
+  DetailSection,
   EmptyState,
+  EMPTY,
   ErrorState,
+  formatCount,
   formatDate,
   formatDuration,
   formatRate,
@@ -35,8 +41,10 @@ import {
   getRatePercent,
   glossary,
   Icon,
+  IdChip,
   InlineError,
   Inspector,
+  KeyValueList,
   Link,
   LoadingRows,
   MetricCard,
@@ -45,14 +53,33 @@ import {
   Pagination,
   refreshMs,
   relativeDate,
+  RowLink,
+  ScopeChip,
   ScopeSelect,
   RateMetricCard,
   Section,
+  SortableTh,
   SortButton,
   StatusBadge,
   TableFrame,
+  TimeCell,
   truncate,
+  TypeBadge,
+  useColumns,
 } from "./components";
+import { statusLabel as statusLabelOf } from "./tones";
+import {
+  formatBytes,
+  formatClock,
+  formatDay,
+  formatMs,
+  formatPercentOf,
+  formatTokens,
+  fromDateInput,
+  shortScope,
+  toDateInput,
+} from "./format";
+import { isLibraryPath } from "./timeRange";
 
 type PageProps = { location: LocationState };
 const GraphExplorer = lazy(() => import("./GraphExplorer"));
@@ -64,18 +91,6 @@ const sharedColumnHelp = {
   used: "How many retrieval events explicitly assessed this record as used.",
   usage: "Used / retrieved delivery occasions for this record. The bar shows the share reported used; grey includes occasions without usage feedback, and a dash means feedback is pending.",
   effect: "The reported downstream effect of using this procedure: Helpful, No effect, Harmful, or Unknown. Unknown means no effect assessment was recorded.",
-};
-const formatBytes = (value: unknown) => {
-  const bytes = Math.max(0, Number(value) || 0);
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let size = bytes;
-  let unit = -1;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size.toFixed(1)} ${units[unit]}`;
 };
 const param = (location: LocationState, key: string, fallback = "") =>
   location.search.get(key) || fallback;
@@ -135,9 +150,10 @@ function closeDetail(parent: string, location: LocationState) {
         : focusId
           ? Array.from(document.querySelectorAll<HTMLElement>("[data-detail-id]")).find((row) => row.dataset.detailId === focusId)
           : null;
+      const focusTarget = (target as HTMLElement | null | undefined)?.querySelector<HTMLElement>("a.row-link") || target;
       if (target) {
         window.scrollTo({ top: returnScroll, behavior: "auto" });
-        target.focus();
+        (focusTarget as HTMLElement).focus();
         return;
       }
     }
@@ -150,6 +166,71 @@ function rowKeys(event: KeyboardEvent, action: () => void) {
     event.preventDefault();
     action();
   }
+}
+
+const dash = <span className="muted">{EMPTY}</span>;
+
+/** Attributes shared by every clickable table row: identity, open-row state and mouse activation. */
+function rowAttrs(id: string, openId: string, open: () => void) {
+  return {
+    "data-detail-id": id,
+    "aria-current": openId === id ? ("true" as const) : undefined,
+    onClick: open,
+  };
+}
+
+/** Controlled local-time date filter (stored as epoch seconds in the URL). */
+function DateFilter({
+  label,
+  seconds,
+  endOfDay = false,
+  onChange,
+}: {
+  label: string;
+  seconds: string;
+  endOfDay?: boolean;
+  onChange: (seconds: number | undefined) => void;
+}) {
+  return (
+    <label>
+      {label}
+      <input
+        type="date"
+        value={toDateInput(seconds)}
+        onChange={(event) => onChange(fromDateInput(event.target.value, endOfDay))}
+      />
+    </label>
+  );
+}
+
+/** An out-of-range page (for example after filtering) redirects to the last real page instead of an empty state. */
+function useClampPage(
+  path: string,
+  location: LocationState,
+  pagination: { page: number; per_page: number; total: number } | undefined,
+  rowCount: number,
+) {
+  const requested = pageNumber(location);
+  const last = pagination ? Math.max(1, Math.ceil(pagination.total / Math.max(1, pagination.per_page))) : 1;
+  useEffect(() => {
+    if (pagination && pagination.total > 0 && rowCount === 0 && requested > last) {
+      const query = new URLSearchParams(location.search);
+      if (last <= 1) query.delete("page");
+      else query.set("page", String(last));
+      navigate(`${path}${query.size ? `?${query}` : ""}`, { replace: true, preserveScroll: true });
+    }
+  }, [requested, last, pagination?.total, rowCount]);
+}
+
+function periodChip(location: LocationState, clear: () => void) {
+  const from = param(location, "from");
+  const to = param(location, "to");
+  const hours = param(location, "hours");
+  if (from || to) {
+    return { key: "period", label: `Period: ${from ? formatDay(from) : "…"} – ${to ? formatDay(to) : "now"}`, onRemove: clear };
+  }
+  if (hours && hours !== "all") return { key: "period", label: `Period: last ${hours === "168" ? "week" : hours === "720" ? "month" : `${hours} hours`}`, onRemove: clear };
+  return null;
 }
 
 function Availability({ home }: { home: Json }) {
@@ -322,6 +403,7 @@ const feedbackTooltip =
   "Latest supported assessments divided by actually delivered item/request occasions. Repeated requests count; page retries do not. Missing feedback is unknown. Later accepted corrections may revise past periods.";
 function metricHref(path: string, data: Json) {
   const current = new URLSearchParams(window.location.search);
+  if (isLibraryPath(path)) return structuralUrl(path, { scope: data.scope || undefined });
   return structuralUrl(path, {
     scope: data.scope || undefined,
     hours: current.get("hours") || "all",
@@ -349,9 +431,9 @@ function LibraryCards({
         value={
           data.available
             ? Number(data[`${kind}_total`]).toLocaleString()
-            : "No data"
+            : EMPTY
         }
-        tooltip="Current canonical inventory; period selection applies to activity, not the inventory snapshot."
+        tooltip="Current canonical inventory; date filters narrow the list, not this total."
         href={metricHref(path, data)}
       />
       <RateMetricCard
@@ -469,7 +551,7 @@ function FocusedChart({
   );
 }
 function formatTokenEstimate(tokens: number | null): string {
-  if (tokens == null) return "No data";
+  if (tokens == null) return EMPTY;
 
   const magnitude = Math.abs(tokens);
   const units = [
@@ -619,7 +701,7 @@ function MemoryEffectiveness({ data }: { data: Json }) {
           value={
             data.available
               ? Number(data.active_scopes).toLocaleString()
-              : "No data"
+              : EMPTY
           }
           tooltip={glossary.active_scopes}
           href={metricHref("/memory", data)}
@@ -911,7 +993,7 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
         <td className="scope-text" title={label}>
           {truncate(label, 40)}
         </td>
-        <td className="numeric">{memories.toLocaleString()}</td>
+        <td className="numeric">{formatCount(memories)}</td>
         <td className="numeric">
           <span
             className="use-rate-bar bar-neutral"
@@ -935,7 +1017,7 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(coverage)}
-            title={`${retrieved.toLocaleString()} of ${memories.toLocaleString()} retrieved`}
+            title={`${retrieved.toLocaleString()} of ${formatCount(memories)} retrieved`}
           >
             <span className="use-rate-bar-track" aria-hidden="true">
               <span className="use-rate-bar-fill" style={{ width: `${coverage}%` }} />
@@ -989,24 +1071,48 @@ function MemoryByScope({ breakdown }: { breakdown: Json }) {
   );
 }
 
+const memoryColumns = [
+  { id: "memory", label: "Memory", locked: true },
+  { id: "state", label: "State" },
+  { id: "scope", label: "Scope" },
+  { id: "usage", label: "Used", description: "Used / retrieved occasions. The bar shows the share reported used." },
+  { id: "last_used", label: "Last used" },
+  { id: "changed", label: "Updated" },
+  { id: "client", label: "Client" },
+  { id: "salience", label: "Salience (0–20)", description: "How strongly this memory is favoured for retrieval. Higher is more likely to be surfaced." },
+  { id: "created", label: "Saved" },
+  { id: "evidence", label: "Supporting evidence" },
+  { id: "retrieved", label: "Times retrieved" },
+  { id: "used_count", label: "Times used" },
+  { id: "irrelevant", label: "Irrelevant feedback" },
+  { id: "stale", label: "Stale feedback" },
+  { id: "wrong", label: "Wrong feedback" },
+  { id: "related", label: "Related memories" },
+  { id: "source_activity", label: "Source sessions" },
+] as const;
+const memoryDefaultColumns = ["memory", "state", "scope", "usage", "last_used", "changed", "client"];
+const DEFAULT_MEMORY_STATES = "active,needs_review";
+
 export function MemoryPage({ location }: PageProps) {
   const detailId = location.path.startsWith("/memory/")
     ? decodeURIComponent(location.path.split("/")[2])
     : "";
   const scope = param(location, "scope");
-  const states = param(location, "states");
+  const statesParam = param(location, "states");
+  // "" = default (current), "all" = every state, otherwise an explicit comma list.
+  const states = statesParam === "all" ? "" : statesParam || DEFAULT_MEMORY_STATES;
   const sort = param(location, "sort", "changed");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [visibleColumns] = useState<string[]>(["memory", "client", "scope", "state", "salience", "changed", "use_rate", "last_used"]);
+  const [visibleColumns, setVisibleColumns, resetColumns] = useColumns("memory", memoryDefaultColumns);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
     return () => clearTimeout(timer);
   }, [search]);
-  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`;
+  const endpoint = `/api/schemas?states=${encodeURIComponent(states)}&scope=${encodeURIComponent(scope)}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&hours=all&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`;
   const request = useApi<Json>(endpoint);
   const rows = request.data?.schemas || [];
   const pagination = request.data?.pagination || {
@@ -1014,24 +1120,49 @@ export function MemoryPage({ location }: PageProps) {
     per_page: 50,
     total: 0,
   };
-  const counts = request.data?.status_counts || {};
+  useClampPage("/memory", location, request.data?.pagination, rows.length);
+  const counts: Record<string, number> = request.data?.status_counts || {};
+  const countOf = (...keys: string[]) => keys.reduce((total, key) => total + Number(counts[key] || 0), 0);
+  const stateChips = [
+    { id: "", label: "Current", value: DEFAULT_MEMORY_STATES, count: countOf("active", "needs_review"), hint: "Active and needs-review memories" },
+    { id: "needs_review", label: "Needs review", value: "needs_review", count: countOf("needs_review"), hint: "Memories flagged for confirmation or correction" },
+    { id: "stale", label: "Stale", value: "stale", count: countOf("stale"), hint: "Memories that may be out of date" },
+    ...(countOf("archived") ? [{ id: "archived", label: "Archived", value: "archived", count: countOf("archived"), hint: "Retained for history only" }] : []),
+    { id: "all", label: "All", value: "", count: countOf("active", "needs_review", "stale", "archived"), hint: "Every state" },
+  ];
   const changeSort = (column: string) =>
     updateParams("/memory", location, {
       sort: column,
       dir: sort === column && dir === "desc" ? "asc" : "desc",
       page: 1,
     });
+  const clearAll = () => {
+    setSearch("");
+    setDebounced("");
+    navigate("/memory");
+  };
+  const savedFrom = param(location, "saved_from");
+  const savedTo = param(location, "saved_to");
+  const chips = [
+    debounced && { key: "q", label: `Search: “${truncate(debounced, 30)}”`, onRemove: () => { setSearch(""); setDebounced(""); } },
+    statesParam && { key: "states", label: `State: ${statesParam === "all" ? "all" : statesParam.replaceAll("_", " ").replaceAll(",", ", ")}`, onRemove: () => updateParams("/memory", location, { states: undefined, page: 1 }) },
+    scope && { key: "scope", label: `Scope: ${shortScope(scope)}`, onRemove: () => updateParams("/memory", location, { scope: undefined, page: 1 }) },
+    (savedFrom || savedTo) && { key: "saved", label: savedTo ? `Created: ${savedFrom ? formatDay(savedFrom) : "…"} – ${formatDay(savedTo)}` : `Created since ${formatDay(savedFrom)}`, onRemove: () => updateParams("/memory", location, { saved_from: undefined, saved_to: undefined, page: 1 }) },
+  ].filter(Boolean) as { key: string; label: string; onRemove: () => void }[];
+  const filtered = chips.length > 0;
+  const th = (label: string, column: string, extra: { numeric?: boolean; help?: string } = {}) => (
+    <SortableTh label={label} column={column} sort={sort} dir={dir} onSort={changeSort} {...extra} />
+  );
   return (
     <div className="page">
       <PageHeader
         title="Memories"
-        description="Durable context Slowave can use in future retrieval. The list shows memories updated in the selected period; inventory totals describe the current library."
+        description="Durable context Slowave can use in future retrieval. The list shows memories in the library; use Created since to narrow by date. Inventory totals describe the current library."
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
       />
       <div className="filter-bar">
-        <PeriodFilter location={location} path="/memory" />
         <label>
           Search<span className="sr-only"> memory text</span>
           <input
@@ -1041,75 +1172,36 @@ export function MemoryPage({ location }: PageProps) {
             placeholder="Search memory text…"
           />
         </label>
-        <label>
-          State
-          <select
-            value={states}
-            onChange={(e) =>
-              updateParams("/memory", location, {
-                states: e.target.value,
-                page: 1,
-              })
-            }
-          >
-            <option value="">All</option>
-            {memoryStateOptions.map((state) => (
-              <option key={state} value={state}>
-                {state.replaceAll("_", " ")}
-              </option>
-            ))}
-          </select>
-        </label>
         <ScopeSelect
           value={scope}
           onChange={(next) =>
             updateParams("/memory", location, { scope: next, page: 1 })
           }
         />
-        <label>
-          Saved since
-          <input
-            type="date"
-            value={
-              param(location, "saved_from")
-                ? new Date(Number(param(location, "saved_from")) * 1000)
-                    .toISOString()
-                    .slice(0, 10)
-                : ""
-            }
-            onChange={(e) =>
-              updateParams("/memory", location, {
-                saved_from: e.target.value
-                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
-                  : undefined,
-                saved_to: undefined,
-                page: 1,
-              })
-            }
-          />
-        </label>
+        <DateFilter
+          label="Created since"
+          seconds={savedFrom}
+          onChange={(value) => updateParams("/memory", location, { saved_from: value, saved_to: undefined, page: 1 })}
+        />
       </div>
-      {param(location, "saved_to") && (
-        <div className="filter-chips">
-          <button onClick={() => updateParams("/memory", location, { saved_from: undefined, saved_to: undefined, page: 1 })}>
-            Created: {new Date(Number(param(location, "saved_from")) * 1000).toLocaleDateString([], { timeZone: "UTC" })} – {new Date(Number(param(location, "saved_to")) * 1000).toLocaleDateString([], { timeZone: "UTC" })} UTC ×
-          </button>
-        </div>
-      )}
-      {states && (
-        <div className="filter-chips">
-          <button
-            onClick={() =>
-              updateParams("/memory", location, {
-                states: undefined,
-                page: 1,
-              })
-            }
-          >
-            State: {states || "all"} ×
-          </button>
-        </div>
-      )}
+      <div className="state-chips" role="group" aria-label="Memory state">
+        {stateChips.map((chip) => {
+          const pressed = (chip.id === "" ? !statesParam : chip.id === "all" ? statesParam === "all" : statesParam === chip.value);
+          return (
+            <button
+              key={chip.label}
+              type="button"
+              className="state-chip"
+              aria-pressed={pressed}
+              title={chip.hint}
+              onClick={() => updateParams("/memory", location, { states: chip.id === "" ? undefined : chip.id === "all" ? "all" : chip.value, page: 1 })}
+            >
+              {chip.label}<b>{request.data ? formatCount(chip.count) : EMPTY}</b>
+            </button>
+          );
+        })}
+      </div>
+      <ActiveFilters chips={chips} onClear={clearAll} />
       {request.loading && !request.data ? (
         <MetricCardsSkeleton count={4} />
       ) : request.error && !request.data ? (
@@ -1148,244 +1240,67 @@ export function MemoryPage({ location }: PageProps) {
         />
       ) : rows.length ? (
         <>
+          <div className="table-toolbar">
+            <span>{formatCount(pagination.total)} {pagination.total === 1 ? "memory" : "memories"}</span>
+            <ColumnsControl columns={memoryColumns} visible={visibleColumns} onChange={setVisibleColumns} onReset={resetColumns} />
+          </div>
           <TableFrame label="Memory results">
             <table className="library-table">
               <thead>
                 <tr>
-                  {visible("memory") && <th
-                    aria-sort={
-                      sort === "content"
-                        ? dir === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <SortButton
-                      label="Memory text"
-                      active={sort === "content"}
-                      direction={dir}
-                      onClick={() => changeSort("content")}
-                    />
-                  </th>}
-                  {visible("client") && <th>Client</th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
-                  {visible("state") && <th><SortButton label="State" active={sort === "status"} direction={dir} onClick={() => changeSort("status")} /><DefinitionTooltip label="State definition">The memory's lifecycle status: active, needs review, or stale.</DefinitionTooltip></th>}
-                  {visible("salience") && <th className="numeric"><SortButton label="Salience" active={sort === "salience"} direction={dir} onClick={() => changeSort("salience")} /><DefinitionTooltip label="Salience definition">A measure of how strongly this memory is favored for retrieval. Higher means it is more likely to be surfaced.</DefinitionTooltip></th>}
-                  {visible("created") && <th
-                    aria-sort={
-                      sort === "formed"
-                        ? dir === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <SortButton
-                      label="Created"
-                      active={sort === "formed"}
-                      direction={dir}
-                      onClick={() => changeSort("formed")}
-                    />
-                  </th>}
-                  {visible("changed") && <th
-                    aria-sort={
-                      sort === "changed"
-                        ? dir === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <SortButton
-                      label="Changed"
-                      active={sort === "changed"}
-                      direction={dir}
-                      onClick={() => changeSort("changed")}
-                    />
-                  </th>}
-                  {visible("evidence") && <th className="numeric">
-                    <SortButton label="Supporting evidence" active={sort === "evidence"} direction={dir} onClick={() => changeSort("evidence")} />{" "}
-                    <DefinitionTooltip label="Evidence count definition">
-                      Number of recorded provenance links. This is evidence
-                      volume, not evidence quality.
-                    </DefinitionTooltip>
-                  </th>}
-                  {visible("retrieved") && <th className="numeric">
-                    <SortButton
-                      label="Retrieved"
-                      active={sort === "exposed"}
-                      direction={dir}
-                      onClick={() => changeSort("exposed")}
-                    />{" "}
-                    <DefinitionTooltip label="Times exposed definition">
-                      {glossary.exposed}
-                    </DefinitionTooltip>
-                  </th>}
-                  {visible("used") && <th className="numeric">
-                    <SortButton
-                      label="Used"
-                      active={sort === "used"}
-                      direction={dir}
-                      onClick={() => changeSort("used")}
-                    />{" "}
-                    <DefinitionTooltip label="Times used definition">
-                      {glossary.used}
-                    </DefinitionTooltip>
-                  </th>}
-                  {visible("use_rate") && (
-                    <th>
-                      Usage
-                      <DefinitionTooltip label="Use rate definition">
-                        Used / retrieved delivery occasions for this memory. The bar
-                        shows the share reported used; grey includes occasions
-                        without usage feedback, and a dash means feedback is pending.
-                      </DefinitionTooltip>
-                    </th>
-                  )}
-                  {visible("irrelevant") && <th className="numeric">
-                    <SortButton
-                      label="Irrelevant"
-                      active={sort === "irrelevant"}
-                      direction={dir}
-                      onClick={() => changeSort("irrelevant")}
-                    />{" "}
-                    <DefinitionTooltip label="Times irrelevant definition">
-                      {glossary.irrelevant}
-                    </DefinitionTooltip>
-                  </th>}
-                  {visible("stale") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Stale feedback"
-                        active={sort === "stale"}
-                        direction={dir}
-                        onClick={() => changeSort("stale")}
-                      />
-                    </th>
-                  )}
-                  {visible("wrong") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Wrong feedback"
-                        active={sort === "wrong"}
-                        direction={dir}
-                        onClick={() => changeSort("wrong")}
-                      />
-                    </th>
-                  )}
-                  {visible("related") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Related memories"
-                        active={sort === "related"}
-                        direction={dir}
-                        onClick={() => changeSort("related")}
-                      />
-                    </th>
-                  )}
-                  {visible("source_activity") && <th className="numeric"><SortButton label="Source sessions" active={sort === "source_activity"} direction={dir} onClick={() => changeSort("source_activity")} /></th>}
-                  {visible("last_used") && <th>
-                    <SortButton
-                      label="Last used"
-                      active={sort === "last_used"}
-                      direction={dir}
-                      onClick={() => changeSort("last_used")}
-                    />
-                  </th>}
+                  {visible("memory") && th("Memory", "content")}
+                  {visible("state") && th("State", "status", { help: "The memory's lifecycle status: active, needs review, or stale." })}
+                  {visible("scope") && th("Scope", "scope", { help: sharedColumnHelp.scope })}
+                  {visible("usage") && th("Used", "used", { help: "Used / retrieved occasions for this memory. The bar shows the share reported used; grey includes occasions without usage feedback." })}
+                  {visible("last_used") && th("Last used", "last_used")}
+                  {visible("changed") && th("Updated", "changed")}
+                  {visible("client") && <SortableTh label="Client" />}
+                  {visible("salience") && th("Salience", "salience", { numeric: true, help: "Retrieval priority on a 0–20 scale. Higher means the memory is more likely to be surfaced." })}
+                  {visible("created") && th("Saved", "formed")}
+                  {visible("evidence") && th("Evidence", "evidence", { numeric: true, help: "Number of recorded provenance links. This is evidence volume, not evidence quality." })}
+                  {visible("retrieved") && th("Retrieved", "exposed", { numeric: true, help: glossary.exposed })}
+                  {visible("used_count") && th("Used (count)", "used", { numeric: true, help: glossary.used })}
+                  {visible("irrelevant") && th("Irrelevant", "irrelevant", { numeric: true, help: glossary.irrelevant })}
+                  {visible("stale") && th("Stale fb.", "stale", { numeric: true })}
+                  {visible("wrong") && th("Wrong fb.", "wrong", { numeric: true })}
+                  {visible("related") && th("Related", "related", { numeric: true })}
+                  {visible("source_activity") && th("Sessions", "source_activity", { numeric: true })}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((memory: any) => {
                   const href = `/memory/${encodeURIComponent(memory.id)}${location.search.size ? `?${location.search}` : ""}`;
+                  const open = () => openDetail(href, location);
                   return (
-                    <tr
-                      tabIndex={0}
-                      key={memory.id}
-                      data-detail-id={memory.id}
-                      onClick={() => openDetail(href, location)}
-                      onKeyDown={(e) =>
-                        rowKeys(e, () => openDetail(href, location))
-                      }
-                    >
+                    <tr key={memory.id} {...rowAttrs(memory.id, detailId, open)}>
                       {visible("memory") && (
                         <td className="primary-cell">
-                          <ClampedText text={memory.content} />
+                          <RowLink href={href} onOpen={open}><ClampedText text={memory.content} /></RowLink>
+                          <span className="meta">{memory.id} · saved <TimeCell ts={memory.first_formed_ts} /></span>
                         </td>
                       )}
-                      {visible("client") && <td><ClientStack clients={memory.clients} /></td>}
-                      {visible("scope") && (
-                        <td
-                          className="scope-text"
-                          title={memory.scope || undefined}
-                        >
-                          {memory.scope
-                            ? truncate(memory.scope, 30)
-                            : "No scope"}
-                        </td>
-                      )}
-                      {visible("state") && (
+                      {visible("state") && <td><StatusBadge value={memory.status} /></td>}
+                      {visible("scope") && <td><ScopeChip scope={memory.scope} /></td>}
+                      {visible("usage") && (
                         <td>
-                          <StatusBadge value={memory.status} />
+                          <UsageCell used={memory.times_used} retrieved={memory.times_exposed} assessed={memory.times_assessed} />
                         </td>
                       )}
+                      {visible("last_used") && <td><TimeCell ts={memory.last_used_ts} /></td>}
+                      {visible("changed") && <td><TimeCell ts={memory.last_updated_ts} /></td>}
+                      {visible("client") && <td><ClientStack clients={memory.clients} /></td>}
                       {visible("salience") && (
-                        <td className="numeric">
-                          <SalienceBar salience={memory.salience} />
-                        </td>
+                        <td className="numeric salience-value">{memory.salience == null ? EMPTY : Number(memory.salience).toFixed(1)}</td>
                       )}
-                      {visible("created") && (
-                        <td title={formatDate(memory.first_formed_ts)}>
-                          {relativeDate(memory.first_formed_ts)}
-                        </td>
-                      )}
-                      {visible("changed") && (
-                        <td title={formatDate(memory.last_updated_ts)}>
-                          {relativeDate(memory.last_updated_ts)}
-                        </td>
-                      )}
-                      {visible("evidence") && (
-                        <td className="numeric">{memory.evidence_count}</td>
-                      )}
-                      {visible("retrieved") && (
-                        <td className="numeric">{memory.times_exposed ?? 0}</td>
-                      )}
-                      {visible("used") && (
-                        <td className="numeric">{memory.times_used ?? 0}</td>
-                      )}
-                      {visible("use_rate") && (
-                        <td className="retrieval-usage-cell">
-                          <UsageCell
-                            used={memory.times_used}
-                            retrieved={memory.times_exposed}
-                            assessed={memory.times_assessed}
-                          />
-                        </td>
-                      )}
-                      {visible("irrelevant") && (
-                        <td className="numeric">
-                          {memory.times_irrelevant ?? 0}
-                        </td>
-                      )}
-                      {visible("stale") && (
-                        <td className="numeric">{memory.times_stale ?? 0}</td>
-                      )}
-                      {visible("wrong") && (
-                        <td className="numeric">{memory.times_wrong ?? 0}</td>
-                      )}
-                      {visible("related") && (
-                        <td className="numeric">{memory.related_count ?? 0}</td>
-                      )}
-                      {visible("source_activity") && (
-                        <td className="numeric">
-                          {memory.source_activity_count ?? 0}
-                        </td>
-                      )}
-                      {visible("last_used") && <td title={formatDate(memory.last_used_ts)}>
-                        {memory.last_used_ts
-                          ? relativeDate(memory.last_used_ts)
-                          : "—"}
-                      </td>}
+                      {visible("created") && <td><TimeCell ts={memory.first_formed_ts} /></td>}
+                      {visible("evidence") && <td className="numeric">{formatCount(memory.evidence_count ?? 0)}</td>}
+                      {visible("retrieved") && <td className="numeric">{formatCount(memory.times_exposed ?? 0)}</td>}
+                      {visible("used_count") && <td className="numeric">{formatCount(memory.times_used ?? 0)}</td>}
+                      {visible("irrelevant") && <td className="numeric">{formatCount(memory.times_irrelevant ?? 0)}</td>}
+                      {visible("stale") && <td className="numeric">{formatCount(memory.times_stale ?? 0)}</td>}
+                      {visible("wrong") && <td className="numeric">{formatCount(memory.times_wrong ?? 0)}</td>}
+                      {visible("related") && <td className="numeric">{formatCount(memory.related_count ?? 0)}</td>}
+                      {visible("source_activity") && <td className="numeric">{formatCount(memory.source_activity_count ?? 0)}</td>}
                     </tr>
                   );
                 })}
@@ -1401,13 +1316,10 @@ export function MemoryPage({ location }: PageProps) {
         </>
       ) : (
         <EmptyState
-          title={
-            search || states !== "active,needs_review"
-              ? "No memories match these filters"
-              : "No durable memories yet"
-          }
+          title={filtered ? "No memories match these filters" : "No durable memories yet"}
+          action={filtered ? <button type="button" className="button secondary" onClick={clearAll}>Clear filters</button> : undefined}
         >
-          {search || states !== "active,needs_review"
+          {filtered
             ? "Clear or broaden the filters to see other recorded memories."
             : "A durable memory appears after normal Slowave activity forms one."}
         </EmptyState>
@@ -1420,6 +1332,23 @@ export function MemoryPage({ location }: PageProps) {
         />
       )}
     </div>
+  );
+}
+
+const relationLabel = (value: unknown) => String(value || "related").replaceAll("_", " ");
+const memoryHref = (id: unknown) => `/memory/${String(id).startsWith("sch_") ? id : `sch_${id}`}`;
+
+function ConnectionItem({ id, preview, status, caption }: { id: string; preview?: string; status?: string; caption: string }) {
+  return (
+    <li>
+      <Link to={memoryHref(id)}>
+        <span className="item-main">
+          <span>{truncate(preview || `Memory sch_${String(id).replace(/^sch_/, "")}`, 140)}</span>
+          <small>{caption}</small>
+        </span>
+        <span className="item-end">{status && <StatusBadge value={status} />}<Icon name="chevron" size={14} /></span>
+      </Link>
+    </li>
   );
 }
 
@@ -1445,19 +1374,32 @@ function MemoryDetail({ id, onClose, onDeleted }: {
       throw error;
     }
   };
+  const totals = memory?.use_history_totals || {};
+  const retrieved = Number(totals.retrieved || 0);
+  const assessed = Number(totals.assessed || 0);
+  const used = Number(totals.used || 0);
+  const replacementId = memory?.replacement_memory_id || data?.replacement_memory_id;
+  const staleReason = memory?.stale_reason || data?.stale_reason;
+  const evidence: any[] = data?.evidence || [];
+  const evidenceTotal = Number(data?.evidence_total ?? evidence.length);
+  const hasText = (item: any) => item.has_text ?? Boolean(item.quote || item.event_content);
+  const quotes = evidence.filter(hasText);
+  const textless = evidence.length - quotes.length;
+  const sessions: any[] = [...(data?.sessions || [])].sort((a, b) => Number(Boolean(b.is_origin)) - Number(Boolean(a.is_origin)));
+  const connectionCount = (data?.outgoing?.length || 0) + (data?.incoming?.length || 0) + (data?.coact_outgoing?.length || 0) + (data?.coact_incoming?.length || 0);
   return (
     <Inspector
       title="Memory"
       id={id}
-      label={memory ? truncate(memory.content, 96) : undefined}
+      label={memory ? truncate(memory.content, 140) : undefined}
+      hideLabel
       state={memory && <StatusBadge value={memory.status} />}
       sections={[
         { id: "memory-detail", label: "Memory" },
+        { id: "memory-why", label: "Why it exists" },
         { id: "memory-history", label: "Use history" },
-        { id: "memory-sessions", label: "Sessions" },
-        { id: "memory-sources", label: "Sources" },
         { id: "memory-connections", label: "Connections" },
-        { id: "memory-technical", label: "Technical details" },
+        { id: "memory-technical", label: "Technical" },
       ]}
       onClose={onClose}
     >
@@ -1472,161 +1414,135 @@ function MemoryDetail({ id, onClose, onDeleted }: {
         <ErrorState title="Memory details unavailable" error={request.error} retry={request.reload} />
       ) : memory ? (
           <>
-            <Section
-              title="Memory"
-              id="memory-detail"
-              actions={
-                allowActions ? (
-                  <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button>
-                ) : (
-                  <p className="notice compact">
-                    This dashboard was launched read-only. Delete is unavailable.
-                  </p>
-                )
-              }
-            >
-            <h2 className="detail-title">{memory.content}</h2>
-            <dl className="key-values">
-              <dt>Availability</dt>
-              <dd>
-                {memory.status === "stale"
-                    ? "Retained as historical context but not treated as current."
-                    : "Eligible for future retrieval when scope and relevance rules admit it."}
-              </dd>
-              <dt>Saved</dt>
-              <dd>{formatDate(memory.first_formed_ts)}</dd>
-              <dt>Updated</dt>
-              <dd>{formatDate(memory.last_updated_ts)}</dd>
-              <dt>Client</dt>
-              <dd><ClientStack clients={memory.clients} /></dd>
-              <dt>Scope</dt>
-              <dd>{memory.scope || "No scope recorded"}</dd>
-              {memory.stale_reason && <><dt>State reason</dt>
-              <dd>
-                {memory.stale_reason}
-              </dd></>}
-            </dl>
-            </Section>
-            <Section title="Use history" id="memory-history">
-              {(() => {
-                const totals = memory.use_history_totals || {};
-                const count = (assessment: string) => Number(totals[assessment] || 0);
-                const retrieved = Number(totals.retrieved || 0);
-                const used = count("used");
-                const assessed = Number(totals.assessed || 0);
-                const unassessed = Number(totals.unknown || 0);
-                return <><p className="neutral">All recorded retrieval occasions. Use and effect are agent-reported feedback.</p><dl className="key-values wide"><dt>Retrieved</dt><dd>{retrieved} retrievals</dd><dt>Assessed</dt><dd>{assessed} of {retrieved} retrieved · {unassessed} unassessed</dd><dt>Reported used</dt><dd>{assessed ? `${used} of ${assessed} assessed retrievals (${formatRatePercent(used, assessed)})` : `${used} reported used · no assessed retrievals`}</dd><dt>Irrelevant / stale / wrong</dt><dd>{count("irrelevant")} irrelevant · {count("stale")} stale · {count("wrong")} wrong</dd></dl></>;
-              })()}
-              {data.retrievals?.length ? <div className="detail-list evidence-list">
-                {data.retrievals.map((item: any) => (
-                  <Link key={item.retrieval_id} to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>
-                    <div><strong>{truncate(item.task_preview, 130)}</strong><small>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"} · {item.pathway || "pathway unavailable"}</small></div>
-                    <div className="history-signals"><StatusBadge value={item.feedback?.assessment || "unknown"} />{item.feedback?.effect && <StatusBadge value={item.feedback.effect} />}</div>
-                  </Link>
-                ))}
-              </div> : <p className="neutral">Not exposed in a recorded retrieval yet.</p>}
-              {data.retrievals?.length >= 50 && <p className="neutral">Showing the latest 50 retrieval occasions.</p>}
-            </Section>
-            <Section title="Sessions" id="memory-sessions">
-              <p className="neutral">Sessions where this memory was created from evidence or exposed in a retrieval.</p>
-              {data.sessions?.length ? <div className="detail-list evidence-list">{data.sessions.map((item: any) => (
-                <Link key={item.session_id} className="session-link" to={`/sessions/${encodeURIComponent(item.session_id)}`}>
-                  <div><strong>{truncate(item.goal || "Untitled session", 130)}</strong><small>{formatDate(item.started_ts)} · {item.is_origin ? "Source evidence" : "Not a source"}{item.retrieval_count ? ` · retrieved ${item.retrieval_count}×` : ""}</small></div>
-                  <StatusBadge value={item.outcome || "unknown"} />
-                </Link>
-              ))}</div> : <p className="neutral">No linked sessions.</p>}
-              {data.sessions_total > (data.sessions?.length || 0) && <p className="neutral">Showing the latest {data.sessions.length} of {data.sessions_total} sessions.</p>}
-            </Section>
-            <Section title="Sources" id="memory-sources">
-              {data.evidence?.length ? (
-                <div className="detail-list">
-                  {data.evidence.map((item: any, index: number) => (
-                    <div key={index}>
-                      <div>
-                        <strong>Source evidence</strong>
-                        <span>
-                          {item.event_ts || item.occurred_at || item.recorded_at || item.created_at
-                            ? formatDate(item.event_ts || item.occurred_at || item.recorded_at || item.created_at)
-                            : "Time unavailable"}
-                        </span>
-                      </div>
-                      <small>Recorded {formatDate(item.event_ts)}{item.event_occurred_at && item.event_occurred_at !== item.event_ts ? ` · source event ${formatDate(item.event_occurred_at)}` : ""}</small>
-                      <p>
-                        {item.quote ||
-                          item.event_content ||
-                          "Evidence text unavailable"}
-                      </p>
-                      {item.episode_session && (
-                        <Link
-                          to={`/sessions/${encodeURIComponent(item.episode_session)}`}
-                        >
-                          Source session
-                        </Link>
-                      )}
-                    </div>
-                  ))}
+            <DetailSection id="memory-detail" title="Memory">
+              <h2 className="detail-title">{memory.content}</h2>
+              <div className="summary-strip">
+                <span className="strip-state">
+                  <StatusBadge value={memory.status} />
+                  <DefinitionTooltip label="What this state means">
+                    {memory.status === "stale"
+                      ? "Retained as historical context but not treated as current."
+                      : "Eligible for future retrieval when scope and relevance rules admit it."}
+                  </DefinitionTooltip>
+                </span>
+                <ScopeChip scope={memory.scope} />
+                <ClientStack clients={memory.clients} />
+                <span>saved <TimeCell ts={memory.first_formed_ts} absolute /></span>
+                <span>updated <TimeCell ts={memory.last_updated_ts} absolute /></span>
+                <span>{assessed ? <>used <strong>{used} of {assessed}</strong> assessed ({formatRatePercent(used, assessed)})</> : "no usage feedback yet"}</span>
+                <span><strong>{formatCount(retrieved)}</strong> retrieved</span>
+              </div>
+              {(memory.status === "stale" || memory.status === "needs_review") && (
+                <div className={`banner${memory.status === "stale" ? "" : " info"}`} role="note">
+                  <Icon name="warning" />
+                  <div>
+                    <strong>{memory.status === "stale" ? "This memory is marked stale" : "This memory needs review"}</strong>
+                    <span>{staleReason || "No reason was recorded."}</span>
+                    {replacementId && <span>Replaced by <Link to={memoryHref(replacementId)}>{String(replacementId)}</Link></span>}
+                  </div>
                 </div>
-              ) : (
-                <EmptyState title="No linked evidence">
-                  No provenance rows are available for this memory.
-                </EmptyState>
               )}
-            </Section>
-            <Section title="Connections" id="memory-connections">
-              <p className="neutral">Connections describe stored relationships or memories retrieved together. They do not establish agreement or correctness.</p>
-              {data.outgoing?.length || data.incoming?.length || data.coact_outgoing?.length || data.coact_incoming?.length ? (
-                <div className="detail-list compact">
-                  {(data.outgoing || []).map((relation: any) => (
-                    <Link
-                      key={`out-${relation.dst_schema_id}-${relation.relation}`}
-                      to={`/memory/sch_${relation.dst_schema_id}`}
-                    >
-                      <span>
-                        {relation.relation.replaceAll("_", " ")} · sch_
-                        {relation.dst_schema_id}
-                      </span>
-                      <Icon name="chevron" size={14} />
-                    </Link>
+            </DetailSection>
+            <DetailSection id="memory-why" title="Why this memory exists">
+              <p className="neutral">
+                {evidenceTotal
+                  ? `Built from ${formatCount(evidenceTotal)} evidence ${evidenceTotal === 1 ? "record" : "records"}${sessions.length ? ` across ${formatCount(data?.sessions_total ?? sessions.length)} ${(data?.sessions_total ?? sessions.length) === 1 ? "session" : "sessions"}` : ""}.`
+                  : "No provenance rows are available for this memory."}
+                {evidenceTotal > evidence.length ? ` Showing ${formatCount(evidence.length)} of ${formatCount(evidenceTotal)}.` : ""}
+              </p>
+              {sessions.length > 0 && (
+                <ul className="link-list">
+                  {sessions.map((item: any) => (
+                    <li key={item.session_id}>
+                      <Link to={`/sessions/${encodeURIComponent(item.session_id)}`}>
+                        <span className="item-main">
+                          <span>{truncate(item.goal || "Untitled session", 130)}</span>
+                          <small><TimeCell ts={item.started_ts} absolute /> · {item.is_origin ? "Source evidence" : "Retrieved there"}{item.retrieval_count ? ` · retrieved ${item.retrieval_count}×` : ""}</small>
+                        </span>
+                        <span className="item-end"><StatusBadge value={item.outcome || "not_reported"} /></span>
+                      </Link>
+                    </li>
                   ))}
-                  {(data.incoming || []).map((relation: any) => (
-                    <Link
-                      key={`in-${relation.src_schema_id}-${relation.relation}`}
-                      to={`/memory/sch_${relation.src_schema_id}`}
-                    >
-                      <span>
-                        {relation.relation.replaceAll("_", " ")} from sch_
-                        {relation.src_schema_id}
+                </ul>
+              )}
+              {data?.sessions_total > sessions.length && <p className="neutral">Showing the latest {sessions.length} of {data.sessions_total} sessions.</p>}
+              {quotes.length > 0 && <h3>Source quotes</h3>}
+              {quotes.map((item: any, index: number) => (
+                <blockquote className="quote-card" key={index}>
+                  {item.quote || item.event_content}
+                  <small>
+                    <TimeCell ts={item.event_ts || item.occurred_at || item.recorded_at || item.created_at} absolute />
+                    {item.episode_session && <> · <Link to={`/sessions/${encodeURIComponent(item.episode_session)}`}>{item.session_goal ? truncate(item.session_goal, 80) : "Source session"}</Link></>}
+                  </small>
+                </blockquote>
+              ))}
+              {textless > 0 && <p className="neutral">{formatCount(textless)} evidence {textless === 1 ? "record has" : "records have"} no stored text.</p>}
+            </DetailSection>
+            <DetailSection id="memory-history" title="Use history">
+              <p className="neutral">
+                {retrieved
+                  ? `Retrieved ${formatCount(retrieved)}×; ${formatCount(assessed)} assessed (${formatCount(Number(totals.unknown || 0))} unassessed). ${formatCount(Number(totals.irrelevant || 0))} irrelevant · ${formatCount(Number(totals.stale || 0))} stale · ${formatCount(Number(totals.wrong || 0))} wrong. Use and effect are agent-reported.`
+                  : "Not exposed in a recorded retrieval yet."}
+              </p>
+              {data.retrievals?.length ? <ul className="link-list">
+                {data.retrievals.map((item: any) => (
+                  <li key={item.retrieval_id}>
+                    <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>
+                      <span className="item-main">
+                        <span>{truncate(item.task_preview || "No query recorded", 130)}</span>
+                        <small><TimeCell ts={item.created_at} absolute /> · {item.retrieval_type === "context" ? "Activation" : "Recall"}{item.feedback?.reason ? ` · “${truncate(item.feedback.reason, 100)}”` : ""}</small>
                       </span>
-                      <Icon name="chevron" size={14} />
+                      <span className="item-end"><StatusBadge value={item.feedback?.assessment || "unknown"} />{item.feedback?.effect && <StatusBadge value={item.feedback.effect} />}</span>
                     </Link>
-                  ))}
-                  {[...(data.coact_outgoing || []), ...(data.coact_incoming || [])].map((relation: any) => {
-                    const other = relation.src_schema_id === memory.schema_id ? relation.dst_schema_id : relation.src_schema_id;
-                    return <Link key={`coact-${relation.src_schema_id}-${relation.dst_schema_id}`} to={`/memory/sch_${other}`}><span>Retrieved together · sch_{other}</span><Icon name="chevron" size={14} /></Link>;
-                  })}
-                </div>
+                  </li>
+                ))}
+              </ul> : null}
+              {data.retrievals?.length >= 50 && <p className="neutral">Showing the latest 50 retrieval occasions.</p>}
+            </DetailSection>
+            <DetailSection id="memory-connections" title={`Connections${connectionCount ? ` (${connectionCount})` : ""}`}>
+              {connectionCount ? (
+                <>
+                  {(data.outgoing?.length || data.incoming?.length) ? <>
+                    <h3>Related memories</h3>
+                    <ul className="link-list">
+                      {(data.outgoing || []).map((relation: any) => (
+                        <ConnectionItem key={`out-${relation.dst_schema_id}-${relation.relation}`} id={relation.dst_schema_id} preview={relation.preview} status={relation.status} caption={`This memory ${relationLabel(relation.relation)} →`} />
+                      ))}
+                      {(data.incoming || []).map((relation: any) => (
+                        <ConnectionItem key={`in-${relation.src_schema_id}-${relation.relation}`} id={relation.src_schema_id} preview={relation.preview} status={relation.status} caption={`← ${relationLabel(relation.relation)} this memory`} />
+                      ))}
+                    </ul></> : null}
+                  {(data.coact_outgoing?.length || data.coact_incoming?.length) ? <>
+                    <h3>Retrieved together</h3>
+                    <ul className="link-list">
+                      {[...(data.coact_outgoing || []), ...(data.coact_incoming || [])].map((relation: any) => {
+                        const other = relation.src_schema_id === memory.schema_id ? relation.dst_schema_id : relation.src_schema_id;
+                        return <ConnectionItem key={`coact-${relation.src_schema_id}-${relation.dst_schema_id}`} id={other} preview={relation.preview} status={relation.status} caption="Often returned in the same retrieval" />;
+                      })}
+                    </ul></> : null}
+                </>
               ) : (
                 <p className="neutral">No recorded connections.</p>
               )}
-            </Section>
-            <details className="advanced" id="memory-technical">
-              <summary>Technical details</summary>
-              <dl className="key-values">
-                <dt>Importance (salience)</dt>
-                <dd>{memory.salience == null ? "—" : Number(memory.salience).toFixed(1)}</dd>
-                <dt>Confidence</dt>
-                <dd>{memory.confidence}</dd>
-                <dt>Generalization stage <DefinitionTooltip label="Generalization stage definition">{stageTooltip} Global/user scopes have explicit cross-context exceptions; stage is not an authorization guarantee.</DefinitionTooltip></dt>
-                <dd>{memory.generalization_stage == null || !stageNames[memory.generalization_stage] ? "Missing / unrecognized" : `${memory.generalization_stage} · ${stageNames[memory.generalization_stage]}`}<p className="neutral">{stageDefinitions[memory.generalization_stage]}</p></dd>
-                <dt>Tags</dt>
-                <dd>{memory.tags?.join(", ") || "None"}</dd>
-              </dl>
-              <dl className="key-values wide">
-                <dt>Facets</dt><dd>{memory.facets?.length ? memory.facets.join(", ") : "None"}</dd>
-                <dt>Outgoing relations</dt><dd>{data.outgoing?.length || 0}</dd>
-                <dt>Incoming relations</dt><dd>{data.incoming?.length || 0}</dd>
-              </dl>
-            </details>
+            </DetailSection>
+            <DetailSection id="memory-technical" title="Technical details" collapsed>
+              <KeyValueList items={[
+                ["Importance (salience)", memory.salience == null ? EMPTY : `${Number(memory.salience).toFixed(1)} of 20`],
+                ["Confidence", memory.confidence ?? EMPTY],
+                [<>Generalization stage <DefinitionTooltip label="Generalization stage definition">{stageTooltip} Global/user scopes have explicit cross-context exceptions; stage is not an authorization guarantee.</DefinitionTooltip></>,
+                  memory.generalization_stage == null || !stageNames[memory.generalization_stage] ? "Missing / unrecognized" : `${memory.generalization_stage} · ${stageNames[memory.generalization_stage]}`],
+                ["Tags", memory.tags?.join(", ") || "None"],
+                ["Facets", memory.facets?.length ? memory.facets.join(", ") : "None"],
+                ["Relations", `${data.outgoing?.length || 0} outgoing · ${data.incoming?.length || 0} incoming`],
+              ]} wide />
+            </DetailSection>
+            <div className="detail-footer">
+              {allowActions ? (
+                <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete memory…</button>
+              ) : (
+                <p className="notice compact">This dashboard was launched read-only. Delete is unavailable.</p>
+              )}
+            </div>
             {confirm && <DeleteConfirmation previewUrl={`/api/schemas/${memory.schema_id}/delete-preview`} onCancel={() => setConfirm(false)} onConfirm={remove} />}
           </>
         ) : <EmptyState title="Memory not found">This memory no longer exists or is not available in the current database.</EmptyState>
@@ -1635,25 +1551,25 @@ function MemoryDetail({ id, onClose, onDeleted }: {
   );
 }
 
-/** One record's reported use: used / retrieved delivery occasions, in the Retrieval page's bar style. */
+/** One record's reported use: used / retrieved delivery occasions, shown as a bar plus numbers. */
 function UsageCell({ used, retrieved, assessed }: { used: unknown; retrieved: unknown; assessed?: unknown }) {
   const total = Number(retrieved || 0);
-  if (!total) return <span className="neutral">-</span>;
+  if (!total) return dash;
   const usedCount = Number(used || 0);
   const pending = assessed !== undefined && Number(assessed || 0) === 0;
   const description = pending
     ? `${total} retrieved; usage feedback pending`
     : `${usedCount} of ${total} retrieved occasions reported used${assessed !== undefined ? ` · ${Number(assessed || 0)} assessed` : ""}`;
-  return <div className="retrieval-usage-stack">
-    <span className="retrieval-usage-row retrieval-usage-single" title={description} aria-label={description}>
+  return (
+    <span className="usage-cell" title={description} aria-label={description}>
       <span className="retrieval-usage-track" aria-hidden="true"><span style={{ width: `${Math.min(100, usedCount / total * 100)}%` }} /></span>
-      <span className={`retrieval-usage-value${pending ? " neutral" : ""}`}>{pending ? `—/${total}` : `${usedCount}/${total}`}</span>
+      <span className={`usage-numbers${pending ? " muted" : ""}`}>{pending ? `${EMPTY}/${formatCount(total)}` : `${formatCount(usedCount)}/${formatCount(total)}`}</span>
     </span>
-  </div>;
+  );
 }
 
 function RetrievalUsage({ row }: { row: any }) {
-  if (!row.exposed_count) return <span className="neutral">-</span>;
+  if (!row.exposed_count) return dash;
   return <div className="retrieval-usage-stack">{(["memory", "procedure"] as const).map((kind) => {
     const total = Number(row[kind === "memory" ? "memory_count" : "procedure_count"] || 0);
     if (!total) return null;
@@ -1667,10 +1583,27 @@ function RetrievalUsage({ row }: { row: any }) {
     return <span key={kind} className={`retrieval-usage-row retrieval-usage-${kind}`} title={description} aria-label={description}>
       <span className="retrieval-usage-label">{label}</span>
       <span className="retrieval-usage-track" aria-hidden="true"><span style={{ width: `${Math.min(100, used / total * 100)}%` }} /></span>
-      <span className={`retrieval-usage-value${pending ? " neutral" : ""}`}>{pending ? `—/${total}` : `${used}/${total}`}</span>
+      <span className={`retrieval-usage-value${pending ? " muted" : ""}`}>{pending ? `${EMPTY}/${formatCount(total)}` : `${formatCount(used)}/${formatCount(total)}`}</span>
     </span>;
   })}</div>;
 }
+
+/** "3 mem · 1 proc" or a muted "Empty" when nothing was returned. */
+function returnedSummary(row: any) {
+  const memories = Number(row.memory_count || 0);
+  const procedures = Number(row.procedure_count || 0);
+  const total = Number(row.returned_count ?? row.exposed_count ?? memories + procedures);
+  if (!total) return <span className="muted">Empty</span>;
+  const parts = [memories ? `${formatCount(memories)} mem` : "", procedures ? `${formatCount(procedures)} proc` : ""].filter(Boolean);
+  return <span title={`${total} returned`}>{parts.join(" · ") || formatCount(total)}</span>;
+}
+
+const feedbackStateOf = (row: any) => {
+  const raw = String(row.feedback_state || "");
+  if (raw === "complete") return "complete";
+  if (raw === "partial" || raw === "incomplete") return "partial";
+  return "none";
+};
 
 export function RetrievalPage({ location }: PageProps) {
   const retrievalSignalColumns = [
@@ -1710,7 +1643,21 @@ export function RetrievalPage({ location }: PageProps) {
       {retrievalColumnHelp[id]}
     </DefinitionTooltip>
   );
-  const [visibleColumns] = useState<string[]>(["when", "task", "client", "type", "used", "feedback", "session"]);
+  const retrievalColumns = [
+    { id: "when", label: "When", locked: true },
+    { id: "task", label: "Task / query" },
+    { id: "client", label: "Client" },
+    { id: "type", label: "Type" },
+    { id: "returned", label: "Returned" },
+    { id: "used", label: "Usage" },
+    { id: "feedback", label: "Feedback" },
+    { id: "session", label: "Session" },
+    { id: "scope", label: "Scope" },
+    { id: "memories_retrieved", label: "Memories returned" },
+    { id: "procedures_retrieved", label: "Procedures returned" },
+    ...retrievalSignalColumns.filter(([key]) => key !== "used").map(([id, label]) => ({ id, label })),
+  ];
+  const [visibleColumns, setVisibleColumns, resetColumns] = useColumns("retrieval", ["when", "task", "client", "type", "returned", "used", "feedback", "session"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const detailId = location.path.startsWith("/retrieval/")
     ? decodeURIComponent(location.path.split("/")[2])
@@ -1719,6 +1666,7 @@ export function RetrievalPage({ location }: PageProps) {
   const type = param(location, "type");
   const feedback = param(location, "feedback");
   const noMatch = param(location, "no_match");
+  const returned = param(location, "returned") || (noMatch === "true" ? "none" : "");
   const contains = param(location, "contains");
   const includeInternal = param(location, "include_internal", "true");
   const sort = param(location, "sort", "when");
@@ -1731,7 +1679,7 @@ export function RetrievalPage({ location }: PageProps) {
     return () => clearTimeout(timer);
   }, [search]);
   const request = useApi<Json>(
-    `/api/retrievals?scope=${encodeURIComponent(scope)}&type=${type}&feedback=${feedback}&no_match=${noMatch}&contains=${contains}&include_internal=${includeInternal}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}`,
+    `/api/retrievals?scope=${encodeURIComponent(scope)}&type=${type}&feedback=${feedback}&no_match=${noMatch}&returned=${returned}&contains=${contains}&include_internal=${includeInternal}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&q=${encodeURIComponent(debounced)}&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}`,
   );
   const rows = request.data?.retrievals || [];
   const summary = request.data?.summary || {};
@@ -1740,6 +1688,27 @@ export function RetrievalPage({ location }: PageProps) {
     per_page: 50,
     total: 0,
   };
+  useClampPage("/retrieval", location, request.data?.pagination, rows.length);
+  const clearAll = () => {
+    setSearch("");
+    setDebounced("");
+    navigate("/retrieval");
+  };
+  const fromParam = param(location, "from");
+  const retrievalChips = [
+    debounced && { key: "q", label: `Search: “${truncate(debounced, 30)}”`, onRemove: () => { setSearch(""); setDebounced(""); } },
+    type && { key: "type", label: `Type: ${type === "context" ? "Activation" : "Recall"}`, onRemove: () => updateParams("/retrieval", location, { type: undefined, page: 1 }) },
+    returned && { key: "returned", label: returned === "none" ? "Returned: nothing" : "Returned: something", onRemove: () => updateParams("/retrieval", location, { returned: undefined, no_match: undefined, page: 1 }) },
+    feedback && { key: "feedback", label: `Feedback: ${feedback === "incomplete" ? "partial" : feedback}`, onRemove: () => updateParams("/retrieval", location, { feedback: undefined, page: 1 }) },
+    scope && { key: "scope", label: `Scope: ${shortScope(scope)}`, onRemove: () => updateParams("/retrieval", location, { scope: undefined, page: 1 }) },
+    contains && { key: "contains", label: `Contains: ${contains}`, onRemove: () => updateParams("/retrieval", location, { contains: undefined, page: 1 }) },
+    fromParam && { key: "from", label: `Observed since ${formatDay(fromParam)}`, onRemove: () => updateParams("/retrieval", location, { from: undefined, page: 1 }) },
+    periodChip({ ...location, search: new URLSearchParams([...location.search].filter(([key]) => key !== "from")) }, () => updateParams("/retrieval", location, { hours: undefined, to: undefined, page: 1 })),
+  ].filter(Boolean) as { key: string; label: string; onRemove: () => void }[];
+  const retrievalFiltered = retrievalChips.length > 0;
+  const th = (label: string, column?: string, extra: { numeric?: boolean; help?: string } = {}) => (
+    <SortableTh label={label} column={column} sort={sort} dir={dir} onSort={changeSort} {...extra} />
+  );
   const changeSort = (column: string) =>
     updateParams("/retrieval", location, {
       sort: column,
@@ -1754,9 +1723,13 @@ export function RetrievalPage({ location }: PageProps) {
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
+        controls={
+          <div className="home-controls">
+            <PeriodFilter location={location} path="/retrieval" hideLabel />
+          </div>
+        }
       />
-      <div className="filter-bar filter-bar-nowrap">
-        <PeriodFilter location={location} path="/retrieval" />
+      <div className="filter-bar">
         <label>
           Search
           <input
@@ -1767,34 +1740,27 @@ export function RetrievalPage({ location }: PageProps) {
         </label>
         <label>
           Type
-          <select
-            value={type}
-            onChange={(e) =>
-              updateParams("/retrieval", location, {
-                type: e.target.value,
-                page: 1,
-              })
-            }
-          >
+          <select value={type} onChange={(e) => updateParams("/retrieval", location, { type: e.target.value, page: 1 })}>
             <option value="">All types</option>
             <option value="context">Activation</option>
             <option value="recall">Recall</option>
           </select>
         </label>
         <label>
+          Returned
+          <select value={returned} onChange={(e) => updateParams("/retrieval", location, { returned: e.target.value, no_match: undefined, page: 1 })}>
+            <option value="">Any</option>
+            <option value="any">Returned something</option>
+            <option value="none">Returned nothing</option>
+          </select>
+        </label>
+        <label>
           Feedback
-          <select
-            value={feedback}
-            onChange={(e) =>
-              updateParams("/retrieval", location, {
-                feedback: e.target.value,
-                page: 1,
-              })
-            }
-          >
+          <select value={feedback === "incomplete" ? "partial" : feedback} onChange={(e) => updateParams("/retrieval", location, { feedback: e.target.value, page: 1 })}>
             <option value="">Any feedback state</option>
             <option value="complete">Complete</option>
-            <option value="incomplete">Incomplete / unknown</option>
+            <option value="partial">Partial</option>
+            <option value="none">None</option>
           </select>
         </label>
         <ScopeSelect
@@ -1805,44 +1771,19 @@ export function RetrievalPage({ location }: PageProps) {
         />
         <label>
           Contains
-          <select
-            value={contains}
-            onChange={(e) =>
-              updateParams("/retrieval", location, {
-                contains: e.target.value,
-                page: 1,
-              })
-            }
-          >
+          <select value={contains} onChange={(e) => updateParams("/retrieval", location, { contains: e.target.value, page: 1 })}>
             <option value="">Any item</option>
             <option value="memory">Memory</option>
             <option value="procedure">Procedure</option>
           </select>
         </label>
-        <label>
-          Observed since
-          <input
-            type="date"
-            value={
-              param(location, "from")
-                ? new Date(Number(param(location, "from")) * 1000)
-                    .toISOString()
-                    .slice(0, 10)
-                : ""
-            }
-            onChange={(event) =>
-              updateParams("/retrieval", location, {
-                from: event.target.value
-                  ? Math.floor(
-                      new Date(event.target.value).getTime() / 1000,
-                    )
-                  : undefined,
-                page: 1,
-              })
-            }
-          />
-        </label>
+        <DateFilter
+          label="Observed since"
+          seconds={fromParam}
+          onChange={(value) => updateParams("/retrieval", location, { from: value, page: 1 })}
+        />
       </div>
+      <ActiveFilters chips={retrievalChips} onClear={clearAll} />
       {request.loading && !request.data ? (
         <MetricCardsSkeleton count={4} />
       ) : request.error && !request.data ? (
@@ -1856,7 +1797,7 @@ export function RetrievalPage({ location }: PageProps) {
           <div className="metric-card-grid" aria-label="Retrieval summary">
             <MetricCard
               title="Retrievals"
-              value={Number(summary.retrievals || 0).toLocaleString()}
+              value={formatCount(summary.retrievals || 0)}
               secondary={`${request.data.metrics?.task_starts || 0} Task starts · ${request.data.metrics?.additional_requests || 0} Additional requests`}
               tooltip="Distinct recorded requests; continuations and retries retain the request identity."
             />
@@ -1913,78 +1854,56 @@ export function RetrievalPage({ location }: PageProps) {
         <ErrorState title="Retrieval results unavailable" error={request.error} retry={request.reload} />
       ) : rows.length ? (
         <>
+          <div className="table-toolbar">
+            <span>{formatCount(pagination.total)} {pagination.total === 1 ? "retrieval" : "retrievals"}</span>
+            <ColumnsControl columns={retrievalColumns} visible={visibleColumns} onChange={setVisibleColumns} onReset={resetColumns} />
+          </div>
           <TableFrame label="Retrieval results">
             <table className="retrieval-table">
-              <colgroup><col className="retrieval-col-when" /><col /><col className="retrieval-col-client" /><col className="retrieval-col-type" /><col className="retrieval-col-usage" /><col className="retrieval-col-feedback" /></colgroup>
               <thead>
                 <tr>
-                  {visible("when") && <th aria-sort={sort === "when" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="When" active={sort === "when"} direction={dir} onClick={() => changeSort("when")} />
-                    <ColumnHelp id="when" label="When" />
-                  </th>}
-                  {visible("task") && <th aria-sort={sort === "task" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Task / query" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
-                    <ColumnHelp id="task" label="Task / query" />
-                  </th>}
-                  {visible("client") && <th>Client</th>}
-                  {visible("type") && <th><SortButton label="Type" active={sort === "type"} direction={dir} onClick={() => changeSort("type")} /><ColumnHelp id="type" label="Type" /></th>}
-                  {visible("scope") && <th aria-sort={sort === "scope" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} />
-                    <ColumnHelp id="scope" label="Scope" />
-                  </th>}
-                  {visible("retrieved") && <th aria-sort={sort === "exposed" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Retrieved" active={sort === "exposed"} direction={dir} onClick={() => changeSort("exposed")} /><ColumnHelp id="retrieved" label="Retrieved" />
-                  </th>}
-                  {visible("memories_retrieved") && <th className="numeric"><SortButton label="Memories retrieved" active={sort === "memories_retrieved"} direction={dir} onClick={() => changeSort("memories_retrieved")} /><ColumnHelp id="memories_retrieved" label="Memories retrieved" /></th>}
-                  {visible("procedures_retrieved") && <th className="numeric"><SortButton label="Procedures retrieved" active={sort === "procedures_retrieved"} direction={dir} onClick={() => changeSort("procedures_retrieved")} /><ColumnHelp id="procedures_retrieved" label="Procedures retrieved" /></th>}
-                  {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key, label]) => (
-                    <th className="numeric" key={key} aria-sort={sort === key ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                      <SortButton label={label} active={sort === key} direction={dir} onClick={() => changeSort(key)} />
-                      <ColumnHelp id={key} label={label} />
-                    </th>
-                  ))}
-                  {visible("feedback") && <th aria-sort={sort === "feedback" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Feedback" active={sort === "feedback"} direction={dir} onClick={() => changeSort("feedback")} />
-                    <ColumnHelp id="feedback" label="Feedback" />
-                  </th>}
-                  {visible("session") && <th><SortButton label="Session ID" active={sort === "activity"} direction={dir} onClick={() => changeSort("activity")} /><ColumnHelp id="session" label="Session ID" /></th>}
+                  {visible("when") && th("When", "when", { help: retrievalColumnHelp.when })}
+                  {visible("task") && th("Task / query", "task", { help: retrievalColumnHelp.task })}
+                  {visible("client") && th("Client")}
+                  {visible("type") && th("Type", "type", { help: retrievalColumnHelp.type })}
+                  {visible("returned") && th("Returned", "exposed", { help: retrievalColumnHelp.retrieved })}
+                  {visible("used") && th("Usage", undefined, { help: retrievalColumnHelp.used })}
+                  {visible("feedback") && th("Feedback", "feedback", { help: retrievalColumnHelp.feedback })}
+                  {visible("session") && th("Session", "activity", { help: retrievalColumnHelp.session })}
+                  {visible("scope") && th("Scope", "scope", { help: retrievalColumnHelp.scope })}
+                  {visible("memories_retrieved") && th("Memories", "memories_retrieved", { numeric: true, help: retrievalColumnHelp.memories_retrieved })}
+                  {visible("procedures_retrieved") && th("Procedures", "procedures_retrieved", { numeric: true, help: retrievalColumnHelp.procedures_retrieved })}
+                  {retrievalSignalColumns.filter(([key]) => key !== "used" && visible(key)).map(([key, label]) => th(label, key, { numeric: true, help: retrievalColumnHelp[key] }))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row: any) => {
                   const href = `/retrieval/${encodeURIComponent(row.context_id)}${location.search.size ? `?${location.search}` : ""}`;
+                  const open = () => openDetail(href, location);
+                  const task = row.task_preview || "No query recorded";
+                  const typeLabel = row.type_label || (row.retrieval_type === "context" ? "Activation" : "Recall");
                   return (
-                    <tr
-                      tabIndex={0}
-                      key={row.context_id}
-                      data-detail-id={row.context_id}
-                      onClick={() => openDetail(href, location)}
-                      onKeyDown={(e) =>
-                        rowKeys(e, () => openDetail(href, location))
-                      }
-                    >
-                      {visible("when") && <td data-label="When" title={formatDate(row.created_at)}>
-                        {relativeDate(row.created_at)}
+                    <tr key={row.context_id} {...rowAttrs(row.context_id, detailId, open)}>
+                      {visible("when") && <td className="nowrap"><RowLink href={href} onOpen={open}><TimeCell ts={row.created_at} /></RowLink></td>}
+                      {visible("task") && <td className="primary-cell" title={task}>
+                        <ClampedText text={task} />
                       </td>}
-                      {visible("task") && <td className="primary-cell retrieval-task-cell">
-                        <ClampedText text={row.task_preview} />
-                        <small className="retrieval-task-scope" title={row.scope_id || undefined}>{row.scope_id || "No scope"}</small>
+                      {visible("client") && <td><ClientBadge client={row.client} /></td>}
+                      {visible("type") && <td><TypeBadge type={String(typeLabel).toLowerCase()} label={typeLabel} /></td>}
+                      {visible("returned") && <td className="nowrap">{returnedSummary(row)}</td>}
+                      {visible("used") && <td className="retrieval-usage-cell"><RetrievalUsage row={row} /></td>}
+                      {visible("feedback") && <td><StatusBadge value={feedbackStateOf(row)} /></td>}
+                      {visible("session") && <td className="session-cell" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                        {row.session_id
+                          ? <Link to={`/sessions/${encodeURIComponent(row.session_id)}#retrieval-${encodeURIComponent(row.context_id)}`}><ClampedText text={row.session_goal || truncate(row.session_id, 18)} lines={1} /></Link>
+                          : <span className="muted">Standalone</span>}
                       </td>}
-                      {visible("client") && <td data-label="Client"><ClientBadge client={row.client} /></td>}
-                      {visible("type") && <td data-label="Type"><StatusBadge value={row.retrieval_type === "context" ? "Activation" : "Recall"} /></td>}
-                      {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
-                        {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
-                      </td>}
-                      {visible("retrieved") && <td className="badge-stack">{row.exposed_count ? <><StatusBadge value="memory" count={row.memory_count ?? 0} /><StatusBadge value="procedure" count={row.procedure_count ?? 0} /></> : <StatusBadge value="none" />}</td>}
-                      {visible("memories_retrieved") && <td className="numeric">{row.memory_count ?? 0}</td>}
-                      {visible("procedures_retrieved") && <td className="numeric">{row.procedure_count ?? 0}</td>}
-                      {retrievalSignalColumns.filter(([key]) => visible(key)).map(([key]) => (
-                        <td data-label={key === "used" ? "Usage · used / retrieved" : key} className={key === "used" ? "retrieval-usage-cell" : "numeric"} key={key}>
-                          {key === "used" ? <RetrievalUsage row={row} /> : Number(row.signal_counts?.[key] || 0).toLocaleString()}
-                        </td>
+                      {visible("scope") && <td><ScopeChip scope={row.scope_id} /></td>}
+                      {visible("memories_retrieved") && <td className="numeric">{formatCount(row.memory_count ?? 0)}</td>}
+                      {visible("procedures_retrieved") && <td className="numeric">{formatCount(row.procedure_count ?? 0)}</td>}
+                      {retrievalSignalColumns.filter(([key]) => key !== "used" && visible(key)).map(([key]) => (
+                        <td className="numeric" key={key}>{formatCount(row.signal_counts?.[key] || 0)}</td>
                       ))}
-                      {visible("feedback") && <td data-label="Feedback"><StatusBadge value={row.feedback_state} /></td>}
-                      {visible("session") && <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>{row.session_id ? <Link to={`/sessions/${encodeURIComponent(row.session_id)}#retrieval-${encodeURIComponent(row.context_id)}`}>{truncate(row.session_id, 18)}</Link> : "Standalone"}</td>}
                     </tr>
                   );
                 })}
@@ -2002,25 +1921,10 @@ export function RetrievalPage({ location }: PageProps) {
         </>
       ) : (
         <EmptyState
-          title={
-            search ||
-            type ||
-            feedback ||
-            noMatch ||
-            contains ||
-            scope ||
-            param(location, "from")
-              ? "No retrievals match these filters"
-              : "No retrievals yet"
-          }
+          title={retrievalFiltered ? "No retrievals match these filters" : "No retrievals yet"}
+          action={retrievalFiltered ? <button type="button" className="button secondary" onClick={clearAll}>Clear filters</button> : undefined}
         >
-          {search ||
-          type ||
-          feedback ||
-          noMatch ||
-          contains ||
-          scope ||
-          param(location, "from")
+          {retrievalFiltered
             ? "Clear or broaden the filters to inspect other recorded exposures."
             : "Slowave records a retrieval when an agent activates or explicitly recalls memory. Empty retrievals are valid recorded rows, not errors."}
         </EmptyState>
@@ -2039,35 +1943,35 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const request = useApi<Json>(`/api/retrievals/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const data = request.data;
   const retrieval = data?.retrieval;
+  const session = data?.session || retrieval?.session;
+  const items: any[] = data?.items || [];
   const grouped = useMemo(
     () =>
-      (data?.items || []).reduce((acc: Json, item: any) => {
-        (acc[item.pathway_group] ||= []).push(item);
+      items.reduce((acc: Json, item: any) => {
+        (acc[item.pathway_group || "Returned"] ||= []).push(item);
         return acc;
       }, {}),
     [data],
   );
+  const accepted: any[] = (data?.feedback || []).filter((item: any) => item.status === "accepted");
+  const rejected: any[] = (data?.feedback || []).filter((item: any) => item.status !== "accepted");
+  const reasonFor = (item: any) => accepted.find((fb) => fb.target_id === item.memory_id && fb.reason)?.reason;
+  const feedbackValue = retrieval ? (retrieval.feedback_complete ? "complete" : retrieval.feedback_observed ? "partial" : "none") : "none";
+  const memories = items.filter((item) => item.memory_type !== "procedure" && item.memory_type !== "procedural_memory").length;
+  const procedures = items.length - memories;
+  const sessionId = retrieval?.session_id || session?.id;
+  const title = retrieval ? retrieval.query || retrieval.goal || "Context exposure" : "";
   return (
     <Inspector
       title="Retrieval"
       id={id}
-      label={retrieval ? truncate(retrieval.query || retrieval.goal || "Context exposure", 96) : undefined}
-      state={
-        retrieval && (
-          <StatusBadge
-            value={
-              retrieval.feedback_complete
-                ? "Feedback complete"
-                : retrieval.feedback_observed ? "Feedback incomplete" : "Feedback unknown"
-            }
-          />
-        )
-      }
+      label={retrieval ? truncate(title, 140) : undefined}
+      hideLabel
+      state={retrieval && <StatusBadge value={feedbackValue === "complete" ? "feedback_complete" : feedbackValue === "partial" ? "feedback_incomplete" : "feedback_unknown"} />}
       sections={[
         { id: "retrieval-request", label: "Request" },
         { id: "retrieval-context", label: "Returned context" },
-        { id: "retrieval-feedback", label: "Feedback" },
-        { id: "retrieval-technical", label: "Technical details" },
+        { id: "retrieval-technical", label: "Technical" },
       ]}
       onClose={onClose}
     >
@@ -2082,115 +1986,67 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <ErrorState title="Retrieval details unavailable" error={request.error} retry={request.reload} />
       ) : retrieval ? (
           <>
-            <Section title="Request" id="retrieval-request">
-            <h2 className="detail-title">{retrieval.query || retrieval.goal || "Context exposure"}</h2>
-            <dl className="key-values">
-              <dt>Source</dt>
-              <dd>
-                {retrieval.retrieval_type === "context"
-                  ? "Activation"
-                  : "Recall"}
-              </dd>
-              <dt>Observed</dt>
-              <dd>{formatDate(retrieval.created_at)}</dd>
-              <dt>Client</dt>
-              <dd><ClientBadge client={data.session?.client} /></dd>
-              <dt>Scope</dt>
-              <dd>{retrieval.scope_id || "No scope"}</dd>
-              <dt>Response size</dt>
-              <dd>
-                {retrieval.response_chars
-                  ? `${retrieval.response_chars} characters`
-                  : "Not recorded"}
-              </dd>
-              <dt>Session</dt>
-              <dd>
-                {retrieval.session_id ? (
-                  <Link
-                    to={`/sessions/${encodeURIComponent(retrieval.session_id)}#retrieval-${encodeURIComponent(retrieval.context_id || retrieval.retrieval_id || "")}`}
-                  >
-                    {retrieval.session_id}
-                  </Link>
-                ) : (
-                  "Standalone retrieval"
-                )}
-              </dd>
-              <dt>
-                Task outcome{" "}
-                <DefinitionTooltip label="Task outcome definition">
-                  The outcome the agent reported for the session this retrieval
-                  belonged to. It is not necessarily caused by Slowave's
-                  context.
-                </DefinitionTooltip>
-              </dt>
-              <dd>
-                {data.session?.outcome ? (
-                  <StatusBadge value={data.session.outcome} />
-                ) : (
-                  "Not recorded"
-                )}
-              </dd>
-            </dl>
-            <div className="retrieval-detail-usage"><RetrievalUsage row={retrieval} /></div>
-            <p className="neutral">Reported used / returned. Grey includes items without a reported use; a dash means feedback is pending.</p>
-            </Section>
-            <Section title="Returned context" id="retrieval-context">
-              <p className="neutral">Items are shown in the recorded order. “Stored snapshot” is the content delivered at the time; a fallback means only current library content remains available.</p>
+            <DetailSection id="retrieval-request" title="Request">
+              <h2 className="detail-title">{title}</h2>
+              <div className="summary-strip">
+                <TypeBadge type={retrieval.retrieval_type === "context" ? "activation" : "recall"} label={retrieval.type_label} />
+                <TimeCell ts={retrieval.created_at} absolute />
+                <ClientBadge client={session?.client || data.session?.client} />
+                <ScopeChip scope={retrieval.scope_id} />
+                <span>{items.length ? <><strong>{memories}</strong> mem{procedures ? <> · <strong>{procedures}</strong> proc</> : null} returned</> : "Nothing returned"}</span>
+                <span><DefinitionTooltip label="Usage definition">Reported used / returned. Grey includes items without a reported use; a dash means feedback is pending.</DefinitionTooltip> usage</span>
+              </div>
+              <div className="retrieval-detail-usage"><RetrievalUsage row={retrieval} /></div>
+              {sessionId && (
+                <KeyValueList items={[
+                  ["Session", <Link to={`/sessions/${encodeURIComponent(sessionId)}#retrieval-${encodeURIComponent(retrieval.context_id || retrieval.retrieval_id || "")}`}>{session?.goal ? truncate(session.goal, 140) : "Open session"}</Link>],
+                  [<>Task outcome <DefinitionTooltip label="Task outcome definition">The outcome the agent reported for the session this retrieval belonged to. It is not necessarily caused by Slowave's context.</DefinitionTooltip></>,
+                    session?.outcome ? <StatusBadge value={session.outcome} /> : <StatusBadge value="not_reported" />],
+                ]} />
+              )}
+              {!sessionId && <p className="neutral">Standalone retrieval, not part of a session.</p>}
+            </DetailSection>
+            <DetailSection id="retrieval-context" title="Returned context">
               {Object.entries(grouped).length ? (
-                Object.entries(grouped).map(([group, items]: [string, any]) => (
+                Object.entries(grouped).map(([group, groupItems]: [string, any]) => (
                   <div className="exposure-group" key={group}>
                     <h3>{group}</h3>
-                    {items.map((item: any) => (
-                      <div className="exposure-row" key={item.memory_id}>
-                        <div>
-                          <strong
-                            className="schema-preview"
-                            title={item.content_text || item.memory_id}
-                          >
-                            {truncate(item.content_text || item.memory_id, 220)}
-                          </strong>
-                          <span>
-                            {item.memory_type} ·{" "}
-                            {item.status || "State not recorded"}
-                          </span>
-                          <small>{item.pathway_explanation}</small>
-                          <small>{item.content_source === "stored snapshot" ? "Stored snapshot" : "Current library fallback"}{item.status_source !== item.content_source ? ` · state from ${item.status_source}` : ""}{item.phase ? ` · ${item.phase}` : ""}</small>
-                          {item.current_status && item.current_status !== item.status && <small>Current library state: {item.current_status}</small>}
-                          <span className="assessment-line">
-                            Assessment:{" "}
-                            <StatusBadge value={item.assessment || "unknown"} />
-                            {item.effect && (
-                              <>
-                                {" "}
-                                Effect: <StatusBadge value={item.effect} />
-                              </>
-                            )}
-                          </span>
-                        </div>
-                        <div>
-                          <StatusBadge value={item.status} />
-                          {item.memory_type === "procedure" ||
-                          item.memory_type === "procedural_memory" ? (
-                            <Link
-                              to={`/procedures/${encodeURIComponent(item.memory_id)}`}
-                            >
-                              Open
-                            </Link>
-                          ) : (
-                            <Link
-                              to={`/memory/${encodeURIComponent(item.memory_id)}`}
-                            >
-                              Open
-                            </Link>
-                          )}
-                        </div>
-                        <details>
-                          <summary>Stored pathway metadata</summary>
-                          <code>{item.pathway}</code>
-                          {item.reason && <p>{item.reason}</p>}
-                        </details>
-                      </div>
-                    ))}
+                    <ol className="ranked-list">
+                      {groupItems.map((item: any, index: number) => {
+                        const isProcedure = item.memory_type === "procedure" || item.memory_type === "procedural_memory";
+                        const text = item.title || item.content_text || item.memory_id;
+                        const href = isProcedure ? `/procedures/${encodeURIComponent(item.memory_id)}` : `/memory/${encodeURIComponent(item.memory_id)}`;
+                        const why = item.pathway_explanation || item.reason;
+                        const reason = reasonFor(item);
+                        return (
+                          <li className="ranked-item" key={item.memory_id}>
+                            <span className="rank" aria-label={`Rank ${item.rank ?? index + 1}`}>{item.rank ?? index + 1}</span>
+                            <div className="ranked-body">
+                              <Link to={href} className="ranked-title">{truncate(text, 200)}</Link>
+                              <div className="badge-stack">
+                                <TypeBadge type={isProcedure ? "procedure" : "memory"} />
+                                {item.status && <StatusBadge value={item.status} />}
+                                <StatusBadge value={item.assessment || "unknown"} label={`Assessment: ${statusLabelOf(item.assessment || "unknown")}`} />
+                                {item.effect && <StatusBadge value={item.effect} label={`Effect: ${statusLabelOf(item.effect)}`} />}
+                              </div>
+                              {why && <small className="why">Why: {why}</small>}
+                              {reason && <small className="why">Agent note: “{reason}”</small>}
+                              <details className="item-details">
+                                <summary>Details</summary>
+                                <KeyValueList wide items={[
+                                  ["Shown as", item.content_source === "stored snapshot" ? "Text as delivered at the time" : "Current library text (the delivered text was not kept)"],
+                                  item.status_source && item.status_source !== item.content_source ? ["State taken from", item.status_source] : null,
+                                  item.current_status && item.current_status !== item.status ? ["State today", statusLabelOf(item.current_status)] : null,
+                                  item.phase ? ["Phase", item.phase] : null,
+                                  item.pathway ? ["Pathway", <code>{item.pathway}</code>] : null,
+                                  ["ID", <IdChip value={item.memory_id} />],
+                                ]} />
+                              </details>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
                   </div>
                 ))
               ) : (
@@ -2198,82 +2054,42 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   This retrieval returned no admitted memories or procedures.
                 </EmptyState>
               )}
-            </Section>
-            <Section title="Feedback" id="retrieval-feedback">
-              <p className="neutral">Effective feedback is shown beside each returned item. This audit retains accepted and rejected submissions separately.</p>
-              {data.feedback?.length ? (
-                <div className="detail-list">
-                  {data.feedback.filter((item: any) => item.status === "accepted").map((item: any) => (
-                    <div key={item.event_id}>
-                      <div>
-                        <strong>
-                          {item.target_kind} · {item.target_id}
-                        </strong>
-                        <StatusBadge value={item.status} />
-                      </div>
-                      <p>
-                        {[item.assessment, item.effect]
-                          .filter(Boolean)
-                          .join(" · ")
-                          .replaceAll("_", " ") || "Coverage observation only"}
-                      </p>
-                      <small>
-                        {formatDate(item.created_at)} · {item.coverage} coverage
-                      </small>
-                      {item.reason && <p>{item.reason}</p>}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="neutral">
-                  Unknown / not assessed. Missing feedback is not negative
-                  evidence.
-                </p>
+              {!accepted.length && items.length > 0 && <p className="neutral">No assessments recorded. Missing feedback is not negative evidence.</p>}
+              {rejected.length > 0 && (
+                <details className="advanced">
+                  <summary>Rejected submissions ({rejected.length})</summary>
+                  <ul className="link-list">
+                    {rejected.map((item: any) => (
+                      <li key={item.event_id}>
+                        <div>
+                          <span className="item-main">
+                            <span>{truncate(item.target_title || item.target_id, 120)}</span>
+                            <small>{item.rejection_reason || item.reason || "No rejection reason recorded."} · <TimeCell ts={item.created_at} absolute /></small>
+                          </span>
+                          <StatusBadge value={item.status} />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
-            </Section>
-            {data.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced">
-              <summary>Submission audit ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary>
-              <div className="detail-list">
-                {data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.target_kind} · {item.target_id}</strong><StatusBadge value={item.status} /><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p><small>{formatDate(item.created_at)}</small></div>)}
-              </div>
-            </details>}
-            <details className="advanced" id="retrieval-technical">
-              <summary>Technical details</summary>
-              <p className="private-notice">
-                Stored context below may contain local/private task information.
-              </p>
-              <dl className="key-values wide">
-                {retrieval.retrieval_type === "context" && <><dt>Memory page limit <DefinitionTooltip label="Memory page limit definition">Maximum number of memories requested for each activation page. The actual returned count can be lower when fewer memories qualify or the response payload limit is reached.</DefinitionTooltip></dt><dd>{retrieval.requested_page_size == null ? "Not recorded" : `${retrieval.requested_page_size} memories`}</dd></>}
-                <dt>Policy version</dt><dd>{retrieval.retrieval_policy_version || "Not recorded"}</dd>
-                <dt>Lifecycle version</dt><dd>{retrieval.lifecycle_version || "Not recorded"}</dd>
-                <dt>Situation</dt>
-                <dd>
-                  {retrieval.situation &&
-                  Object.keys(retrieval.situation).length
-                    ? JSON.stringify(retrieval.situation)
-                    : "Not recorded"}
-                </dd>
-                <dt>Requirements</dt>
-                <dd>
-                  {Array.isArray(retrieval.requirements) &&
-                  retrieval.requirements.length
-                    ? retrieval.requirements.join(", ")
-                    : "None"}
-                </dd>
-                <dt>Topics</dt>
-                <dd>
-                  {Array.isArray(retrieval.topics) && retrieval.topics.length
-                    ? retrieval.topics.join(", ")
-                    : "None"}
-                </dd>
-                <dt>Entities</dt>
-                <dd>
-                  {Array.isArray(retrieval.entities) && retrieval.entities.length
-                    ? retrieval.entities.join(", ")
-                    : "None"}
-                </dd>
-              </dl>
-            </details>
+            </DetailSection>
+            <DetailSection id="retrieval-technical" title="Technical details" collapsed>
+              <KeyValueList wide items={[
+                ["Retrieval ID", <IdChip value={id} head={12} tail={6} />],
+                ["Response size", retrieval.response_chars ? `${formatCount(retrieval.response_chars)} characters` : "Not recorded"],
+                ["Scope", retrieval.scope_id || "No scope"],
+                sessionId ? ["Session ID", <IdChip value={String(sessionId)} head={12} tail={6} />] : null,
+                retrieval.retrieval_type === "context" ? [<>Memory page limit <DefinitionTooltip label="Memory page limit definition">Maximum number of memories requested for each activation page. The actual returned count can be lower when fewer memories qualify or the response payload limit is reached.</DefinitionTooltip></>, retrieval.requested_page_size == null ? "Not recorded" : `${retrieval.requested_page_size} memories`] : null,
+                ["Policy version", retrieval.retrieval_policy_version || "Not recorded"],
+                ["Lifecycle version", retrieval.lifecycle_version || "Not recorded"],
+                ["Situation", retrieval.situation && Object.keys(retrieval.situation).length ? <StructuredValue value={retrieval.situation} /> : "Not recorded"],
+                ["Requirements", <StructuredValue value={retrieval.requirements} />],
+                ["Topics", <StructuredValue value={retrieval.topics} />],
+                ["Entities", <StructuredValue value={retrieval.entities} />],
+              ]} />
+              <p className="neutral">The task text and returned memory text are stored locally and shown here.</p>
+            </DetailSection>
           </>
         ) : <EmptyState title="Retrieval not found">This retrieval no longer exists or is not available in the current database.</EmptyState>
       }
@@ -2292,10 +2108,29 @@ export function ProceduresPage({ location }: PageProps) {
   const sort = param(location, "sort", "recent");
   const dir = param(location, "dir", "desc") as "asc" | "desc";
   const page = pageNumber(location);
-  const [visibleColumns] = useState<string[]>(["procedure", "client", "scope", "effect", "created", "used", "last_used", "source_activity"]);
+  const procedureColumns = [
+    { id: "procedure", label: "Procedure", locked: true },
+    { id: "outcome", label: "Outcome" },
+    { id: "verified", label: "Verified" },
+    { id: "used", label: "Used" },
+    { id: "effect", label: "Effect" },
+    { id: "scope", label: "Scope" },
+    { id: "created", label: "Created" },
+    { id: "last_used", label: "Last used" },
+    { id: "client", label: "Client" },
+    { id: "source_activity", label: "Source task" },
+    { id: "use_rate", label: "Use rate" },
+    { id: "helped", label: "Helpful count" },
+    { id: "no_effect", label: "No-effect count" },
+    { id: "harmed", label: "Harmful count" },
+    { id: "unknown", label: "Unknown count" },
+    { id: "feedback_coverage", label: "Feedback coverage" },
+    { id: "last_retrieved", label: "Last retrieved" },
+  ];
+  const [visibleColumns, setVisibleColumns, resetColumns] = useColumns("procedures", ["procedure", "outcome", "verified", "used", "effect", "scope", "created", "last_used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   const request = useApi<Json>(
-    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&from=${param(location, "from")}&to=${param(location, "to")}&hours=${param(location, "hours", "all")}&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`,
+    `/api/procedural-memory?cohort=all&scope=${encodeURIComponent(scope)}&outcome=${outcome}&verification=${verification}&retrieved=${retrieved}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&hours=all&saved_from=${param(location, "saved_from")}&saved_to=${param(location, "saved_to")}`,
   );
   const rows = request.data?.procedures || [];
   const pagination = request.data?.pagination || {
@@ -2309,22 +2144,31 @@ export function ProceduresPage({ location }: PageProps) {
       dir: sort === column && dir === "desc" ? "asc" : "desc",
       page: 1,
     });
+  useClampPage("/procedures", location, request.data?.pagination, rows.length);
+  const clearAll = () => navigate("/procedures");
+  const savedFrom = param(location, "saved_from");
+  const savedTo = param(location, "saved_to");
+  const procedureChips = [
+    outcome && { key: "outcome", label: `Outcome: ${outcome}`, onRemove: () => updateParams("/procedures", location, { outcome: undefined, page: 1 }) },
+    verification && { key: "verification", label: `Verified: ${verification.replaceAll("_", " ")}`, onRemove: () => updateParams("/procedures", location, { verification: undefined, page: 1 }) },
+    retrieved && { key: "retrieved", label: retrieved === "never" ? "Never retrieved" : "Retrieved", onRemove: () => updateParams("/procedures", location, { retrieved: undefined, page: 1 }) },
+    scope && { key: "scope", label: `Scope: ${shortScope(scope)}`, onRemove: () => updateParams("/procedures", location, { scope: undefined, page: 1 }) },
+    (savedFrom || savedTo) && { key: "saved", label: savedTo ? `Created: ${savedFrom ? formatDay(savedFrom) : "…"} – ${formatDay(savedTo)}` : `Created since ${formatDay(savedFrom)}`, onRemove: () => updateParams("/procedures", location, { saved_from: undefined, saved_to: undefined, page: 1 }) },
+  ].filter(Boolean) as { key: string; label: string; onRemove: () => void }[];
+  const procedureFiltered = procedureChips.length > 0;
+  const th = (label: string, column?: string, extra: { numeric?: boolean; help?: string } = {}) => (
+    <SortableTh label={label} column={column} sort={sort} dir={dir} onSort={changeSort} {...extra} />
+  );
   return (
     <div className="page">
       <PageHeader
         title="Procedures"
-        description="Execution-backed procedure records created in the selected period. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook."
+        description="Execution-backed procedure records in the library; use Created since to narrow by date. Inventory totals describe the current library; a saved procedure is not necessarily a proven general playbook."
         updatedAt={request.updatedAt}
         refreshing={request.refreshing}
         onRefresh={request.reload}
       />
       <div className="filter-bar">
-        <PeriodFilter location={location} path="/procedures" />
-        <label>View
-          <select value={sort} onChange={(e) => updateParams("/procedures", location, { sort: e.target.value, dir: "desc", page: 1 })}>
-            <option value="recent">Recently created</option><option value="retrieved">Most retrieved</option><option value="helped">Most helpful</option><option value="harmed">Most harmful</option>
-          </select>
-        </label>
         <label>
           Outcome
           <select
@@ -2375,21 +2219,14 @@ export function ProceduresPage({ location }: PageProps) {
             <option value="never">Never retrieved</option>
           </select>
         </label>
-        <label>
-          Created since
-          <input
-            type="date"
-            onChange={(e) =>
-              updateParams("/procedures", location, {
-                from: e.target.value
-                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
-                  : undefined,
-                page: 1,
-              })
-            }
-          />
-        </label>
+        <ScopeSelect value={scope} onChange={(next) => updateParams("/procedures", location, { scope: next, page: 1 })} />
+        <DateFilter
+          label="Created since"
+          seconds={savedFrom}
+          onChange={(value) => updateParams("/procedures", location, { saved_from: value, saved_to: undefined, page: 1 })}
+        />
       </div>
+      <ActiveFilters chips={procedureChips} onClear={clearAll} />
       {request.loading && !request.data ? (
         <MetricCardsSkeleton count={4} />
       ) : request.error && !request.data ? (
@@ -2448,145 +2285,82 @@ export function ProceduresPage({ location }: PageProps) {
         />
       ) : rows.length ? (
         <>
+          <div className="table-toolbar">
+            <span>{formatCount(pagination.total)} {pagination.total === 1 ? "procedure" : "procedures"}</span>
+            <ColumnsControl columns={procedureColumns} visible={visibleColumns} onChange={setVisibleColumns} onReset={resetColumns} />
+          </div>
           <TableFrame label="Procedure results">
             <table className="library-table">
               <thead>
                 <tr>
-                  {visible("procedure") && <th aria-sort={sort === "summary" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Procedure" active={sort === "summary"} direction={dir} onClick={() => changeSort("summary")} />
-                  </th>}
-                  {visible("client") && <th>Client</th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
-                  {visible("effect") && (
-                    <th>
-                      Effect{" "}
-                      <DefinitionTooltip label="Effect definition">
-                        {sharedColumnHelp.effect}
-                      </DefinitionTooltip>
-                    </th>
-                  )}
-                  {visible("created") && <th aria-sort={sort === "recent" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Created" active={sort === "recent"} direction={dir} onClick={() => changeSort("recent")} />
-                  </th>}
-                  {visible("used") && <th>Usage <DefinitionTooltip label="Usage definition">{sharedColumnHelp.usage}</DefinitionTooltip></th>}
-                  {visible("last_used") && <th>
-                    <SortButton
-                      label="Last used"
-                      active={sort === "last_used"}
-                      direction={dir}
-                      onClick={() => changeSort("last_used")}
-                    />
-                  </th>}
-                  {visible("use_rate") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Use rate"
-                        active={sort === "use_rate"}
-                        direction={dir}
-                        onClick={() => changeSort("use_rate")}
-                      />
-                    </th>
-                  )}
-                  {visible("helped") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Helpful count"
-                        active={sort === "helped"}
-                        direction={dir}
-                        onClick={() => changeSort("helped")}
-                      />
-                    </th>
-                  )}
-                  {visible("no_effect") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="No-effect count"
-                        active={sort === "no_effect"}
-                        direction={dir}
-                        onClick={() => changeSort("no_effect")}
-                      />
-                    </th>
-                  )}
-                  {visible("harmed") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Harmful count"
-                        active={sort === "harmed"}
-                        direction={dir}
-                        onClick={() => changeSort("harmed")}
-                      />
-                    </th>
-                  )}
-                  {visible("unknown") && (
-                    <th className="numeric">
-                      <SortButton
-                        label="Unknown count"
-                        active={sort === "unknown"}
-                        direction={dir}
-                        onClick={() => changeSort("unknown")}
-                      />
-                    </th>
-                  )}
-                  {visible("feedback_coverage") && <th className="numeric"><SortButton label="Feedback coverage" active={sort === "feedback_coverage"} direction={dir} onClick={() => changeSort("feedback_coverage")} /></th>}
-                  {visible("last_retrieved") && (
-                    <th>
-                      <SortButton
-                        label="Last retrieved"
-                        active={sort === "last_retrieved"}
-                        direction={dir}
-                        onClick={() => changeSort("last_retrieved")}
-                      />
-                    </th>
-                  )}
-                  {visible("source_activity") && (
-                    <th>
-                      <SortButton
-                        label="Source session"
-                        active={sort === "source_activity"}
-                        direction={dir}
-                        onClick={() => changeSort("source_activity")}
-                      />
-                    </th>
-                  )}
+                  {visible("procedure") && th("Procedure", "summary")}
+                  {visible("outcome") && th("Outcome", undefined, { help: sharedColumnHelp.outcome })}
+                  {visible("verified") && th("Verified", undefined, { help: sharedColumnHelp.verification })}
+                  {visible("used") && th("Used", "retrieved", { help: sharedColumnHelp.usage })}
+                  {visible("effect") && th("Effect", "helped", { help: sharedColumnHelp.effect })}
+                  {visible("scope") && th("Scope", "scope", { help: sharedColumnHelp.scope })}
+                  {visible("created") && th("Created", "recent")}
+                  {visible("last_used") && th("Last used", "last_used")}
+                  {visible("client") && th("Client")}
+                  {visible("source_activity") && th("Source task", "source_activity")}
+                  {visible("use_rate") && th("Use rate", "use_rate", { numeric: true })}
+                  {visible("helped") && th("Helpful", "helped", { numeric: true })}
+                  {visible("no_effect") && th("No effect", "no_effect", { numeric: true })}
+                  {visible("harmed") && th("Harmful", "harmed", { numeric: true })}
+                  {visible("unknown") && th("Unknown", "unknown", { numeric: true })}
+                  {visible("feedback_coverage") && th("Feedback complete", "feedback_coverage", { numeric: true })}
+                  {visible("last_retrieved") && th("Last retrieved", "last_retrieved")}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row: any) => {
                   const href = `/procedures/${encodeURIComponent(row.id)}${location.search.size ? `?${location.search}` : ""}`;
+                  const open = () => openDetail(href, location);
                   const evidence = row.evidence || {};
-                  const assessed =
-                    Number(evidence.used || 0) + Number(evidence.not_used || 0);
+                  const used = Number(evidence.used || 0);
+                  const assessed = used + Number(evidence.not_used || 0);
+                  const helped = Number(row.helped_count ?? evidence.helped ?? 0);
+                  const noEffect = Number(row.no_effect_count ?? evidence.no_effect ?? 0);
+                  const harmed = Number(row.harmed_count ?? evidence.harmed ?? 0);
+                  const steps = Number(row.step_count ?? 0);
+                  const outcomeValue = row.outcome;
+                  const verifiedValue = row.verification_status;
                   return (
-                    <tr
-                      key={row.id}
-                      tabIndex={0}
-                      data-detail-id={row.id}
-                      onClick={() => openDetail(href, location)}
-                      onKeyDown={(e) =>
-                        rowKeys(e, () => openDetail(href, location))
-                      }
-                    >
+                    <tr key={row.id} {...rowAttrs(row.id, detailId, open)}>
                       {visible("procedure") && <td className="primary-cell">
-                        <ClampedText text={row.summary || row.goal} />
+                        <RowLink href={href} onOpen={open}><ClampedText text={row.summary || row.goal || "Untitled procedure"} /></RowLink>
+                        {steps > 0 && <span className="meta">{formatCount(steps)} {steps === 1 ? "step" : "steps"}</span>}
                       </td>}
+                      {visible("outcome") && <td>{outcomeValue ? <StatusBadge value={outcomeValue} /> : dash}</td>}
+                      {visible("verified") && <td>{verifiedValue ? <StatusBadge value={verifiedValue} /> : dash}</td>}
+                      {visible("used") && <td><UsageCell used={evidence.used} retrieved={evidence.retrieved} assessed={assessed} /></td>}
+                      {visible("effect") && <td>
+                        {!assessed
+                          ? dash
+                          : helped + noEffect + harmed === 0
+                            ? <span className="muted">Unknown</span>
+                            : <span className="effect-cell" title={`${helped} helped · ${noEffect} no effect · ${harmed} harmed`}>
+                                <span className={helped ? "eff-helped" : "eff-none"}>{formatCount(helped)} helped</span>
+                                <span className="eff-none">{formatCount(noEffect)} no effect</span>
+                                <span className={harmed ? "eff-harmed" : "eff-none"}>{formatCount(harmed)} harmed</span>
+                              </span>}
+                      </td>}
+                      {visible("scope") && <td><ScopeChip scope={row.scope_id} /></td>}
+                      {visible("created") && <td><TimeCell ts={row.created_at} /></td>}
+                      {visible("last_used") && <td><TimeCell ts={row.last_used_ts} /></td>}
                       {visible("client") && <td><ClientBadge client={row.client} /></td>}
-                      {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
-                        {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
+                      {visible("source_activity") && <td className="session-cell" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                        {row.source_activity_id
+                          ? <Link to={`/sessions/${encodeURIComponent(row.source_activity_id)}`}><ClampedText text={row.source_goal || truncate(row.source_activity_id, 18)} lines={1} /></Link>
+                          : dash}
                       </td>}
-                      {visible("effect") && <td className="badge-stack">{assessed ? <StatusBadge value={Number(evidence.harmed || 0) ? "harmed" : Number(evidence.no_effect || 0) ? "no effect" : Number(evidence.helped || 0) ? "helped" : "unknown"} /> : <StatusBadge value="unknown" />}</td>}
-                      {visible("created") && <td title={formatDate(row.created_at)}>
-                        {relativeDate(row.created_at)}
-                      </td>}
-                      {visible("used") && <td className="retrieval-usage-cell"><UsageCell used={evidence.used} retrieved={evidence.retrieved} assessed={assessed} /></td>}
-                      {visible("last_used") && <td title={formatDate(row.last_used_ts)}>{row.last_used_ts ? relativeDate(row.last_used_ts) : "—"}</td>}
                       {visible("use_rate") && <td className="numeric">{formatRate(evidence.used, evidence.retrieved)}</td>}
-                      {visible("helped") && <td className="numeric">{evidence.helped || 0}</td>}
-                      {visible("no_effect") && <td className="numeric">{evidence.no_effect || 0}</td>}
-                      {visible("harmed") && <td className="numeric">{evidence.harmed || 0}</td>}
-                      {visible("unknown") && <td className="numeric">{evidence.unknown || 0}</td>}
-                      {visible("feedback_coverage") && <td className="numeric">{row.feedback_complete || 0}</td>}
-                      {visible("last_retrieved") && <td title={formatDate(row.last_retrieved_ts)}>{row.last_retrieved_ts ? relativeDate(row.last_retrieved_ts) : "—"}</td>}
-                      {visible("source_activity") && <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>{row.source_activity_id ? <Link to={`/sessions/${encodeURIComponent(row.source_activity_id)}`}>{truncate(row.source_activity_id, 18)}</Link> : "—"}</td>}
+                      {visible("helped") && <td className="numeric">{formatCount(helped)}</td>}
+                      {visible("no_effect") && <td className="numeric">{formatCount(noEffect)}</td>}
+                      {visible("harmed") && <td className="numeric">{formatCount(harmed)}</td>}
+                      {visible("unknown") && <td className="numeric">{formatCount(evidence.unknown || 0)}</td>}
+                      {visible("feedback_coverage") && <td className="numeric">{formatCount(row.feedback_complete || 0)}</td>}
+                      {visible("last_retrieved") && <td><TimeCell ts={row.last_retrieved_ts} /></td>}
                     </tr>
                   );
                 })}
@@ -2604,22 +2378,11 @@ export function ProceduresPage({ location }: PageProps) {
         </>
       ) : (
         <EmptyState
-          title={
-            outcome ||
-            verification ||
-            retrieved ||
-            scope ||
-            param(location, "from")
-              ? "No procedures match these filters"
-              : "No procedures created yet"
-          }
+          title={procedureFiltered ? "No procedures match these filters" : "No procedures created yet"}
+          action={procedureFiltered ? <button type="button" className="button secondary" onClick={clearAll}>Clear filters</button> : undefined}
         >
-          {outcome ||
-          verification ||
-          retrieved ||
-          scope ||
-          param(location, "from")
-            ? "Clear or broaden the structural filters to inspect other procedure records."
+          {procedureFiltered
+            ? "Clear or broaden the filters to inspect other procedure records."
             : "Normal sessions may close without producing a reusable procedure."}
         </EmptyState>
       )}
@@ -2632,6 +2395,34 @@ export function ProceduresPage({ location }: PageProps) {
       )}
     </div>
   );
+}
+
+/** Structured values (applicability context, historical evidence) as chips and nested lists; never raw JSON. */
+function StructuredValue({ value }: { value: unknown }): ReactNode {
+  if (value === null || value === undefined || value === "") return <span className="muted">{EMPTY}</span>;
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="muted">None</span>;
+    if (value.every((item) => item === null || typeof item !== "object")) {
+      return <ul className="chip-list">{value.map((item, index) => <li key={index}>{String(item)}</li>)}</ul>;
+    }
+    return <ul className="nested-list">{value.map((item, index) => <li key={index}><StructuredValue value={item} /></li>)}</ul>;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (!entries.length) return <span className="muted">None</span>;
+    return (
+      <dl className="key-values nested">
+        {entries.map(([key, item]) => (
+          <Fragment key={key}>
+            <dt>{key.replaceAll("_", " ")}</dt>
+            <dd><StructuredValue value={item} /></dd>
+          </Fragment>
+        ))}
+      </dl>
+    );
+  }
+  if (typeof value === "boolean") return <>{value ? "Yes" : "No"}</>;
+  return <>{String(value)}</>;
 }
 
 function ProcedureDetail({ id, onClose, onDeleted }: {
@@ -2662,17 +2453,29 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
       throw error;
     }
   };
+  const evidence = p?.evidence || {};
+  const totals = p?.use_history_totals || {};
+  const retrieved = Number(totals.retrieved || 0);
+  const used = Number(totals.used || 0);
+  const assessed = Number(totals.assessed || 0);
+  const helped = Number(evidence.helped || 0);
+  const noEffect = Number(evidence.no_effect || 0);
+  const harmed = Number(evidence.harmed || 0);
+  const verification = source?.verification;
+  const rejected = (p?.feedback || []).filter((item: any) => item.status !== "accepted");
+  const [showRaw, setShowRaw] = useState(false);
   return (
     <Inspector
       title="Procedure"
       id={id}
-      label={p ? truncate(p.summary, 96) : undefined}
-      state={p && <StatusBadge value={p.outcome} />}
+      label={p ? truncate(p.summary, 140) : undefined}
+      hideLabel
+      state={p && <StatusBadge value={p.outcome} label={`Source task: ${statusLabelOf(p.outcome)}${verification?.status ? ` · ${statusLabelOf(verification.status)}` : ""}`} />}
       sections={[
-        { id: "procedure-method", label: "Method" },
+        { id: "procedure-method", label: "Steps" },
         { id: "procedure-history", label: "Use history" },
         { id: "procedure-source", label: "Source task" },
-        { id: "procedure-technical", label: "Technical details" },
+        { id: "procedure-technical", label: "Technical" },
       ]}
       onClose={onClose}
     >
@@ -2687,77 +2490,83 @@ function ProcedureDetail({ id, onClose, onDeleted }: {
         <ErrorState title="Procedure details unavailable" error={request.error} retry={request.reload} />
       ) : p ? (
           <>
-            <Section
-              title="Method"
-              id="procedure-method"
-              actions={
-                allowActions ? (
-                  <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete</button>
-                ) : (
-                  <p className="notice compact">
-                    This dashboard was launched read-only. Delete is unavailable.
-                  </p>
-                )
-              }
-            >
+            <DetailSection id="procedure-method" title="Procedure">
               <h2 className="detail-title">{p.summary}</h2>
-              <p className="neutral">{p.outcome === "failure" ? "Source task reported failure. Review caveats before applying these steps." : p.outcome === "partial" ? "Source task reported a partial outcome. Check applicability before applying these steps." : "Captured from one completed task. Later retrieval and feedback show whether it helped; creation alone does not prove it is a general playbook."}</p>
-              <dl className="key-values">
-                <dt>Client</dt><dd><ClientBadge client={p.client} /></dd>
-                <dt>Scope</dt><dd>{p.scope_id || "No scope recorded"}</dd>
-                <dt>Source outcome</dt><dd><StatusBadge value={p.outcome} /> Reported for the source task</dd>
-                <dt>Source verification</dt><dd><StatusBadge value={source?.verification?.status || "unknown"} /></dd>
-              </dl>
-              <h3>Applicability</h3>
-              {Object.keys(p.context || {}).length ? <dl className="key-values wide procedure-context">
-                {Object.entries(p.context).map(([key, value]) => <Fragment key={key}>
-                  <dt>{key.replaceAll("_", " ")}</dt>
-                  <dd>{Array.isArray(value) ? value.join(", ") : value !== null && typeof value === "object" ? JSON.stringify(value) : String(value)}</dd>
-                </Fragment>)}
-              </dl> : <p className="neutral">No applicability context recorded.</p>}
+              <div className="summary-strip">
+                <ScopeChip scope={p.scope_id} />
+                <ClientBadge client={p.client} />
+                <span>created <TimeCell ts={p.created_at} absolute /></span>
+                <span>retrieved <strong>{formatCount(retrieved)}×</strong></span>
+                {verification?.summary && <span title={verification.summary}>verification: {truncate(verification.summary, 120)}</span>}
+              </div>
+              {p.outcome !== "success" && (
+                <div className="banner" role="note">
+                  <Icon name="warning" />
+                  <div>
+                    <strong>{p.outcome === "failure" ? "The source task reported failure" : "The source task reported a partial outcome"}</strong>
+                    <span>Review the caveats and check applicability before applying these steps.</span>
+                  </div>
+                </div>
+              )}
               <h3>Steps</h3>
-              {p.steps?.length ? <ol className="procedure-steps">{p.steps.map((step: any, index: number) => <li key={index}>{typeof step === "string" ? step : step.summary || JSON.stringify(step)}</li>)}</ol> : <p className="neutral">No steps recorded.</p>}
+              {p.steps?.length ? <ol className="procedure-steps">{p.steps.map((step: any, index: number) => <li key={index}>{typeof step === "string" ? step : step?.summary || <StructuredValue value={step} />}</li>)}</ol> : <p className="neutral">No steps recorded.</p>}
               <h3>Caveats</h3>
-              {p.caveats?.length ? <ul>{p.caveats.map((item: string) => <li key={item}>{item}</li>)}</ul> : <p className="neutral">No caveats were recorded with this procedure.</p>}
-            </Section>
-            <Section title="Use history" id="procedure-history">
-              {(() => {
-                const evidence = p.evidence || {};
-                const retrieved = Number(p.use_history_totals?.retrieved || 0);
-                const used = Number(p.use_history_totals?.used || 0);
-                const assessed = Number(p.use_history_totals?.assessed || 0);
-                const unassessed = Number(p.use_history_totals?.unknown || 0);
-                return (
-                  <><p className="neutral">Lifetime use and effect are agent-reported feedback.</p><dl className="key-values wide">
-                    <dt>Retrieved</dt><dd>{retrieved} retrievals</dd>
-                    <dt>Assessed</dt><dd>{assessed} of {retrieved} retrieved · {unassessed} unassessed</dd>
-                    <dt>Reported used</dt><dd>{assessed ? `${used} of ${assessed} assessed retrievals (${formatRatePercent(used, assessed)})` : `${used} reported used · no assessed retrievals`}</dd>
-                    <dt>Reported effect among uses</dt><dd className="badge-stack">
-                      <StatusBadge value="helped" count={Number(evidence.helped || 0)} />
-                      <StatusBadge value="no effect" count={Number(evidence.no_effect || 0)} />
-                      <StatusBadge value="harmed" count={Number(evidence.harmed || 0)} />
-                      <StatusBadge value="unknown" count={Number(evidence.unknown_effect || 0)} />
-                    </dd>
-                    <dt>Last retrieved</dt><dd>{formatDate(p.use_history_totals?.last_retrieved)}</dd>
-                  </dl></>
-                );
-              })()}
-              {p.retrievals?.length ? <div className="detail-list evidence-list">{p.retrievals.map((item: any) => {
+              {p.caveats?.length ? <ul className="nested-list">{p.caveats.map((item: string) => <li key={item}>{item}</li>)}</ul> : <p className="neutral">No caveats were recorded with this procedure.</p>}
+              <h3>When this applies</h3>
+              {Object.keys(p.context || {}).length ? <StructuredValue value={p.context} /> : <p className="neutral">No applicability context recorded.</p>}
+            </DetailSection>
+            <DetailSection id="procedure-history" title="Use history">
+              <p className="neutral">
+                {retrieved
+                  ? `Retrieved ${formatCount(retrieved)}×; ${formatCount(assessed)} assessed, ${formatCount(used)} reported used${assessed ? ` (${formatRatePercent(used, assessed)})` : ""}. Last retrieved ${formatDate(totals.last_retrieved)}. Use and effect are agent-reported.`
+                  : "Not retrieved yet. This is neutral; it is not evidence against the procedure."}
+              </p>
+              <div className="tile-row" aria-label="Reported effect among uses">
+                <div className="tile ok"><strong>{formatCount(helped)}</strong><span>Helped</span></div>
+                <div className="tile"><strong>{formatCount(noEffect)}</strong><span>No effect</span></div>
+                <div className={`tile${harmed ? " bad" : ""}`}><strong>{formatCount(harmed)}</strong><span>Harmed</span></div>
+              </div>
+              {Number(evidence.unknown_effect || 0) > 0 && <p className="neutral">{formatCount(evidence.unknown_effect)} uses had no effect assessment.</p>}
+              {p.retrievals?.length ? <ul className="link-list">{p.retrievals.map((item: any) => {
                 const feedback = feedbackByRetrieval.get(item.retrieval_id);
-                return <Link key={item.retrieval_id} to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}><div><strong>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"}</strong><small>{item.scope_id || "Scope not recorded"}</small></div><div className="history-signals"><StatusBadge value={feedback?.assessment || "unknown"} />{feedback?.effect && <StatusBadge value={feedback.effect} />}</div></Link>;
-              })}</div> : <p className="neutral">Not retrieved yet. This is neutral; it is not evidence against the procedure.</p>}
-              {p.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Submission audit ({p.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{p.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.assessment || "Submission"} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></div>)}</div></details>}
-            </Section>
-            <Section title="Source task" id="procedure-source">
-              <dl className="key-values"><dt>Goal</dt><dd>{p.goal || "No goal recorded"}</dd><dt>Created</dt><dd>{formatDate(p.created_at)}</dd><dt>Source session</dt><dd>{source?.id ? <Link to={`/sessions/${encodeURIComponent(source.id)}`}>{source.goal ? truncate(source.goal, 120) : source.id}</Link> : "Unavailable"}</dd></dl>
-              {p.outcome_summary && <details><summary>Outcome summary</summary><p>{p.outcome_summary}</p></details>}
-              {source?.verification?.summary && <details><summary>Verification summary</summary><p>{source.verification.summary}</p></details>}
-            </Section>
-            <details className="advanced" id="procedure-technical">
-              <summary>Technical details</summary>
-              <dl className="key-values wide">{Object.entries(p.historical_evidence || {}).map(([key, value]) => <Fragment key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd></Fragment>)}</dl>
-              <dl className="key-values"><dt>Procedure ID</dt><dd>{p.id}</dd><dt>Lifecycle version</dt><dd>{source?.lifecycle_version || "Not recorded"}</dd></dl>
-            </details>
+                return (
+                  <li key={item.retrieval_id}>
+                    <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>
+                      <span className="item-main">
+                        <span>{truncate(item.task_preview || item.query || "No query recorded", 130)}</span>
+                        <small><TimeCell ts={item.created_at} absolute /> · {item.retrieval_type === "context" ? "Activation" : "Recall"}{feedback?.reason ? ` · “${truncate(feedback.reason, 100)}”` : ""}</small>
+                      </span>
+                      <span className="item-end"><StatusBadge value={feedback?.assessment || "unknown"} />{feedback?.effect && <StatusBadge value={feedback.effect} />}</span>
+                    </Link>
+                  </li>
+                );
+              })}</ul> : null}
+              {rejected.length > 0 && <details className="advanced"><summary>Rejected submissions ({rejected.length})</summary><ul className="link-list">{rejected.map((item: any) => <li key={item.event_id}><div><span className="item-main"><span>{item.assessment || "Submission"} · {item.status}</span><small>{item.rejection_reason || item.reason || "No rejection reason recorded."}</small></span><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></div></li>)}</ul></details>}
+            </DetailSection>
+            <DetailSection id="procedure-source" title="Source task">
+              <KeyValueList items={[
+                ["Goal", p.goal || "No goal recorded"],
+                ["Session", source?.id ? <Link to={`/sessions/${encodeURIComponent(source.id)}`}>{source.goal ? truncate(source.goal, 140) : "Open source session"}</Link> : "Unavailable"],
+                ["Outcome", <><StatusBadge value={p.outcome} />{p.outcome_summary && <p className="inline-prose">{p.outcome_summary}</p>}</>],
+                ["Verification", <><StatusBadge value={verification?.status || "unknown"} />{verification?.summary && <p className="inline-prose">{verification.summary}</p>}</>],
+              ]} />
+            </DetailSection>
+            <DetailSection id="procedure-technical" title="Technical details" collapsed>
+              <KeyValueList wide items={[
+                ["Procedure ID", <IdChip value={p.id} head={12} tail={6} />],
+                ["Lifecycle version", source?.lifecycle_version || "Not recorded"],
+                ...Object.entries(p.historical_evidence || {}).map(([key, value]) => [key.replaceAll("_", " "), <StructuredValue value={value} />] as [ReactNode, ReactNode]),
+              ]} />
+              <button type="button" className="link-button" onClick={() => setShowRaw((v) => !v)}>{showRaw ? "Hide raw" : "View raw"}</button>
+              {showRaw && <CodeBlock label="Raw procedure record">{JSON.stringify(p, null, 2)}</CodeBlock>}
+            </DetailSection>
+            <div className="detail-footer">
+              {allowActions ? (
+                <button className="button danger-secondary" onClick={() => setConfirm(true)}>Delete procedure…</button>
+              ) : (
+                <p className="notice compact">This dashboard was launched read-only. Delete is unavailable.</p>
+              )}
+            </div>
             {confirm && <DeleteConfirmation previewUrl={`/api/procedures/${encodeURIComponent(p.id)}/delete-preview`} onCancel={() => setConfirm(false)} onConfirm={remove} />}
           </>
         ) : <EmptyState title="Procedure not found">This procedure no longer exists or is not available in the current database.</EmptyState>
@@ -2776,26 +2585,34 @@ export function ActivityPage({ location }: PageProps) {
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const activityColumns = [
-    { id: "started", label: "Started" }, { id: "task", label: "Task / goal" }, { id: "client", label: "Client", description: "The coding agent client that ran this session." }, { id: "scope", label: "Scope" },
-    { id: "outcome", label: "Outcome" }, { id: "closure", label: "Closure", description: "Whether the session's feedback loop closed (complete, incomplete, or pending)." },
+    { id: "started", label: "Started", locked: true },
+    { id: "task", label: "Goal" },
+    { id: "client", label: "Client", description: "The coding agent client that ran this session." },
+    { id: "outcome", label: "Outcome" },
+    { id: "status", label: "Status", description: "Running, ended, or idle-closed (closed by the idle reaper without a commit)." },
+    { id: "feedback", label: "Feedback", description: "Whether every returned item received an explicit assessment: complete, partial, none, or still open." },
     { id: "duration", label: "Duration", description: "Elapsed time between the session start and close." },
     { id: "retrievals", label: "Retrievals", description: "Distinct retrieval events recorded in this session." },
+    { id: "saved", label: "Saved", description: "Memories saved with remember during this session." },
+    { id: "used", label: "Used", description: "Returned items the agent reported using." },
+    { id: "scope", label: "Scope (separate column)" },
     { id: "memories_touched", label: "Memories touched", description: "Distinct memory records with evidence linked to this session." },
     { id: "procedure", label: "Procedure record", description: "Whether closing this session created a reusable procedure." },
-    { id: "retrieved_memories", label: "Retrieved memories" }, { id: "retrieved_procedures", label: "Retrieved procedures" },
-    { id: "feedback_coverage", label: "Feedback coverage" }, { id: "episodes", label: "Episodes formed" },
-    { id: "timeline_events", label: "Timeline event count" }, { id: "last_event", label: "Last event" },
+    { id: "retrieved_memories", label: "Retrieved memories" },
+    { id: "retrieved_procedures", label: "Retrieved procedures" },
+    { id: "episodes", label: "Episodes formed" },
+    { id: "timeline_events", label: "Timeline event count" },
+    { id: "last_event", label: "Last event" },
     { id: "verification", label: "Verification" },
   ];
-  const [visibleColumns, setVisibleColumns] = useState<string[]>([
-    "started", "task", "client", "scope", "outcome", "closure", "duration", "retrievals", "memories_touched", "procedure",
-  ]);
+  const [visibleColumns, setVisibleColumns, resetColumns] = useColumns("sessions", ["started", "task", "client", "outcome", "status", "feedback", "duration", "retrievals", "saved", "used"]);
   const visible = (id: string) => visibleColumns.includes(id);
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 250);
     return () => clearTimeout(timer);
   }, [search]);
-  const activityFilters = `scope=${encodeURIComponent(param(location, "scope"))}&outcome=${param(location, "outcome")}&feedback=${param(location, "feedback")}&agent=${encodeURIComponent(param(location, "agent"))}&continuity=${encodeURIComponent(param(location, "continuity"))}&lane=${param(location, "lane")}&hours=${param(location, "hours", "all")}&from=${param(location, "from")}&to=${param(location, "to")}&q=${encodeURIComponent(debounced)}`;
+  const preset = param(location, "preset");
+  const activityFilters = `scope=${encodeURIComponent(param(location, "scope"))}&outcome=${param(location, "outcome")}&feedback=${param(location, "feedback")}&preset=${preset}&agent=${encodeURIComponent(param(location, "agent"))}&continuity=${encodeURIComponent(param(location, "continuity"))}&lane=${param(location, "lane")}&hours=${param(location, "hours", "all")}&from=${param(location, "from")}&to=${param(location, "to")}&q=${encodeURIComponent(debounced)}`;
   const rowsRequest = useApi<Json>(`/api/sessions?${activityFilters}&sort=${sort}&dir=${dir}&page=${page}&per_page=50&include_summary=false`);
   const summaryRequest = useApi<Json>(`/api/sessions?${activityFilters}&summary_only=true`);
   const reloadActivity = () => {
@@ -2814,6 +2631,44 @@ export function ActivityPage({ location }: PageProps) {
       dir: sort === column && dir === "desc" ? "asc" : "desc",
       page: 1,
     });
+  useClampPage("/sessions", location, rowsRequest.data?.pagination, rows.length);
+  const clearAll = () => {
+    setSearch("");
+    setDebounced("");
+    navigate("/sessions");
+  };
+  const fromParam = param(location, "from");
+  const agentParam = param(location, "agent") || param(location, "client");
+  const [knownClients, setKnownClients] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!rows.length) return;
+    setKnownClients((old) => {
+      const next = { ...old };
+      for (const row of rows) if (row.client?.key) next[row.client.key] = row.client.name || row.client.key;
+      return next;
+    });
+  }, [rows]);
+  const sessionChips = [
+    debounced && { key: "q", label: `Search: “${truncate(debounced, 30)}”`, onRemove: () => { setSearch(""); setDebounced(""); } },
+    param(location, "outcome") && { key: "outcome", label: `Outcome: ${param(location, "outcome") === "unreported" ? "not reported" : param(location, "outcome")}`, onRemove: () => updateParams("/sessions", location, { outcome: undefined, page: 1 }) },
+    agentParam && { key: "agent", label: `Client: ${knownClients[agentParam] || agentParam}`, onRemove: () => updateParams("/sessions", location, { agent: undefined, client: undefined, page: 1 }) },
+    param(location, "feedback") && { key: "feedback", label: `Feedback: ${param(location, "feedback")}`, onRemove: () => updateParams("/sessions", location, { feedback: undefined, page: 1 }) },
+    param(location, "scope") && { key: "scope", label: `Scope: ${shortScope(param(location, "scope"))}`, onRemove: () => updateParams("/sessions", location, { scope: undefined, page: 1 }) },
+    param(location, "lane") && { key: "lane", label: `Session lane: ${param(location, "lane").replaceAll("_", " ")}`, onRemove: () => updateParams("/sessions", location, { lane: undefined, page: 1 }) },
+    param(location, "continuity") && { key: "continuity", label: "Same conversation", onRemove: () => updateParams("/sessions", location, { continuity: undefined, page: 1 }) },
+    fromParam && { key: "from", label: `Started since ${formatDay(fromParam)}`, onRemove: () => updateParams("/sessions", location, { from: undefined, page: 1 }) },
+    periodChip({ ...location, search: new URLSearchParams([...location.search].filter(([key]) => key !== "from")) }, () => updateParams("/sessions", location, { hours: undefined, to: undefined, page: 1 })),
+  ].filter(Boolean) as { key: string; label: string; onRemove: () => void }[];
+  const sessionFiltered = sessionChips.length > 0 || Boolean(preset);
+  const th = (label: string, column?: string, extra: { numeric?: boolean; help?: string } = {}) => (
+    <SortableTh label={label} column={column} sort={sort} dir={dir} onSort={changeSort} {...extra} />
+  );
+  const presets = [
+    ["", "All"],
+    ["problems", "Failed or partial"],
+    ["no_feedback", "No feedback"],
+    ["idle_closed", "Idle-closed"],
+  ];
   return (
     <div className="page">
       <PageHeader
@@ -2822,9 +2677,14 @@ export function ActivityPage({ location }: PageProps) {
         updatedAt={rowsRequest.updatedAt || summaryRequest.updatedAt}
         refreshing={rowsRequest.refreshing || summaryRequest.refreshing}
         onRefresh={reloadActivity}
+        hideAutoRefresh
+        controls={
+          <div className="home-controls">
+            <PeriodFilter location={location} path="/sessions" hideLabel />
+          </div>
+        }
       />
       <div className="filter-bar">
-        <PeriodFilter location={location} path="/sessions" />
         <label>
           Search
           <input
@@ -2835,77 +2695,34 @@ export function ActivityPage({ location }: PageProps) {
         </label>
         <label>
           Outcome
-          <select
-            value={param(location, "outcome")}
-            onChange={(e) =>
-              updateParams("/sessions", location, {
-                outcome: e.target.value,
-                page: 1,
-              })
-            }
-          >
+          <select value={param(location, "outcome")} onChange={(e) => updateParams("/sessions", location, { outcome: e.target.value, page: 1 })}>
             <option value="">Any outcome</option>
             <option value="success">Success</option>
             <option value="partial">Partial</option>
             <option value="failure">Failure</option>
+            <option value="unreported">Not reported</option>
           </select>
         </label>
         <label>
-          Closure
-          <select
-            value={param(location, "feedback")}
-            onChange={(e) =>
-              updateParams("/sessions", location, {
-                feedback: e.target.value,
-                page: 1,
-              })
-            }
-          >
-            <option value="">Any closure</option>
-            <option value="complete">Complete</option>
-            <option value="incomplete">Incomplete</option>
-            <option value="pending">Pending</option>
+          Client
+          <select value={agentParam} onChange={(e) => updateParams("/sessions", location, { agent: e.target.value, client: undefined, page: 1 })}>
+            <option value="">Any client</option>
+            {agentParam && !knownClients[agentParam] && <option value={agentParam}>{agentParam}</option>}
+            {Object.entries(knownClients).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
           </select>
         </label>
-        <label>
-          Started since
-          <input
-            type="date"
-            value={
-              param(location, "from")
-                ? new Date(Number(param(location, "from")) * 1000)
-                    .toISOString()
-                    .slice(0, 10)
-                : ""
-            }
-            onChange={(event) =>
-              updateParams("/sessions", location, {
-                from: event.target.value
-                  ? Math.floor(new Date(event.target.value).getTime() / 1000)
-                  : undefined,
-                page: 1,
-              })
-            }
-          />
-        </label>
-        <details className="filter-menu">
-          <summary>More filters</summary>
-          <div>
-            <ColumnsControl columns={activityColumns} visible={visibleColumns} onChange={setVisibleColumns} />
-          </div>
-        </details>
+        <DateFilter
+          label="Started since"
+          seconds={fromParam}
+          onChange={(value) => updateParams("/sessions", location, { from: value, page: 1 })}
+        />
       </div>
-      {param(location, "lane") && (
-        <div className="filter-chips">
-          <button
-            onClick={() =>
-              updateParams("/sessions", location, { lane: undefined, page: 1 })
-            }
-          >
-            Session lane: {param(location, "lane").replaceAll("_", " ")} ×
-          </button>
-        </div>
-      )}
+      <div className="state-chips" role="group" aria-label="Session presets">
+        {presets.map(([value, label]) => (
+          <button key={label} type="button" className="state-chip" aria-pressed={preset === value} onClick={() => updateParams("/sessions", location, { preset: value || undefined, page: 1 })}>{label}</button>
+        ))}
+      </div>
+      <ActiveFilters chips={sessionChips} onClear={clearAll} />
       {summaryRequest.loading && !summaryRequest.data ? (
         <MetricCardsSkeleton count={3} />
       ) : summaryRequest.error && !summaryRequest.data ? (
@@ -2969,76 +2786,65 @@ export function ActivityPage({ location }: PageProps) {
         <ErrorState title="Session results unavailable" error={rowsRequest.error} retry={reloadActivity} />
       ) : rows.length ? (
         <>
+          <div className="table-toolbar">
+            <span>{formatCount(pagination.total)} {pagination.total === 1 ? "session" : "sessions"}</span>
+            <ColumnsControl columns={activityColumns} visible={visibleColumns} onChange={setVisibleColumns} onReset={resetColumns} />
+          </div>
           <TableFrame label="Session results">
-            <table className="activity-table">
+            <table className="activity-table session-accent">
               <thead>
                 <tr>
-                  {visible("started") && <th aria-sort={sort === "started" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Started" active={sort === "started"} direction={dir} onClick={() => changeSort("started")} />
-                  </th>}
-                  {visible("task") && <th aria-sort={sort === "task" ? (dir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Task / goal" active={sort === "task"} direction={dir} onClick={() => changeSort("task")} />
-                  </th>}
-                  {visible("client") && <th>Client</th>}
-                  {visible("scope") && <th><SortButton label="Scope" active={sort === "scope"} direction={dir} onClick={() => changeSort("scope")} /><DefinitionTooltip label="Scope definition">{sharedColumnHelp.scope}</DefinitionTooltip></th>}
-                  {visible("outcome") && <th><SortButton label="Outcome" active={sort === "outcome"} direction={dir} onClick={() => changeSort("outcome")} /></th>}
-                  {visible("closure") && <th><SortButton label="Closure" active={sort === "closure"} direction={dir} onClick={() => changeSort("closure")} /><DefinitionTooltip label="Closure definition">Whether the session's feedback loop closed. Pending means the session is still open.</DefinitionTooltip></th>}
-                  {visible("duration") && <th className="numeric"><SortButton label="Duration" active={sort === "duration"} direction={dir} onClick={() => changeSort("duration")} /></th>}
-                  {visible("retrievals") && <th className="numeric"><SortButton label="Retrievals" active={sort === "retrievals"} direction={dir} onClick={() => changeSort("retrievals")} /><DefinitionTooltip label="Retrievals definition">Distinct retrieval events recorded in this session.</DefinitionTooltip></th>}
-                  {visible("memories_touched") && <th className="numeric"><SortButton label="Memories touched" active={sort === "memories_touched"} direction={dir} onClick={() => changeSort("memories_touched")} /><DefinitionTooltip label="Memories touched definition">Distinct memory records with evidence linked to this session.</DefinitionTooltip></th>}
-                  {visible("procedure") && <th><SortButton label="Procedure record" active={sort === "procedure"} direction={dir} onClick={() => changeSort("procedure")} /><DefinitionTooltip label="Procedure record definition">Whether closing this session created a reusable procedure. Creation does not automatically mean it is a proven playbook.</DefinitionTooltip></th>}
-                  {visible("retrieved_memories") && <th className="numeric"><SortButton label="Retrieved memories" active={sort === "retrieved_memories"} direction={dir} onClick={() => changeSort("retrieved_memories")} /></th>}
-                  {visible("retrieved_procedures") && <th className="numeric"><SortButton label="Retrieved procedures" active={sort === "retrieved_procedures"} direction={dir} onClick={() => changeSort("retrieved_procedures")} /></th>}
-                  {visible("feedback_coverage") && <th><SortButton label="Feedback coverage" active={sort === "feedback_coverage"} direction={dir} onClick={() => changeSort("feedback_coverage")} /></th>}
-                  {visible("episodes") && <th className="numeric"><SortButton label="Episodes formed" active={sort === "episodes"} direction={dir} onClick={() => changeSort("episodes")} /></th>}
-                  {visible("timeline_events") && <th className="numeric"><SortButton label="Timeline event count" active={sort === "timeline_events"} direction={dir} onClick={() => changeSort("timeline_events")} /></th>}
-                  {visible("last_event") && <th><SortButton label="Last event" active={sort === "last_event"} direction={dir} onClick={() => changeSort("last_event")} /></th>}
-                  {visible("verification") && <th><SortButton label="Verification" active={sort === "verification"} direction={dir} onClick={() => changeSort("verification")} /></th>}
+                  {visible("started") && th("Started", "started")}
+                  {visible("task") && th("Goal", "task")}
+                  {visible("client") && th("Client")}
+                  {visible("outcome") && th("Outcome", "outcome", { help: sharedColumnHelp.outcome })}
+                  {visible("status") && th("Status", undefined, { help: "Running: no end recorded yet. Ended: closed with a commit. Idle-closed: closed after inactivity without a commit." })}
+                  {visible("feedback") && th("Feedback", "closure", { help: "Whether every returned item received an explicit assessment: complete, partial, none, or still open." })}
+                  {visible("duration") && th("Duration", "duration", { numeric: true })}
+                  {visible("retrievals") && th("Retrievals", "retrievals", { numeric: true, help: "Distinct retrieval events recorded in this session." })}
+                  {visible("saved") && th("Saved", undefined, { numeric: true, help: "Memories saved with remember during this session." })}
+                  {visible("used") && th("Used", undefined, { numeric: true, help: "Returned items the agent reported using." })}
+                  {visible("scope") && th("Scope", "scope", { help: sharedColumnHelp.scope })}
+                  {visible("memories_touched") && th("Memories touched", "memories_touched", { numeric: true })}
+                  {visible("procedure") && th("Procedure", "procedure")}
+                  {visible("retrieved_memories") && th("Retrieved memories", "retrieved_memories", { numeric: true })}
+                  {visible("retrieved_procedures") && th("Retrieved procedures", "retrieved_procedures", { numeric: true })}
+                  {visible("episodes") && th("Episodes", "episodes", { numeric: true })}
+                  {visible("timeline_events") && th("Timeline events", "timeline_events", { numeric: true })}
+                  {visible("last_event") && th("Last event", "last_event")}
+                  {visible("verification") && th("Verification", "verification")}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row: any) => {
                   const href = `/sessions/${encodeURIComponent(row.id)}${location.search.size ? `?${location.search}` : ""}`;
+                  const open = () => openDetail(href, location);
+                  const status = row.status || (row.ended_ts ? "ended" : null);
+                  const feedbackState = row.feedback_state || (row.feedback_status === "complete" ? "complete" : row.feedback_status === "incomplete" ? "partial" : row.feedback_status === "pending" ? "pending_open" : "none");
+                  const outcomeKnown = ["success", "partial", "failure"].includes(String(row.outcome));
                   return (
-                    <tr
-                      key={row.id}
-                      tabIndex={0}
-                      data-detail-id={row.id}
-                      onClick={() => openDetail(href, location)}
-                      onKeyDown={(e) =>
-                        rowKeys(e, () => openDetail(href, location))
-                      }
-                    >
-                      {visible("started") && <td title={formatDate(row.started_ts)}>
-                        {relativeDate(row.started_ts)}
-                      </td>}
+                    <tr key={row.id} {...rowAttrs(row.id, detailId, open)}>
+                      {visible("started") && <td className="nowrap"><TimeCell ts={row.started_ts} /></td>}
                       {visible("task") && <td className="primary-cell">
-                        <ClampedText
-                          text={row.goal_preview || "Untitled session"}
-                        />
+                        <RowLink href={href} onOpen={open}><ClampedText text={row.goal_preview || "Untitled session"} /></RowLink>
+                        {row.scope_id && !visible("scope") && <span className="meta"><ScopeChip scope={row.scope_id} /></span>}
                       </td>}
                       {visible("client") && <td><ClientBadge client={row.client} /></td>}
-                      {visible("scope") && <td className="scope-text" title={row.scope_id || undefined}>
-                        {row.scope_id ? truncate(row.scope_id, 30) : "No scope"}
-                      </td>}
-                      {visible("outcome") && <td>
-                        <StatusBadge value={row.outcome} />
-                      </td>}
-                      {visible("closure") && <td>
-                        <StatusBadge value={row.feedback_status} />
-                      </td>}
-                      {visible("duration") && <td className="numeric">
-                        {row.duration_s != null ? formatDuration(row.duration_s) : "—"}
-                      </td>}
-                      {visible("retrievals") && <td className="numeric">{row.retrieval_count || 0}</td>}
-                      {visible("memories_touched") && <td className="numeric">{row.memory_count || 0}</td>}
+                      {visible("outcome") && <td>{outcomeKnown ? <StatusBadge value={row.outcome} /> : status === "running" ? dash : <StatusBadge value="not_reported" />}</td>}
+                      {visible("status") && <td>{status ? <StatusBadge value={status} /> : dash}</td>}
+                      {visible("feedback") && <td><StatusBadge value={feedbackState} /></td>}
+                      {visible("duration") && <td className="numeric">{row.duration_s != null ? formatDuration(row.duration_s) : dash}</td>}
+                      {visible("retrievals") && <td className="numeric">{formatCount(row.retrieval_count || 0)}</td>}
+                      {visible("saved") && <td className="numeric">{formatCount(row.saved_count ?? 0)}</td>}
+                      {visible("used") && <td className="numeric" title={row.assessed_count != null ? `${row.used_count ?? 0} used of ${row.assessed_count} assessed · ${row.returned_count ?? 0} returned` : undefined}>{formatCount(row.used_count ?? 0)}</td>}
+                      {visible("scope") && <td><ScopeChip scope={row.scope_id} /></td>}
+                      {visible("memories_touched") && <td className="numeric">{formatCount(row.memory_count || 0)}</td>}
                       {visible("procedure") && <td><StatusBadge value={row.procedure_state || "none"} /></td>}
-                      {visible("retrieved_memories") && <td className="numeric">{row.retrieved_memory_count || 0}</td>}
-                      {visible("retrieved_procedures") && <td className="numeric">{row.retrieved_procedure_count || 0}</td>}
-                      {visible("feedback_coverage") && <td><StatusBadge value={row.feedback_status} /></td>}
-                      {visible("episodes") && <td className="numeric">{row.episode_count || 0}</td>}
-                      {visible("timeline_events") && <td className="numeric">{row.timeline_event_count || 0}</td>}
-                      {visible("last_event") && <td title={formatDate(row.last_event_ts)}>{row.last_event_ts ? relativeDate(row.last_event_ts) : "—"}</td>}
+                      {visible("retrieved_memories") && <td className="numeric">{formatCount(row.retrieved_memory_count || 0)}</td>}
+                      {visible("retrieved_procedures") && <td className="numeric">{formatCount(row.retrieved_procedure_count || 0)}</td>}
+                      {visible("episodes") && <td className="numeric">{formatCount(row.episode_count || 0)}</td>}
+                      {visible("timeline_events") && <td className="numeric">{formatCount(row.timeline_event_count || 0)}</td>}
+                      {visible("last_event") && <td><TimeCell ts={row.last_event_ts} /></td>}
                       {visible("verification") && <td><StatusBadge value={row.verification_status || "unknown"} /></td>}
                     </tr>
                   );
@@ -3057,13 +2863,10 @@ export function ActivityPage({ location }: PageProps) {
         </>
       ) : (
         <EmptyState
-          title={
-            search || location.search.size
-              ? "No session matches these filters"
-              : "No session yet"
-          }
+          title={sessionFiltered ? "No session matches these filters" : "No session yet"}
+          action={sessionFiltered ? <button type="button" className="button secondary" onClick={clearAll}>Clear filters</button> : undefined}
         >
-          {search || location.search.size
+          {sessionFiltered
             ? "Clear or broaden the filters to inspect other recorded task segments."
             : "A session appears when an agent uses Slowave. A zero count is normal on a new installation."}
         </EmptyState>
@@ -3082,8 +2885,10 @@ const CALL_LABELS: Record<string, string> = {
   activate: "Activate", recall: "Recall", recall_page: "Recall page", remember: "Remember",
   feedback: "Feedback", commit: "Commit", session_reaped: "Idle close", session_start: "Start",
 };
+const CALL_ORDER = ["activate", "recall", "recall_page", "remember", "feedback", "commit", "session_reaped", "session_start"];
 const EXPOSURE_KINDS = ["activate", "recall", "recall_page"];
 const CALL_PAGE = 200;
+const GAP_SECONDS = 300;
 
 function itemHref(item: any) {
   return item.kind === "procedure"
@@ -3091,10 +2896,11 @@ function itemHref(item: any) {
     : `/memory/${encodeURIComponent(item.id)}`;
 }
 
+const itemText = (item: any) => String(item?.text ?? item?.title ?? item?.content_text ?? item?.preview ?? "").trim();
+const plural = (count: number, one: string, many = `${one}s`) => `${formatCount(count)} ${count === 1 ? one : many}`;
+
 function formatOffset(seconds: number) {
-  if (seconds < 60) return `+${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  return `+${m}m ${seconds % 60}s`;
+  return `+${formatDuration(seconds)}`;
 }
 
 function capitalize(value: string) {
@@ -3116,6 +2922,8 @@ function SessionCallLog({ sessionId, data }: { sessionId: string; data: Json }) 
   const shown: any[] = kind && filtered?.kind === kind ? filtered.events : kind ? [] : all;
   const shownTotal = kind ? (filtered?.kind === kind ? filtered.total : kindCounts[kind] || 0) : total;
   const start = Number(all[0]?.ts || 0);
+  const sessionOutcome = data.session?.outcome;
+  const idleClosed = data.session?.status === "idle_closed";
 
   const fetchPage = async (afterId: number, kinds: string) => {
     const query = `after_id=${afterId}&limit=${CALL_PAGE}${kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""}`;
@@ -3191,100 +2999,152 @@ function SessionCallLog({ sessionId, data }: { sessionId: string; data: Json }) 
   };
 
   const copyLink = (rowId: string) => {
-    navigator.clipboard?.writeText(`${window.location.origin}/sessions/${encodeURIComponent(sessionId)}#${rowId}`);
-    setCopied(rowId);
+    try {
+      void navigator.clipboard?.writeText(`${window.location.origin}/sessions/${encodeURIComponent(sessionId)}#${rowId}`);
+      setCopied(rowId);
+    } catch {
+      setCopied("");
+    }
     window.setTimeout(() => setCopied((current) => (current === rowId ? "" : current)), 1500);
   };
 
-  const chipKinds = Object.entries(kindCounts);
+  const chipKinds = Object.entries(kindCounts)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => (CALL_ORDER.indexOf(a) + 1 || 99) - (CALL_ORDER.indexOf(b) + 1 || 99));
+  const rows: ReactNode[] = [];
+  shown.forEach((item: any, position: number) => {
+    const previous = shown[position - 1];
+    if (previous && Number(item.ts) - Number(previous.ts) > GAP_SECONDS) {
+      rows.push(<li key={`gap-${item.id}`} className="call-gap" aria-label={`Pause of ${formatDuration(Number(item.ts) - Number(previous.ts))}`}><span>Paused {formatDuration(Number(item.ts) - Number(previous.ts))}</span></li>);
+    }
+    const rowId = `call-${item.id}`;
+    const exposure = EXPOSURE_KINDS.includes(item.kind);
+    const failed = item.status === "error" || Boolean(item.error_code);
+    const label = CALL_LABELS[item.kind] || capitalize(item.kind);
+    const assessed = item.kind === "feedback" ? exposureByRetrieval.get(item.retrieval_id) : undefined;
+    const textById = new Map<string, string>((assessed?.items || []).map((x: any) => [x.id, itemText(x)]));
+    const offset = start && item.ts ? formatOffset(Math.max(0, Number(item.ts) - start)) : "";
+    const returned: any[] = item.items || [];
+    const memoryCount = returned.filter((x) => x.kind !== "procedure").length;
+    const procedureCount = returned.length - memoryCount;
+    const returnedTotal = Number(item.count_n ?? returned.length ?? 0);
+    const saved: any[] = item.saved_memories?.length
+      ? item.saved_memories
+      : item.memory_id ? [{ id: item.memory_id, text: item.summary }] : [];
+    let title: ReactNode;
+    let subtitle: ReactNode = null;
+    if (item.kind === "activate") {
+      title = `Activated · ${plural(memoryCount || (returnedTotal - procedureCount), "memory", "memories")}, ${plural(procedureCount, "procedure")}`;
+      if (item.summary) subtitle = <span className="call-sub clamp-text" title={item.summary}>{item.summary}</span>;
+    } else if (item.kind === "recall" || item.kind === "recall_page") {
+      title = item.kind === "recall_page" ? "Next page of results" : `Recalled · ${plural(returnedTotal, "item")}`;
+      if (item.summary && item.kind === "recall") subtitle = <span className="call-sub clamp-text" title={item.summary}>{item.summary}</span>;
+    } else if (item.kind === "feedback") {
+      title = assessed ? `Assessed the result of call ${assessed.ordinal}` : "Assessed a retrieval";
+    } else if (item.kind === "commit") {
+      title = <>Closed the task {sessionOutcome && <StatusBadge value={sessionOutcome} />}</>;
+      if (item.summary) subtitle = <span className="call-sub clamp-text" title={item.summary}>{item.summary}</span>;
+    } else if (item.kind === "session_reaped") {
+      title = "No commit received; closed after inactivity";
+    } else if (item.kind === "remember") {
+      title = saved.length > 1 ? `Saved ${plural(saved.length, "memory", "memories")}` : "Saved a memory";
+      const preview = itemText(saved[0]) || item.summary;
+      if (preview) subtitle = <span className="call-sub clamp-text" title={preview}>{preview}</span>;
+    } else {
+      title = truncate(item.summary || label, 160);
+    }
+    rows.push(
+      <li key={item.id} id={rowId} className={`call-row kind-${item.kind}${highlight === rowId ? " highlighted" : ""}${failed ? " failed" : ""}`}>
+        <span className="call-ordinal" aria-hidden="true">{item.ordinal}</span>
+        <div className="call-main">
+          <div className="call-head">
+            <span className="call-kind">{label}</span>
+            {failed && <span className="call-failed">failed{item.error_code ? ` · ${item.error_code}` : ""}</span>}
+            <span className="call-title">{title}</span>
+            <time className="call-time" title={formatDate(item.ts)}>{formatClock(item.ts)}{offset ? ` · ${offset}` : ""}</time>
+          </div>
+          {subtitle}
+          {(item.duration_ms != null || item.estimated_tokens != null || item.reconstructed) && (
+            <div className="call-meta muted">
+              {[
+                item.duration_ms != null ? formatMs(item.duration_ms) : null,
+                item.estimated_tokens != null ? `~${formatTokens(item.estimated_tokens)} tokens` : null,
+                item.reconstructed ? "reconstructed from stored records" : null,
+              ].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          {exposure && (
+            <div className="call-meta">
+              {formatCount(returnedTotal)} returned
+              {item.feedback_count ? ` · ${formatCount(item.feedback_count)} assessed` : ""}
+              {item.retrieval_id && <> · <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></>}
+            </div>
+          )}
+          {exposure && returned.length > 0 && (
+            <details className="call-items-details">
+              <summary>{plural(returned.length, "item")} returned</summary>
+              <ul className="call-items">
+                {returned.map((x: any) => (
+                  <li key={x.id}><TypeBadge type={x.kind === "procedure" ? "procedure" : "memory"} /><Link to={itemHref(x)}>{truncate(itemText(x) || x.id, 120)}</Link></li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {item.kind === "remember" && (
+            saved.length > 0 && saved[0].id && !item.pending_consolidation ? (
+              <ul className="call-items">
+                {saved.map((x: any) => <li key={x.id}><TypeBadge type="memory" /><Link to={`/memory/${encodeURIComponent(x.id)}`}>{itemText(x) ? truncate(itemText(x), 120) : "Open saved memory"}</Link></li>)}
+              </ul>
+            ) : (
+              <div className="call-meta"><StatusBadge value="pending" label="Pending consolidation" /> <span className="muted">The memory appears once Slowave consolidates it.</span></div>
+            )
+          )}
+          {item.kind === "feedback" && (
+            <>
+              <div className="call-meta">
+                {assessed
+                  ? <>On <button type="button" className="link-button" onClick={() => focusCall(assessed.id)}>call {assessed.ordinal} ({CALL_LABELS[assessed.kind]})</button></>
+                  : item.retrieval_id ? <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open assessed retrieval</Link> : null}
+              </div>
+              {(item.assessments || []).length > 0 ? (
+                <ul className="call-items">
+                  {item.assessments.map((x: any, i: number) => (
+                    <li key={`${x.target_id}-${i}`}>
+                      <StatusBadge value={x.assessment || "unknown"} />
+                      {x.effect && <StatusBadge value={x.effect} />}
+                      <Link to={itemHref({ id: x.target_id, kind: x.target_kind === "procedure" ? "procedure" : "memory" })}>{truncate(textById.get(x.target_id) || x.target_title || x.target_id, 120)}</Link>
+                    </li>
+                  ))}
+                </ul>
+              ) : <div className="call-meta muted">No accepted assessments</div>}
+            </>
+          )}
+        </div>
+        <button type="button" className="call-link" aria-label={`Copy link to call ${item.ordinal}`} onClick={() => copyLink(rowId)}>{copied === rowId ? "Copied" : "Copy link"}</button>
+      </li>,
+    );
+  });
   return (
     <>
-      <p className="neutral">Slowave calls in the order they were received.{data.call_log_approximate ? " Older calls were reconstructed from stored records, so order within the same second is approximate." : ""} Prompts and replies of the host client are not stored.</p>
       {chipKinds.length > 1 && (
         <div className="chip-row" role="group" aria-label="Filter calls by kind">
-          <button type="button" className={`chip${kind ? "" : " active"}`} aria-pressed={!kind} onClick={() => setKind("")}>All {total}</button>
+          <button type="button" className={`chip${kind ? "" : " active"}`} aria-pressed={!kind} onClick={() => setKind("")}>All {formatCount(total)}</button>
           {chipKinds.map(([name, count]) => (
-            <button key={name} type="button" className={`chip${kind === name ? " active" : ""}`} aria-pressed={kind === name} onClick={() => setKind(kind === name ? "" : name)}>{CALL_LABELS[name] || name} {count}</button>
+            <button key={name} type="button" className={`chip${kind === name ? " active" : ""}`} aria-pressed={kind === name} onClick={() => setKind(kind === name ? "" : name)}>{CALL_LABELS[name] || name} {formatCount(count)}</button>
           ))}
         </div>
       )}
       {shown.length ? (
-        <ol className="call-log">
-          {shown.map((item: any) => {
-            const ordinal = item.ordinal;
-            const rowId = `call-${item.id}`;
-            const exposure = EXPOSURE_KINDS.includes(item.kind);
-            const assessed = item.kind === "feedback" ? exposureByRetrieval.get(item.retrieval_id) : undefined;
-            const textById = new Map<string, string>((assessed?.items || []).map((x: any) => [x.id, x.text]));
-            const itemsShown = (item.items || []).slice(0, 5);
-            const hiddenItems = (item.items || []).length - itemsShown.length;
-            const offset = start && item.ts ? formatOffset(Math.max(0, Number(item.ts) - start)) : "";
-            const title = exposure
-              ? (item.summary ? truncate(item.summary, 160) : item.kind === "recall_page" ? "Next page of results" : "No query recorded")
-              : item.kind === "feedback" ? (assessed ? `Assessed the result of call ${assessed.ordinal}` : "Assessed a retrieval")
-              : item.kind === "commit" ? (item.summary ? `Closed the task · ${item.summary}` : "Closed the task")
-              : truncate(item.summary || (item.kind === "remember" ? "Saved a memory" : CALL_LABELS[item.kind] || item.kind), 160);
-            return (
-              <li key={item.id} id={rowId} className={`call-row kind-${item.kind}${highlight === rowId ? " highlighted" : ""}${item.status === "error" ? " failed" : ""}`}>
-                <span className="call-ordinal" aria-hidden="true">{ordinal}</span>
-                <div className="call-main">
-                  <div className="call-head">
-                    <span className="call-kind">{CALL_LABELS[item.kind] || item.kind}</span>
-                    {item.status === "error" && <span className="call-failed">failed</span>}
-                    <span className="call-title">{title}</span>
-                    <time className="call-time" title={formatDate(item.ts)}>{new Date(Number(item.ts) * 1000).toLocaleTimeString()}{offset ? ` · ${offset}` : ""}</time>
-                  </div>
-                  {exposure && (
-                    <div className="call-meta">
-                      {item.count_n ?? item.items?.length ?? 0} returned
-                      {item.feedback_count ? ` · ${item.feedback_count} assessed` : ""}
-                      {item.retrieval_id && <> · <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open retrieval</Link></>}
-                    </div>
-                  )}
-                  {exposure && itemsShown.length > 0 && (
-                    <ul className="call-items">
-                      {itemsShown.map((x: any) => (
-                        <li key={x.id}><span className={`call-chip ${x.kind}`}>{x.kind === "procedure" ? "Procedure" : "Memory"}</span><Link to={itemHref(x)}>{truncate(x.text || x.id, 120)}</Link></li>
-                      ))}
-                      {hiddenItems > 0 && item.retrieval_id && <li><Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>+{hiddenItems} more in the retrieval</Link></li>}
-                    </ul>
-                  )}
-                  {item.kind === "remember" && item.memory_id && (
-                    <ul className="call-items">
-                      <li><span className="call-chip memory">Memory</span><Link to={`/memory/${encodeURIComponent(item.memory_id)}`}>Open saved memory</Link></li>
-                    </ul>
-                  )}
-                  {item.kind === "feedback" && (
-                    <>
-                      <div className="call-meta">
-                        {assessed
-                          ? <>On <button type="button" className="link-button" onClick={() => focusCall(assessed.id)}>call {assessed.ordinal} ({CALL_LABELS[assessed.kind]})</button></>
-                          : item.retrieval_id ? <Link to={`/retrieval/${encodeURIComponent(item.retrieval_id)}`}>Open assessed retrieval</Link> : null}
-                      </div>
-                      {(item.assessments || []).length > 0 ? (
-                        <ul className="call-items">
-                          {item.assessments.map((x: any, i: number) => (
-                            <li key={`${x.target_id}-${i}`}>
-                              <StatusBadge value={capitalize(x.assessment || "unknown")} />
-                              <Link to={itemHref({ id: x.target_id, kind: x.target_kind === "procedure" ? "procedure" : "memory" })}>{truncate(textById.get(x.target_id) || x.target_id, 120)}</Link>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : <div className="call-meta">No accepted assessments</div>}
-                    </>
-                  )}
-                </div>
-                <button type="button" className="call-link" aria-label={`Copy link to call ${ordinal}`} onClick={() => copyLink(rowId)}>{copied === rowId ? "Copied" : "Copy link"}</button>
-              </li>
-            );
-          })}
-        </ol>
+        <ol className="call-log">{rows}</ol>
       ) : (
         <p className="neutral">{kind ? (filtered?.kind === kind ? "No calls of this kind." : "Loading…") : "No call log was recorded for this session."}</p>
       )}
+      {idleClosed && !kind && shown.length > 0 && !shown.some((item) => item.kind === "session_reaped") && shown.length >= total && (
+        <p className="neutral">No commit received; closed after inactivity.</p>
+      )}
       {shown.length > 0 && shown.length < shownTotal && (
         <p className="neutral">
-          Showing {shown.length} of {shownTotal} calls.{" "}
+          Showing {formatCount(shown.length)} of {formatCount(shownTotal)} calls.{" "}
           <button type="button" className="chip" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "Loading…" : "Load more"}</button>
         </p>
       )}
@@ -3293,64 +3153,79 @@ function SessionCallLog({ sessionId, data }: { sessionId: string; data: Json }) 
   );
 }
 
+function SessionRecordList({ items, empty }: { items: any[]; empty: string }) {
+  if (!items.length) return <p className="neutral">{empty}</p>;
+  return (
+    <ul className="link-list">
+      {items.map((item: any, index: number) => {
+        const id = String(item.id ?? item.memory_id ?? item.schema_id ?? "");
+        const isProcedure = item.kind === "procedure" || item.memory_type === "procedure";
+        const text = itemText(item) || id;
+        const href = isProcedure ? `/procedures/${encodeURIComponent(id)}` : `/memory/${id.startsWith("sch_") ? id : `sch_${id}`}`;
+        return (
+          <li key={`${id}-${index}`}>
+            <Link to={href}>
+              <span className="item-main">
+                <span>{truncate(text, 160)}</span>
+                {(item.reason || item.note) && <small>{truncate(String(item.reason || item.note), 140)}</small>}
+              </span>
+              <span className="item-end">
+                <TypeBadge type={isProcedure ? "procedure" : "memory"} />
+                {item.status && <StatusBadge value={item.status} />}
+                {item.assessment && <StatusBadge value={item.assessment} />}
+                {item.effect && <StatusBadge value={item.effect} />}
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const request = useApi<Json>(`/api/sessions/${encodeURIComponent(id)}`, { clearOnUrlChange: true });
   const data = request.data;
   const session = data?.session;
-  const feedbackByRetrieval = new Map<string, any[]>();
-  for (const item of data?.feedback || []) {
-    const existing = feedbackByRetrieval.get(item.retrieval_id) || [];
-    existing.push(item);
-    feedbackByRetrieval.set(item.retrieval_id, existing);
-  }
   const stream = useMemo(() => {
     if (!data) return [];
     return [
-      ...(data.events || []).map((item: any) => ({
-        ...item,
-        ts: item.ts,
-        kind: "Event",
-        private: true,
-        summary: item.type,
-      })),
-      ...(data.episodes || []).map((item: any) => ({
-        ...item,
-        ts: item.ts,
-        kind: "Episode",
-        summary: `Episode ${item.id} formed`,
-      })),
-      ...(data.retrievals || []).map((item: any) => ({
-        ...item,
-        ts: item.created_at,
-        kind: "Retrieval",
-        summary: item.query || item.goal || "Context exposure",
-      })),
-      ...(data.feedback || []).map((item: any) => ({
-        ...item,
-        ts: item.created_at,
-        kind: "Feedback",
-        summary: `${item.target_kind} ${item.assessment || item.coverage || "observed"}`,
-      })),
-      ...(data.memories || []).map((item: any) => ({
-        ...item,
-        ts: item.first_formed_ts,
-        kind: "Memory",
-        summary: item.content_text,
-      })),
-    ].sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+      ...(data.events || []).map((item: any) => ({ ...item, kind: "Event", private: true, summary: item.type })),
+      ...(data.episodes || []).map((item: any) => ({ ...item, kind: "Episode", summary: `Episode ${item.id} formed` })),
+    ].sort((a: any, b: any) => Number(a.ts || 0) - Number(b.ts || 0));
   }, [data]);
+  const goal = session ? session.final_goal || session.initial_goal || session.goal || "Untitled session" : "";
+  const retrievedItems: any[] = data?.retrieved_items || [];
+  const savedItems: any[] = data?.saved_items?.length ? data.saved_items : (data?.memories || []).map((item: any) => ({ id: `sch_${item.schema_id}`, text: item.content_text, status: item.status, kind: "memory" }));
+  const usedItems = retrievedItems.filter((item) => item.assessment === "used" || item.used === true);
+  const kinds: Record<string, number> = data?.call_log_kinds || {};
+  const recalls = Number(kinds.activate || 0) + Number(kinds.recall || 0) + Number(kinds.recall_page || 0) || Number(data?.retrievals?.length || 0);
+  const returnedCount = Number(session?.returned_count ?? retrievedItems.length);
+  const usedCount = Number(session?.used_count ?? usedItems.length);
+  const savedCount = Number(session?.saved_count ?? savedItems.length);
+  const status = session?.status || (session?.ended_ts ? "ended" : null);
+  const feedbackState = session?.feedback_state || (session?.feedback_status === "complete" ? "complete" : session?.feedback_status === "incomplete" ? "partial" : session?.feedback_status === "pending" ? "pending_open" : "none");
+  const chain: any[] = [...(data?.related_sessions || [])].sort((x, y) => Number(x.started_ts) - Number(y.started_ts));
+  const chainAt = chain.findIndex((item) => item.id === session?.id);
+  const duration = session?.ended_ts && session?.started_ts ? formatDuration(session.ended_ts - session.started_ts) : null;
+  const metaLine = session ? [
+    session.client?.name,
+    session.scope_id ? shortScope(session.scope_id) : "No scope",
+    session.started_ts ? `${formatDate(session.started_ts)} → ${session.ended_ts ? formatDate(session.ended_ts) : "still open"}${duration ? ` (${duration})` : ""}` : null,
+    chain.length > 1 && chainAt >= 0 ? `${chainAt + 1} of ${chain.length} in this conversation` : null,
+  ].filter(Boolean).join(" · ") : "";
   return (
     <Inspector
       title="Session"
       id={id}
-      label={session ? truncate(session.final_goal || session.initial_goal || session.goal || "Untitled session", 96) : undefined}
-      state={session && <StatusBadge value={session.outcome} />}
+      label={session ? truncate(goal, 140) : undefined}
+      hideLabel
+      state={session && <>{status && <StatusBadge value={status} />}</>}
       sections={[
-        { id: "activity-task", label: "Task" },
+        { id: "activity-task", label: "Summary" },
         { id: "call-log", label: "Call log" },
-        { id: "activity-loop", label: "Memory loop" },
-        { id: "activity-linked", label: "Linked records" },
-        { id: "activity-technical", label: "Technical details" },
+        { id: "activity-records", label: "Records" },
+        { id: "activity-technical", label: "Technical" },
       ]}
       onClose={onClose}
     >
@@ -3365,108 +3240,94 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
         <ErrorState title="Session details unavailable" error={request.error} retry={request.reload} />
       ) : session ? (
           <>
-            <Section title="Task" id="activity-task">
-            <h2 className="detail-title">
-              {session.final_goal ||
-                session.initial_goal ||
-                session.goal ||
-                "Untitled session"}
-            </h2>
-            <dl className="key-values">
-              {session.initial_goal && session.final_goal && session.initial_goal !== session.final_goal && <><dt>Initial goal</dt><dd>{session.initial_goal}</dd></>}
-              <dt>Scope</dt>
-              <dd>{session.scope_id || "No scope"}</dd>
-              <dt>Client</dt>
-              <dd><ClientBadge client={session.client} /></dd>
-              <dt>Agent / integration</dt>
-              <dd>{session.agent || "Unknown"}</dd>
-              <dt>Outcome</dt>
-              <dd>
-                <StatusBadge value={session.outcome} />{" "}
-                {session.outcome_summary ? <details><summary>Outcome summary</summary><p>{session.outcome_summary}</p></details> : "No outcome summary recorded"}
-              </dd>
-              <dt>Verification</dt>
-              <dd>
-                <StatusBadge
-                  value={session.verification?.status || "unknown"}
-                />{" "}
-                {session.verification?.summary ? <details><summary>Verification summary</summary><p>{session.verification.summary}</p></details> : "No verification summary recorded"}
-              </dd>
-              <dt>Feedback closure</dt>
-              <dd>
-                <StatusBadge value={session.feedback_status} />
-              </dd>
-              <dt>Started</dt><dd>{formatDate(session.started_ts)}</dd>
-              <dt>Ended</dt><dd>{session.ended_ts ? formatDate(session.ended_ts) : "Open · end time not recorded"}</dd>
-              <dt>Duration</dt><dd>{session.ended_ts && session.started_ts ? formatDuration(session.ended_ts - session.started_ts) : "Not available"}</dd>
-            </dl>
-            {(() => {
-              const chain: any[] = [...(data.related_sessions || [])].sort((x, y) => Number(x.started_ts) - Number(y.started_ts));
-              const at = chain.findIndex((item) => item.id === session.id);
-              if (chain.length < 2 || at < 0) return null;
-              const prev = chain[at - 1];
-              const next = chain[at + 1];
-              return (
+            <DetailSection id="activity-task" title="Summary">
+              <h2 className="detail-title">{goal}</h2>
+              <div className="badge-stack">
+                {["success", "partial", "failure"].includes(String(session.outcome)) ? <StatusBadge value={session.outcome} /> : status === "running" ? null : <StatusBadge value="not_reported" />}
+                {status && <StatusBadge value={status} />}
+                {session.verification?.status && <StatusBadge value={session.verification.status} />}
+              </div>
+              <p className="meta-line">{metaLine}</p>
+              {session.initial_goal && session.final_goal && session.initial_goal !== session.final_goal && <p className="neutral">Started as: {session.initial_goal}</p>}
+              {session.outcome_summary ? <p className="prose">{session.outcome_summary}</p> : status !== "running" && <p className="neutral">No outcome summary recorded.</p>}
+              {session.verification?.summary && <p className="prose"><strong>Verification:</strong> {session.verification.summary}</p>}
+              <div className="scorecard" aria-label="Session scorecard">
+                <div className="tile"><strong>{formatCount(recalls)}</strong><span>Recalls</span></div>
+                <div className="tile"><strong>{formatCount(returnedCount)}</strong><span>Returned</span></div>
+                <div className="tile"><strong>{formatCount(usedCount)}</strong><span>Used</span></div>
+                <div className="tile"><strong>{formatCount(savedCount)}</strong><span>Saved</span></div>
+                <div className="tile"><StatusBadge value={feedbackState} label={statusLabelOf(feedbackState)} /><span>Feedback</span></div>
+              </div>
+              {chain.length > 1 && chainAt >= 0 && (
                 <nav className="session-nav" aria-label="Sessions in this conversation">
-                  {prev ? <Link to={`/sessions/${encodeURIComponent(prev.id)}`}>← Older session</Link> : <span />}
-                  <span className="neutral">{at + 1} of {chain.length} in this conversation</span>
-                  {next ? <Link to={`/sessions/${encodeURIComponent(next.id)}`}>Newer session →</Link> : <span />}
+                  {chain[chainAt - 1] ? <Link to={`/sessions/${encodeURIComponent(chain[chainAt - 1].id)}`}>← Older session</Link> : <span />}
+                  <span className="neutral">{chainAt + 1} of {chain.length} in this conversation</span>
+                  {chain[chainAt + 1] ? <Link to={`/sessions/${encodeURIComponent(chain[chainAt + 1].id)}`}>Newer session →</Link> : <span />}
                 </nav>
-              );
-            })()}
-            {session.continuity_id && (
-              <div className="notice info">
-                <Icon name="info" />
-                <div>
-                  <strong>Related sessions</strong>
-                  <span>
-                    Correlation by continuity ID; this is not a complete or
-                    independently validated work-attempt model.
-                  </span>
-                </div>
-              </div>
-            )}
-            </Section>
-            <Section title="Call log" id="call-log">
+              )}
+            </DetailSection>
+            <DetailSection
+              id="call-log"
+              title="Call log"
+              actions={
+                <DefinitionTooltip label="About the call log">
+                  Slowave calls in the order they were received. Slowave stores the task text and the text of saved memories and shows both here; replies from the host client are not stored.{data.call_log_approximate ? " Older calls were reconstructed from stored records, so order within the same second is approximate." : ""} Related sessions are correlated by continuity ID, not a verified work chain.
+                </DefinitionTooltip>
+              }
+            >
               <SessionCallLog sessionId={id} data={data} />
-            </Section>
-            <Section title="Memory loop" id="activity-loop">
-              <p className="neutral">Recorded retrievals and their effective accepted feedback. Optional actions may be absent.</p>
-              {data.retrievals?.length ? <div className="detail-list evidence-list">{data.retrievals.map((item: any) => {
-                const effective = new Map<string, any>();
-                for (const feedback of feedbackByRetrieval.get(item.context_id) || []) if (feedback.status === "accepted" && feedback.target_kind !== "retrieval") effective.set(`${feedback.target_kind}:${feedback.target_id}`, feedback);
-                const signals = [...effective.entries()];
-                return <Link key={item.context_id} to={`/retrieval/${encodeURIComponent(item.context_id)}`}><div><strong>{truncate(item.query || item.goal || "Context exposure", 150)}</strong><small>{formatDate(item.created_at)} · {item.retrieval_type === "context" ? "Activation" : "Recall"} · {item.count_n} items returned</small><small>{signals.length ? signals.map(([, signal]) => `${signal.target_kind}: ${signal.assessment}${signal.effect ? ` · ${signal.effect}` : ""}`).join("; ") : "Feedback pending or none accepted"}</small></div><Icon name="chevron" size={14} /></Link>;
-              })}</div> : <p className="neutral">No retrievals were recorded for this session.</p>}
-              {data.feedback?.some((item: any) => item.status !== "accepted") && <details className="advanced"><summary>Rejected submissions ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary><div className="detail-list">{data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => <div key={item.event_id}><strong>{item.target_kind} · {item.target_id} · {item.status}</strong><p>{item.rejection_reason || item.reason || "No rejection reason recorded."}</p></div>)}</div></details>}
-            </Section>
-            <Section title="Linked records" id="activity-linked">
-              {data.memories?.length ? <><p className="neutral">These memories have source evidence linked to this session; their presence does not always mean they were created during it.</p><div className="detail-list">{data.memories.map((item: any) => <Link key={item.schema_id} to={`/memory/sch_${item.schema_id}`}><div><strong>{truncate(item.content_text, 160)}</strong><small>Linked through source evidence · {item.status || "state not recorded"} · first formed {formatDate(item.first_formed_ts)}</small></div><Icon name="chevron" size={14} /></Link>)}</div></> : <p className="neutral">No memories are linked through source evidence.</p>}
-              {data.procedure && <div className="detail-list compact"><Link to={`/procedures/${encodeURIComponent(data.procedure.id)}`}><span>Procedure from this session · {data.procedure.summary}</span><Icon name="chevron" size={14} /></Link></div>}
-              {data.related_sessions?.length > 1 && <><h3>Related sessions</h3><p className="neutral">Grouped by continuity ID; this is a correlation, not a verified work chain.</p><div className="detail-list compact">{data.related_sessions.map((item: any) => <Link key={item.id} to={`/sessions/${encodeURIComponent(item.id)}`}><span>{formatDate(item.started_ts)} · {truncate(item.goal, 100)}</span><Icon name="chevron" size={14} /></Link>)}</div></>}
-            </Section>
-            <details className="advanced" id="activity-technical">
-              <summary>Technical details · raw events and episodes</summary>
-              <div className="activity-stream">
-                {stream.filter((item: any) => item.kind === "Event" || item.kind === "Episode").map((item: any, index: number) => (
-                  <div
-                    key={`${item.kind}-${item.id || item.context_id || item.event_id || index}`}
-                  >
-                    <time>{formatDate(item.ts)}</time>
-                    <StatusBadge value={item.kind.toLowerCase()} />
-                    <p>{truncate(item.summary, 260)}</p>
-                    {item.private && (
-                      <details>
-                        <summary>Local/private event prose</summary>
-                        <pre>{item.content}</pre>
-                      </details>
-                    )}
-                  </div>
-                ))}
-              </div>
+            </DetailSection>
+            <DetailSection id="activity-records" title="Records">
+              <h3>Saved in this session ({formatCount(savedItems.length)})</h3>
+              <SessionRecordList items={savedItems} empty="No memories were saved in this session." />
+              <h3>Used in this session ({formatCount(usedItems.length)})</h3>
+              <SessionRecordList items={usedItems} empty={retrievedItems.length ? "No returned item was reported used." : "No retrieved items recorded for this session."} />
+              {data.procedure && (
+                <>
+                  <h3>Procedure created</h3>
+                  <ul className="link-list">
+                    <li><Link to={`/procedures/${encodeURIComponent(data.procedure.id)}`}><span className="item-main"><span>{truncate(data.procedure.summary, 160)}</span></span><Icon name="chevron" size={14} /></Link></li>
+                  </ul>
+                </>
+              )}
+              {data.feedback?.some((item: any) => item.status !== "accepted") && (
+                <details className="advanced">
+                  <summary>Rejected submissions ({data.feedback.filter((item: any) => item.status !== "accepted").length})</summary>
+                  <ul className="link-list">
+                    {data.feedback.filter((item: any) => item.status !== "accepted").map((item: any) => (
+                      <li key={item.event_id}><div><span className="item-main"><span>{truncate(item.target_title || item.target_id, 120)}</span><small>{item.rejection_reason || item.reason || "No rejection reason recorded."}</small></span><StatusBadge value={item.status} /></div></li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </DetailSection>
+            <DetailSection id="activity-technical" title="Technical details" collapsed>
+              <KeyValueList wide items={[
+                ["Session ID", <IdChip value={id} head={12} tail={6} />],
+                ["Agent / integration", session.agent || "Not recorded"],
+                session.continuity_id ? ["Continuity ID", <IdChip value={String(session.continuity_id)} head={12} tail={6} />] : null,
+              ]} />
+              <h3>Raw recorded events</h3>
+              {stream.length ? (
+                <div className="activity-stream">
+                  {stream.map((item: any, index: number) => (
+                    <div key={`${item.kind}-${item.id || index}`}>
+                      <time>{formatDate(item.ts)}</time>
+                      <StatusBadge value={item.kind.toLowerCase()} />
+                      <p>{truncate(item.summary, 260)}</p>
+                      {item.private && item.content && (
+                        <details>
+                          <summary>Event content</summary>
+                          <pre>{item.content}</pre>
+                        </details>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="neutral">No raw events recorded.</p>}
               <h3>Structured task context</h3>
-              <dl className="key-values wide">{Object.entries(session.task_context || {}).map(([key, value]) => <><dt key={`${key}-label`}>{key.replaceAll("_", " ")}</dt><dd key={key}>{typeof value === "object" ? Array.isArray(value) ? value.join(", ") : Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}: ${String(v)}`).join(" · ") : String(value)}</dd></>)}</dl>
-            </details>
+              {Object.keys(session.task_context || {}).length ? <StructuredValue value={session.task_context} /> : <p className="neutral">None recorded.</p>}
+            </DetailSection>
           </>
         ) : <EmptyState title="Session not found">This session no longer exists or is not available in the current database.</EmptyState>
       }
@@ -3477,19 +3338,25 @@ function ActivityDetail({ id, onClose }: { id: string; onClose: () => void }) {
 export function DiagnosticsPage({ location }: PageProps) {
   const daemon = useApi<Json>("/api/daemon", { pollMs: refreshMs });
   const database = useApi<Json>("/api/db/health", { pollMs: refreshMs });
-  const [runSort, setRunSort] = useState("started");
-  const [runDir, setRunDir] = useState<"asc" | "desc">("desc");
+  const runSort = param(location, "rsort", "started");
+  const runDir = param(location, "rdir", "desc") as "asc" | "desc";
+  const runResultFilter = param(location, "result");
+  const hideEmptyRuns = param(location, "hide_empty") === "1";
   const selectedRunId = Number(param(location, "run")) || null;
   const [maintenanceExpanded, setMaintenanceExpanded] = useState(false);
   const runColumns = [
-    { id: "started", label: "Started" }, { id: "duration", label: "Duration" }, { id: "result", label: "Result" },
-    { id: "episodes", label: "Episodes processed" }, { id: "formed", label: "Formed" }, { id: "reinforced", label: "Reinforced" },
-    { id: "priority_decay", label: "Priority decay" }, { id: "errors", label: "Errors" },
-    { id: "skipped", label: "Skipped" }, { id: "pass", label: "Pass number" }, { id: "error_category", label: "Error category" },
+    { id: "started", label: "Started", locked: true },
+    { id: "duration", label: "Duration" },
+    { id: "result", label: "Result" },
+    { id: "episodes", label: "Episodes processed" },
+    { id: "formed", label: "Memories created" },
+    { id: "reinforced", label: "Strengthened" },
+    { id: "priority_decay", label: "Deprioritized" },
+    { id: "skipped", label: "Skipped" },
+    { id: "pass", label: "Run number" },
+    { id: "error_category", label: "Error" },
   ];
-  const [visibleRunColumns, setVisibleRunColumns] = useState<string[]>([
-    "started", "duration", "result", "episodes", "formed", "reinforced", "priority_decay", "errors",
-  ]);
+  const [visibleRunColumns, setVisibleRunColumns, resetRunColumns] = useColumns("diagnostics-runs", ["started", "duration", "result", "episodes", "formed", "reinforced", "priority_decay"]);
   const runVisible = (id: string) => visibleRunColumns.includes(id);
   const workers = useApi<Json>(`/api/worker/runs?limit=${maintenanceExpanded ? 50 : 10}&range=1m&sort=${runSort}&dir=${runDir}`, {
     pollMs: refreshMs,
@@ -3508,14 +3375,17 @@ export function DiagnosticsPage({ location }: PageProps) {
   const runs = workers.data?.runs || [];
   const selectedRun = runs.find((run: any) => run.id === selectedRunId) || null;
   const selectRun = (runId?: number) => updateParams("/diagnostics", location, { run: runId });
-  const changeRunSort = (column: string) => {
-    if (runSort === column) {
-      setRunDir((d) => (d === "desc" ? "asc" : "desc"));
-    } else {
-      setRunSort(column);
-      setRunDir("desc");
-    }
-  };
+  const changeRunSort = (column: string) =>
+    updateParams("/diagnostics", location, {
+      rsort: column === "started" && runSort !== column ? undefined : column,
+      rdir: runSort === column ? (runDir === "desc" ? "asc" : "desc") : undefined,
+    });
+  const runOutcome = (run: any): "failed" | "running" | "changed" | "unchanged" =>
+    run.error_text ? "failed"
+      : !run.ended_ts ? "running"
+        : Number(run.schemas_created || 0) + Number(run.schemas_reinforced || 0) + Number(run.schemas_decayed || 0) > 0 ? "changed" : "unchanged";
+  const allRuns: any[] = workers.data?.runs || [];
+  const visibleRuns = allRuns.filter((run) => (!runResultFilter || runOutcome(run) === runResultFilter) && (!hideEmptyRuns || runOutcome(run) !== "unchanged"));
   const databaseHealthValue = (value: unknown) =>
     database.data ? String(value || "Unavailable") : database.loading ? "Checking…" : "Unavailable";
   const databaseHealthSecondary = database.data && database.error
@@ -3524,7 +3394,7 @@ export function DiagnosticsPage({ location }: PageProps) {
       ? <span className="diagnostic-stale">Health check failed</span>
       : undefined;
   const storageValue = (value: unknown) =>
-    value != null ? `${Number(value).toLocaleString()} bytes` : !status.data && status.loading ? "Checking…" : "Unavailable";
+    value != null ? `${formatCount(value)} bytes` : !status.data && status.loading ? "Checking…" : "Unavailable";
   const foreignKeyValue = database.data
     ? Array.isArray(database.data.foreign_key_check)
       ? database.data.foreign_key_check.length ? `${database.data.foreign_key_check.length} issues` : "No issues observed"
@@ -3544,17 +3414,17 @@ export function DiagnosticsPage({ location }: PageProps) {
       href: "/diagnostics#database",
     },
     Number(recentRuns?.failed || 0) > 0 && {
-      title: `${Number(recentRuns.failed).toLocaleString()} maintenance run${Number(recentRuns.failed) === 1 ? "" : "s"} failed in the last 7 days`,
+      title: `${formatCount(recentRuns.failed)} maintenance run${Number(recentRuns.failed) === 1 ? "" : "s"} failed in the last 7 days`,
       detail: "Open maintenance history to inspect the failure details.",
       href: "/diagnostics#maintenance",
     },
     Number(recentRuns?.incomplete || 0) > 0 && {
-      title: `${Number(recentRuns.incomplete).toLocaleString()} maintenance run${Number(recentRuns.incomplete) === 1 ? " is" : "s are"} incomplete`,
+      title: `${formatCount(recentRuns.incomplete)} maintenance run${Number(recentRuns.incomplete) === 1 ? " is" : "s are"} incomplete`,
       detail: "An incomplete run may still be in progress; investigate if it remains unchanged.",
       href: "/diagnostics#maintenance",
     },
     duplicateRows > 0 && {
-      title: `${duplicateRows.toLocaleString()} exact duplicate memory row${duplicateRows === 1 ? "" : "s"} detected`,
+      title: `${formatCount(duplicateRows)} exact duplicate memory row${duplicateRows === 1 ? "" : "s"} detected`,
       detail: "Duplicates are an operational signal to investigate, not an automatic data-loss condition.",
       href: "/memory",
     },
@@ -3593,7 +3463,7 @@ export function DiagnosticsPage({ location }: PageProps) {
           <div className="metric-card-grid" aria-label="Operational health summary">
             <MetricCard title="MCP daemon" value={daemon.data ? daemon.data.running ? "Responding" : "Not reachable" : "Not checked"} secondary={`Local HTTP probe · ${daemon.updatedAt ? formatDate(new Date(daemon.updatedAt).getTime() / 1000) : "Not checked"}`} tooltip="Whether the local HTTP MCP daemon responded to a health probe." className={daemon.data?.running ? "metric-active" : "metric-warning"} />
             <MetricCard title="Database integrity" value={database.data?.integrity_status === "ok" ? "Passed" : database.data?.integrity_status === "needs_attention" ? "Failed" : databaseHealthValue(database.data?.integrity_status)} secondary={databaseHealthSecondary} tooltip="The latest database integrity check status. This is an operational check, not a memory-quality measure." className={database.data?.integrity_status === "ok" ? "metric-active" : database.data?.integrity_status === "needs_attention" ? "metric-warning" : "metric-subtle"} />
-            <MetricCard title="Last maintenance run" value={workers.data?.summary?.last_completed_ts ? formatDate(workers.data.summary.last_completed_ts) : "No data"} tooltip="Most recent completed maintenance run; recorded errors remain available in run history." className="metric-subtle" />
+            <MetricCard title="Last maintenance run" value={workers.data?.summary?.last_completed_ts ? formatDate(workers.data.summary.last_completed_ts) : EMPTY} tooltip="Most recent completed maintenance run; recorded errors remain available in run history." className="metric-subtle" />
           </div>
         </>}
       </Section>
@@ -3601,7 +3471,7 @@ export function DiagnosticsPage({ location }: PageProps) {
         <p className="neutral">Recent maintenance behavior helps explain whether the local pipeline is keeping up. These are operational signals, not memory-value scores.</p>
         {!workers.data ? workers.error ? <ErrorState title="Pipeline behavior unavailable" error={workers.error} retry={workers.reload} /> : <MetricCardsSkeleton count={3} /> : <div className="metric-card-grid pipeline-metric-grid">
           <RateMetricCard title="Run reliability" numerator={workers.data.summary?.finished_without_error} denominator={workers.data.summary?.finished} secondary={`${workers.data.summary?.incomplete_passes || 0} running / interrupted excluded`} tooltip="Finished runs without recorded error divided by finished runs." />
-          <MetricCard title="Median run duration" value={workers.data.summary?.median_duration_ms == null ? "No data" : Number(workers.data.summary.median_duration_ms) === 0 ? "Under 1 second" : formatDuration(Number(workers.data.summary.median_duration_ms) / 1000)} secondary={`${workers.data.summary?.duration_samples || 0} samples · ${workers.data.summary?.missing_durations || 0} missing · ${workers.data.summary?.zero_durations || 0} under 1 second`} tooltip="Median duration for finished runs with recorded timing, including failures. Times come from whole-second timestamps, so values under one second are grouped as under one second." />
+          <MetricCard title="Median run duration" value={workers.data.summary?.median_duration_ms == null ? EMPTY : formatMs(workers.data.summary.median_duration_ms)} secondary={`${workers.data.summary?.duration_samples || 0} samples · ${workers.data.summary?.missing_durations || 0} missing · ${workers.data.summary?.zero_durations || 0} under 1 second`} tooltip="Median duration for finished runs with recorded timing, including failures. Times come from whole-second timestamps, so values under one second are grouped as under one second." />
         </div>}
         <details className="advanced diagnostics-inventory">
           <summary>Operational inventory</summary><p className="neutral">Worker process: {workers.data?.worker?.running ? "Running" : "Not observed"} · observed {formatDate(workers.data?.worker?.observed_at)}. Process presence does not establish successful processing.</p>
@@ -3610,68 +3480,90 @@ export function DiagnosticsPage({ location }: PageProps) {
         </details>
       </Section>
       <Section title="Consolidation history" id="maintenance" actions={<button className="button secondary" onClick={() => setMaintenanceExpanded((expanded) => !expanded)}>{maintenanceExpanded ? "Show recent 10" : "Show 50 runs"}</button>}>
+        <p className="formation-caption">Last 30 days</p>
         <p className="neutral">Showing the {maintenanceExpanded ? "50 most recent" : "10 most recent"} recorded passes. Open a row to inspect counts, configuration, and any error details.</p>
         <div className="filter-bar">
-          <details className="filter-menu">
-            <summary>Columns</summary>
-            <div>
-              <ColumnsControl columns={runColumns} visible={visibleRunColumns} onChange={setVisibleRunColumns} />
-            </div>
-          </details>
+          <label>
+            Result
+            <select value={runResultFilter} onChange={(e) => updateParams("/diagnostics", location, { result: e.target.value })}>
+              <option value="">Any result</option>
+              <option value="failed">Failed</option>
+              <option value="running">Running / incomplete</option>
+              <option value="changed">Changed memories</option>
+              <option value="unchanged">No changes</option>
+            </select>
+          </label>
+          <label className="check-label">
+            <span>Empty runs</span>
+            <span className="check-row"><input type="checkbox" checked={hideEmptyRuns} onChange={(e) => updateParams("/diagnostics", location, { hide_empty: e.target.checked ? "1" : undefined })} /> Hide runs that changed nothing</span>
+          </label>
+          <ColumnsControl columns={runColumns} visible={visibleRunColumns} onChange={setVisibleRunColumns} onReset={resetRunColumns} />
         </div>
         {workers.loading && !workers.data ? (
           <LoadingRows />
         ) : workers.error && !workers.data ? (
           <ErrorState title="Consolidation runs unavailable" error={workers.error} retry={workers.reload} />
-        ) : runs.length ? (
+        ) : visibleRuns.length ? (
           <TableFrame label="Maintenance runs">
             <table>
               <thead>
                 <tr>
-                  {runVisible("started") && <th aria-sort={runSort === "started" ? (runDir === "asc" ? "ascending" : "descending") : "none"}>
-                    <SortButton label="Started" active={runSort === "started"} direction={runDir} onClick={() => changeRunSort("started")} />
-                  </th>}
-                  {runVisible("duration") && <th className="numeric"><SortButton label="Duration" active={runSort === "duration"} direction={runDir} onClick={() => changeRunSort("duration")} /></th>}
-                  {runVisible("result") && <th><SortButton label="Result" active={runSort === "result"} direction={runDir} onClick={() => changeRunSort("result")} /></th>}
-                  {runVisible("episodes") && <th className="numeric"><SortButton label="Episodes processed" active={runSort === "episodes"} direction={runDir} onClick={() => changeRunSort("episodes")} /></th>}
-                  {runVisible("formed") && <th className="numeric"><SortButton label="Formed" active={runSort === "formed"} direction={runDir} onClick={() => changeRunSort("formed")} /></th>}
-                  {runVisible("reinforced") && <th className="numeric"><SortButton label="Reinforced" active={runSort === "reinforced"} direction={runDir} onClick={() => changeRunSort("reinforced")} /></th>}
-                  {runVisible("priority_decay") && <th className="numeric"><SortButton label="Priority decay" active={runSort === "decayed"} direction={runDir} onClick={() => changeRunSort("decayed")} /><DefinitionTooltip label="Priority decay definition">Count of memories whose retrieval priority was reduced during this pass. This does not mean the memory was retired or removed.</DefinitionTooltip></th>}
-                  {runVisible("errors") && <th className="numeric"><SortButton label="Errors" active={runSort === "errors"} direction={runDir} onClick={() => changeRunSort("errors")} /></th>}
-                  {runVisible("skipped") && <th className="numeric"><SortButton label="Skipped" active={runSort === "skipped"} direction={runDir} onClick={() => changeRunSort("skipped")} /></th>}
-                  {runVisible("pass") && <th className="numeric"><SortButton label="Pass number" active={runSort === "pass"} direction={runDir} onClick={() => changeRunSort("pass")} /></th>}
-                  {runVisible("error_category") && <th><SortButton label="Error category" active={runSort === "error_category"} direction={runDir} onClick={() => changeRunSort("error_category")} /></th>}
+                  {runVisible("started") && <SortableTh label="Started" column="started" sort={runSort} dir={runDir} onSort={changeRunSort} />}
+                  {runVisible("duration") && <SortableTh label="Duration" column="duration" sort={runSort} dir={runDir} onSort={changeRunSort} numeric />}
+                  {runVisible("result") && <SortableTh label="Result" column="result" sort={runSort} dir={runDir} onSort={changeRunSort} help="Failed: the pass recorded an error. Running: not ended yet. Changed: created, strengthened or deprioritized memories. No changes: completed without changing any memory." />}
+                  {runVisible("episodes") && <SortableTh label="Episodes processed" column="episodes" sort={runSort} dir={runDir} onSort={changeRunSort} numeric />}
+                  {runVisible("formed") && <SortableTh label="Memories created" column="formed" sort={runSort} dir={runDir} onSort={changeRunSort} numeric />}
+                  {runVisible("reinforced") && <SortableTh label="Strengthened" column="reinforced" sort={runSort} dir={runDir} onSort={changeRunSort} numeric help="Memories whose retrieval priority was raised during this pass." />}
+                  {runVisible("priority_decay") && <SortableTh label="Deprioritized" column="decayed" sort={runSort} dir={runDir} onSort={changeRunSort} numeric help="Memories whose retrieval priority was reduced during this pass. This does not mean the memory was retired or removed." />}
+                  {runVisible("skipped") && <SortableTh label="Skipped" column="skipped" sort={runSort} dir={runDir} onSort={changeRunSort} numeric />}
+                  {runVisible("pass") && <SortableTh label="Run number" column="pass" sort={runSort} dir={runDir} onSort={changeRunSort} numeric />}
+                  {runVisible("error_category") && <SortableTh label="Error" column="error_category" sort={runSort} dir={runDir} onSort={changeRunSort} />}
                 </tr>
               </thead>
               <tbody>
-                {runs.map((run: any) => (
-                  <tr
-                    key={run.id}
-                    tabIndex={0}
-                    onClick={() => selectRun(run.id)}
-                    onKeyDown={(e) => rowKeys(e, () => selectRun(run.id))}
-                  >
-                    {runVisible("started") && <td title={formatDate(run.started_ts)}>{relativeDate(run.started_ts)}</td>}
-                    {runVisible("duration") && <td className="numeric">{run.duration_ms != null ? Number(run.duration_ms) === 0 ? "Under 1 second" : formatDuration(run.duration_ms / 1000) : "—"}</td>}
-                    {runVisible("result") && <td><StatusBadge value={run.error_text ? "failure" : run.ended_ts ? "success" : "incomplete"} /></td>}
-                    {runVisible("episodes") && <td className="numeric">{run.episodes_processed || 0}</td>}
-                    {runVisible("formed") && <td className="numeric">{run.schemas_created || 0}</td>}
-                    {runVisible("reinforced") && <td className="numeric">{run.schemas_reinforced || 0}</td>}
-                    {runVisible("priority_decay") && <td className="numeric">{run.schemas_decayed || 0}</td>}
-                    {runVisible("errors") && <td className="numeric">{run.error_text ? 1 : 0}</td>}
-                    {runVisible("skipped") && <td className="numeric">{run.schemas_skipped || 0}</td>}
-                    {runVisible("pass") && <td className="numeric">{run.id}</td>}
-                    {runVisible("error_category") && <td className="long-text-cell">{truncate(run.error_text, 60) || "—"}</td>}
-                  </tr>
-                ))}
+                {visibleRuns.map((run: any) => {
+                  const outcome = runOutcome(run);
+                  const open = () => selectRun(run.id);
+                  return (
+                    <tr key={run.id} {...rowAttrs(`run-${run.id}`, selectedRunId ? `run-${selectedRunId}` : "", open)}>
+                      {runVisible("started") && <td className="primary-cell">
+                        <RowLink href={`/diagnostics?run=${run.id}`} onOpen={open}><TimeCell ts={run.started_ts} /></RowLink>
+                        <span className="meta">{String(run.triggered_by || "worker").replaceAll("_", " ")}</span>
+                      </td>}
+                      {runVisible("duration") && <td className="numeric">{run.duration_ms != null ? formatMs(run.duration_ms) : dash}</td>}
+                      {runVisible("result") && <td>
+                        {outcome === "failed" ? <StatusBadge value="failed" />
+                          : outcome === "running" ? <StatusBadge value="running" />
+                            : outcome === "changed" ? <StatusBadge value="success" label="Changed memories" />
+                              : <StatusBadge value="none" label="No changes" />}
+                      </td>}
+                      {runVisible("episodes") && <td className="numeric">{formatCount(run.episodes_processed || 0)}</td>}
+                      {runVisible("formed") && <td className="numeric">{formatCount(run.schemas_created || 0)}</td>}
+                      {runVisible("reinforced") && <td className="numeric">{formatCount(run.schemas_reinforced || 0)}</td>}
+                      {runVisible("priority_decay") && <td className="numeric">{formatCount(run.schemas_decayed || 0)}</td>}
+                      {runVisible("skipped") && <td className="numeric">{formatCount(run.schemas_skipped || 0)}</td>}
+                      {runVisible("pass") && <td className="numeric">{run.id}</td>}
+                      {runVisible("error_category") && <td className="long-text-cell" title={run.error_text || undefined}>{run.error_text ? truncate(run.error_text, 60) : dash}</td>}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </TableFrame>
         ) : (
+          allRuns.length ? (
+            <EmptyState
+              title="No runs match these filters"
+              action={<button type="button" className="button secondary" onClick={() => updateParams("/diagnostics", location, { result: undefined, hide_empty: undefined })}>Clear filters</button>}
+            >
+              {allRuns.length} recorded {allRuns.length === 1 ? "run is" : "runs are"} hidden by the current filters.
+            </EmptyState>
+          ) : (
           <EmptyState title="No maintenance passes recorded">
             An idle installation without recorded passes is not automatically
             unhealthy.
           </EmptyState>
+          )
         )}
       </Section>
       <Section title="Storage" id="database">
@@ -3705,64 +3597,57 @@ export function DiagnosticsPage({ location }: PageProps) {
   );
 }
 function WorkerRunDetail({ run, onClose }: { run: any; onClose: () => void }) {
-  const result = run.error_text
-    ? "failure"
-    : run.ended_ts
-      ? "success"
-      : "incomplete";
+  const failed = Boolean(run.error_text);
+  const result = failed ? "failed" : run.ended_ts ? "success" : "running";
+  const changed = Number(run.schemas_created || 0) + Number(run.schemas_reinforced || 0) + Number(run.schemas_decayed || 0) > 0;
   return (
     <Inspector
       title="Consolidation run"
       id={`run-${run.id}`}
-      label={`Maintenance pass ${run.id}`}
-      state={<StatusBadge value={result} />}
+      label={`Maintenance run ${run.id}`}
+      hideLabel
+      state={<StatusBadge value={result} label={failed ? "Failed" : run.ended_ts ? (changed ? "Changed memories" : "No changes") : "Running"} />}
       sections={[
         { id: "run-summary", label: "Run" },
-        { id: "run-processing", label: "Processing summary" },
-        { id: "run-diagnostics", label: "Diagnostics" },
+        { id: "run-processing", label: "What it did" },
+        { id: "run-diagnostics", label: "Details" },
       ]}
       onClose={onClose}
     >
-      <Section title="Run" id="run-summary">
-        <dl className="key-values">
-          <dt>Result</dt>
-          <dd>
-            {run.error_text
-              ? "The pass ended with an error."
-              : run.ended_ts
-                ? "The pass completed successfully."
-                : "The pass has not ended; it may still be running."}
-          </dd>
-          <dt>Started</dt>
-          <dd>{formatDate(run.started_ts)}</dd>
-          <dt>Ended</dt>
-          <dd>{run.ended_ts ? formatDate(run.ended_ts) : "—"}</dd>
-          <dt>Duration</dt>
-          <dd>{run.duration_ms == null ? "Not recorded" : Number(run.duration_ms) === 0 ? "Under 1 second (timestamp precision)" : formatDuration(run.duration_ms / 1000)}</dd>
-        </dl>
-      </Section>
-      <Section title="Processing summary" id="run-processing">
-        <p className="neutral">Aggregate work recorded for this pass. A successful maintenance pass does not establish memory quality.</p>
-        <dl className="key-values wide">
-          <dt>Prototypes processed</dt><dd>{run.prototypes_processed || 0}</dd>
-          <dt>Episodes processed</dt><dd>{run.episodes_processed || 0}</dd>
-          <dt>Memories formed</dt><dd>{run.schemas_created || 0}</dd>
-          <dt>Memories reinforced</dt><dd>{run.schemas_reinforced || 0}</dd>
-          <dt>Memories skipped</dt><dd>{run.schemas_skipped || 0}</dd>
-          <dt>Memory priority reductions</dt><dd>{run.schemas_decayed || 0}</dd>
-        </dl>
-        <p className="neutral">Priority reduction changes retrieval strength; it does not retire or remove a memory.</p>
-      </Section>
-      <Section title="Diagnostics" id="run-diagnostics">
-        {run.error_text ? <><h3>Recorded error</h3><pre className="detail-pre">{run.error_text}</pre></> : <p className="neutral">No error was recorded for this pass.</p>}
-        <dl className="key-values wide">
-          <dt>Trigger</dt>
-          <dd>{String(run.triggered_by || "worker").replaceAll("_", " ")}</dd>
-          <dt>Pass number</dt>
-          <dd>{run.id}</dd>
-        </dl>
-        <p className="neutral">Affected memory records are not retained per run; these are aggregate counts only.</p>
-      </Section>
+      {failed && (
+        <div className="banner bad" role="alert">
+          <Icon name="warning" />
+          <div>
+            <strong>This run ended with an error</strong>
+            <CodeBlock label="Recorded error">{run.error_text}</CodeBlock>
+          </div>
+        </div>
+      )}
+      <DetailSection id="run-summary" title={`Maintenance run ${run.id}`}>
+        <KeyValueList items={[
+          ["Result", failed ? "Ended with an error." : run.ended_ts ? "Completed successfully." : "Not ended yet; it may still be running."],
+          ["Started", <TimeCell ts={run.started_ts} absolute />],
+          ["Ended", run.ended_ts ? <TimeCell ts={run.ended_ts} absolute /> : EMPTY],
+          ["Duration", run.duration_ms == null ? "Not recorded" : formatMs(run.duration_ms)],
+          ["Triggered by", String(run.triggered_by || "worker").replaceAll("_", " ")],
+        ]} />
+      </DetailSection>
+      <DetailSection id="run-processing" title="What it did">
+        <KeyValueList wide items={[
+          ["Episodes processed", formatCount(run.episodes_processed || 0)],
+          ["Prototypes processed", formatCount(run.prototypes_processed || 0)],
+          ["Memories created", formatCount(run.schemas_created || 0)],
+          ["Memories strengthened", formatCount(run.schemas_reinforced || 0)],
+          ["Memories deprioritized", <>{formatCount(run.schemas_decayed || 0)} <DefinitionTooltip label="What deprioritized means">Retrieval priority was reduced. The memory is not retired or removed. Affected memory records are not retained per run; these are aggregate counts only.</DefinitionTooltip></>],
+          ["Memories skipped", formatCount(run.schemas_skipped || 0)],
+        ]} />
+      </DetailSection>
+      <DetailSection id="run-diagnostics" title="Details" collapsed>
+        <KeyValueList wide items={[
+          ["Run number", String(run.id)],
+          !failed ? ["Error", "None recorded"] : null,
+        ]} />
+      </DetailSection>
     </Inspector>
   );
 }

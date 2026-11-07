@@ -208,6 +208,7 @@ def test_memory_and_activity_lists_are_server_paginated(tmp_path: Path) -> None:
         "context_use": 0,
         "partial_closed": 0,
         "failure_closed": 0,
+        "feedback_states": {"complete": 0, "partial": 0, "none": 1, "pending_open": 0},
     }
     assert _activity_payload(str(path), {"summary_only": ["true"]})["activities"] == []
     started = time.perf_counter()

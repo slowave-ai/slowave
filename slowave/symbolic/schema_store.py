@@ -690,7 +690,15 @@ class SchemaStore:
                 "VALUES (?, ?, ?, ?, ?, COALESCE("
                 "(SELECT session_id FROM raw_events WHERE id = ?),"
                 "(SELECT session_id FROM episode_text WHERE episode_id = ?)))",
-                (int(schema_id), episode_id, raw_event_id, quote, float(weight), raw_event_id, episode_id),
+                (
+                    int(schema_id),
+                    episode_id,
+                    raw_event_id,
+                    quote,
+                    float(weight),
+                    raw_event_id,
+                    episode_id,
+                ),
             )
         conn.commit()
         self._update_utility_scores(schema_id, recall_hit=False)

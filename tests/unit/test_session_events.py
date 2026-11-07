@@ -180,7 +180,10 @@ def test_sessions_list_paged_path_matches_full_aggregation(tmp_path):
 
     def rows(sort, **kw):
         qs = {"sort": [sort], "dir": ["asc"], "per_page": ["50"], **kw}
-        return {r["id"]: tuple(r[k] for k in keys) for r in dash._activity_payload(path, qs)["activities"]}
+        return {
+            r["id"]: tuple(r[k] for k in keys)
+            for r in dash._activity_payload(path, qs)["activities"]
+        }
 
     assert rows("started") == rows("retrievals")  # paged vs aggregate path
     page2 = dash._activity_payload(

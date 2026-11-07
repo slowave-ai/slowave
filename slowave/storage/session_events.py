@@ -115,7 +115,19 @@ def _candidates(conn: sqlite3.Connection, session_ids: list[str]) -> list[tuple]
         session_ids,
     ):
         kind = "commit" if r[2] == "task_complete" else "remember"
-        rows.append((r[0], r[1], kind, None, r[3], None, None, None if kind == "commit" else r[4], f"raw{r[3]}"))
+        rows.append(
+            (
+                r[0],
+                r[1],
+                kind,
+                None,
+                r[3],
+                None,
+                None,
+                None if kind == "commit" else r[4],
+                f"raw{r[3]}",
+            )
+        )
     return rows
 
 

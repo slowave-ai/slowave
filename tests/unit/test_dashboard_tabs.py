@@ -14,7 +14,9 @@ def test_python_shell_is_a_small_static_react_bootstrap() -> None:
 
 
 def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
-    source = "\n".join(path.read_text() for path in UI_SOURCE.glob("*.tsx"))
+    source = "\n".join(
+        path.read_text() for path in [*UI_SOURCE.glob("*.tsx"), UI_SOURCE / "format.ts"]
+    )
     for label in (
         "Home",
         "Memory",
@@ -44,17 +46,17 @@ def test_react_source_contains_the_supported_dashboard_surfaces() -> None:
     assert "state-summary" not in source
     assert "compact-state-chips" not in source
     assert "rounded === 0 || rounded === 100" in source
-    assert "percent.toFixed(1)" in source
+    assert "n.toFixed(1)" in source
     assert "formatRateParts" in source
     assert "metric-rate-ratio" in source
     assert "metric-rate-percent" in source
     styles = (UI_SOURCE / "styles.css").read_text()
-    assert ".retrieval-table td.retrieval-task-cell" in styles
+    assert ".retrieval-table td.primary-cell" in styles
     assert '["used", "Usage"]' in source
     assert "used / retrieved" in source
     assert "text-transform: uppercase" in styles
-    assert "numerator === denominator" in source
-    assert "numerator === 0" in source
+    assert "n === 100" in source
+    assert "n === 0" in source
     assert "denominator === null" in source
     assert "home-metric-card-grid" in source
     assert "activity-metric-card-grid" in source
