@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.3](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.2...slowave-v0.23.3) (2026-11-07)
+
+
+### Bug Fixes
+
+* **dashboard:** Sessions page with ordered call log and session traceability ([#234](https://github.com/slowave-ai/slowave/issues/234)) ([f2789a8](https://github.com/slowave-ai/slowave/commit/f2789a885f7125e77c4a9a0a565100ad20a88597))
+
+
+### Documentation
+
+* restore README demo video link ([84d9833](https://github.com/slowave-ai/slowave/commit/84d98336b75249f826a6b3a9134085e83ba50463))
+
 ## [0.23.2](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.1...slowave-v0.23.2) (2026-11-06)
 
 
