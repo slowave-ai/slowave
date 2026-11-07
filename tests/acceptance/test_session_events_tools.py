@@ -21,7 +21,9 @@ def test_tools_write_ordered_session_events(tmp_path):
 
     async def flow():
         async with open_harness(db) as h:
-            act, _ = await h.activate("c", "Investigate widget cache", "investigate widget cache", "project:qa")
+            act, _ = await h.activate(
+                "c", "Investigate widget cache", "investigate widget cache", "project:qa"
+            )
             sid = act["session_id"]
             await h.remember_batch(
                 [
@@ -35,7 +37,9 @@ def test_tools_write_ordered_session_events(tmp_path):
             rec, _ = await h.recall("c", "widget cache ttl", sid, "project:qa")
             await h.feedback_all(act)
             await h.feedback_all(rec)
-            bad, _ = await h.raw_call("slowave_feedback", {"retrieval_id": "ctx_nope", "coverage": "complete"})
+            bad, _ = await h.raw_call(
+                "slowave_feedback", {"retrieval_id": "ctx_nope", "coverage": "complete"}
+            )
             await h.commit(sid, "investigate widget cache")
             return sid, act, rec, bad
 
@@ -59,6 +63,18 @@ def test_tools_write_ordered_session_events(tmp_path):
     remembers = [e for e in events if e["kind"] == "remember"]
     assert all(e["raw_event_id"] for e in remembers)
     log = dash._session_events_payload(str(db), sid, {})
+    # consecutive feedback rows written within a second are one visible call row
+    collapsed = []
+    for e in events:
+        if (
+            collapsed
+            and e["kind"] == "feedback"
+            and collapsed[-1]["kind"] == "feedback"
+            and abs(e["ts"] - collapsed[-1]["ts"]) <= 1
+        ):
+            continue
+        collapsed.append(e)
+    kinds = [e["kind"] for e in collapsed]
     assert [e["kind"] for e in log["events"]] == kinds
     assert [e["ordinal"] for e in log["events"]] == list(range(1, len(kinds) + 1))
     remembered = [e for e in log["events"] if e["kind"] == "remember"]
@@ -66,5 +82,10 @@ def test_tools_write_ordered_session_events(tmp_path):
     assert log["kind_counts"]["remember"] == 3 and log["total"] == len(kinds)
 
     # legacy ledger rows are still written for the token metrics
-    ledger = {r["retrieval_type"] for r in _rows(str(db), "SELECT retrieval_type FROM context_recall_events WHERE session_id=?", (sid,))}
+    ledger = {
+        r["retrieval_type"]
+        for r in _rows(
+            str(db), "SELECT retrieval_type FROM context_recall_events WHERE session_id=?", (sid,)
+        )
+    }
     assert {"context", "recall", "remember", "feedback", "commit"} <= ledger

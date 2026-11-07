@@ -1,3 +1,4 @@
+import { carryTimeRange } from "./timeRange";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type Json = Record<string, any>;
@@ -107,17 +108,8 @@ export function useLocation() {
 }
 
 export function withTimeRange(to: string): string {
-  // Keep the chosen period when moving between dashboard pages. Explicit
-  // destination bounds take precedence over the current rolling window.
-  const destination = new URL(to, window.location.origin);
-  const current = new URLSearchParams(window.location.search);
-  if (destination.origin === window.location.origin &&
-      !["hours", "from", "to"].some((key) => destination.searchParams.has(key))) {
-    const hours = current.get("hours");
-    if (hours) destination.searchParams.set("hours", hours);
-    to = `${destination.pathname}${destination.search}${destination.hash}`;
-  }
-  return to;
+  // Keep the chosen period when moving between activity pages; see timeRange.ts.
+  return carryTimeRange(to, window.location.pathname, window.location.search, window.location.origin);
 }
 
 export function navigate(

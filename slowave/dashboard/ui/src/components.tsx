@@ -1,14 +1,29 @@
 import { withTimeRange } from "./api";
 import {
+  Fragment,
   useEffect,
   useId,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { navigate, useApi, type Json } from "./api";
+import {
+  EMPTY,
+  formatCount,
+  formatDateTime,
+  formatDuration,
+  formatPercent,
+  formatRelative,
+  middleEllipsis,
+  shortScope,
+} from "./format";
+import { statusKey, statusLabel, statusTone, type Tone } from "./tones";
+
+export { EMPTY, formatCount, formatDuration };
 
 const root = document.getElementById("root")!;
 export const allowActions = root.dataset.allowActions !== "false";
@@ -16,7 +31,7 @@ export const refreshMs = Math.max(
   5000,
   Number(localStorage.getItem("slowave-refresh-ms") || root.dataset.refreshMs || 15000),
 );
-export const version = root.dataset.version || "—";
+export const version = root.dataset.version || EMPTY;
 
 // Shared glossary used by the effectiveness surface and the memories table so
 // the same term is explained identically everywhere it appears.
@@ -328,6 +343,7 @@ export function PageHeader({
   onRefresh,
   controls,
   hideRefreshLabel = false,
+  hideAutoRefresh = false,
   className = "",
 }: {
   title: string;
@@ -337,6 +353,7 @@ export function PageHeader({
   onRefresh?: () => void;
   controls?: ReactNode;
   hideRefreshLabel?: boolean;
+  hideAutoRefresh?: boolean;
   className?: string;
 }) {
   const [interval, setInterval] = useState(String(refreshMs));
@@ -353,12 +370,12 @@ export function PageHeader({
         {controls}
         {onRefresh && (
           <div className="refresh-status">
-            <label className="refresh-interval">
+            {!hideAutoRefresh && <label className="refresh-interval">
               <span className={hideRefreshLabel ? "sr-only" : undefined}>Auto-refresh</span>
               <select value={interval} onChange={(e) => { localStorage.setItem("slowave-refresh-ms", e.target.value); setInterval(e.target.value); window.location.reload(); }}>
                 <option value="5000">5 sec</option><option value="15000">15 sec</option><option value="30000">30 sec</option><option value="60000">1 min</option><option value="300000">5 min</option>
               </select>
-            </label>
+            </label>}
             <button
               className="button secondary"
               onClick={onRefresh}
@@ -373,51 +390,240 @@ export function PageHeader({
   );
 }
 
-const labels: Record<string, string> = {
-  active: "Active",
-  needs_review: "Needs review",
-  stale: "Stale",
-  archived: "Archived",
-  complete: "Complete",
-  incomplete: "Incomplete",
-  pending: "Pending",
-  success: "Success",
-  partial: "Partial",
-  failure: "Failure",
-  unknown: "Unknown",
-  retrieval: "Retrieval",
-  activity: "Session",
-  procedure: "Procedure",
-  memory: "Memory",
-  event: "Raw Events",
-  episode: "Episode",
-  feedback: "Feedback",
-  recorded: "Recorded",
-  captured: "Created",
-  used: "Used",
-  helped: "Helpful",
-  harmed: "Harmful",
-  irrelevant: "Irrelevant",
-  none: "None",
-  no_effect: "No effect",
-  no_match: "Empty",
-  verified: "Verified",
-  unverified: "Unverified",
-  partially_verified: "Partially verified",
-  retired: "Retired",
-  failed: "Failed",
-  running: "Running",
+const toneIcons: Record<Tone, ReactNode> = {
+  ok: <path d="m2 5.3 2.1 2.1L8 3" />,
+  warn: <path d="M5 1.6 9 8.4H1zM5 4v2M5 7.2h.01" />,
+  bad: <path d="m2.4 2.4 5.2 5.2M7.6 2.4 2.4 7.6" />,
+  neutral: <path d="M2.5 5h5" />,
+  info: <circle cx="5" cy="5" r="2.2" />,
 };
-export function StatusBadge({ value, count }: { value?: string | null; count?: number }) {
-  const key = String(value || "unknown")
-    .toLowerCase()
-    .replaceAll(" ", "_");
+
+export function ToneIcon({ tone }: { tone: Tone }) {
   return (
-    <span className={`status-badge status-${key}`}>
-      <i aria-hidden="true" />
-      {labels[key] || String(value || "Unknown").replaceAll("_", " ")}{count !== undefined ? ` · ${count.toLocaleString()}` : ""}
+    <svg className="badge-icon" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {toneIcons[tone]}
+    </svg>
+  );
+}
+
+export function StatusBadge({ value, count, label }: { value?: string | null; count?: number; label?: string }) {
+  const key = statusKey(value);
+  const tone = statusTone(value);
+  return (
+    <span className={`status-badge tone-${tone} status-${key.replace(/[^a-z0-9_-]/g, "")}`}>
+      <ToneIcon tone={tone} />
+      {label ?? statusLabel(value)}
+      {count !== undefined ? ` · ${formatCount(count)}` : ""}
     </span>
   );
+}
+
+/** Outlined, neutral badge naming the kind of record (Memory, Procedure, Retrieval, Session, Activation, Recall). */
+export function TypeBadge({ type, label }: { type: string; label?: string }) {
+  return <span className={`type-badge type-${statusKey(type)}`}>{label ?? statusLabel(type)}</span>;
+}
+
+/** Scope without the project: prefix; full value in the tooltip; muted placeholder when there is none. */
+export function ScopeChip({ scope }: { scope?: string | null }) {
+  if (!scope) return <span className="scope-chip scope-none">No scope</span>;
+  return <span className="scope-chip" title={scope}>{shortScope(scope)}</span>;
+}
+
+export function TimeCell({ ts, absolute = false }: { ts: unknown; absolute?: boolean }) {
+  const n = Number(ts);
+  if (!ts || !Number.isFinite(n) || n <= 0) return <span className="muted">{EMPTY}</span>;
+  const full = formatDateTime(n);
+  return (
+    <time dateTime={new Date(n * 1000).toISOString()} title={full}>
+      {absolute ? full : formatRelative(n)}
+    </time>
+  );
+}
+
+export function IdChip({ value, head = 8, tail = 4 }: { value: string; head?: number; tail?: number }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async (event: MouseEvent) => {
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), 1500);
+  };
+  return (
+    <button type="button" className={`id-chip${state === "copied" ? " is-copied" : ""}`} title={`${value} — click to copy`} onClick={copy}>
+      <code>{middleEllipsis(value, head, tail)}</code>
+      {state === "copied" ? <svg className="badge-icon" width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m2 5.3 2.1 2.1L8 3" /></svg> : <Icon name="copy" size={12} />}
+      <span className="id-chip-state" aria-live="polite">{state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : <span className="sr-only">Copy ID</span>}</span>
+    </button>
+  );
+}
+
+export function FilterChip({ label, onRemove }: { label: ReactNode; onRemove: () => void }) {
+  return (
+    <button type="button" className="filter-chip" onClick={onRemove}>
+      {label}
+      <span aria-hidden="true"> ×</span>
+      <span className="sr-only"> (remove filter)</span>
+    </button>
+  );
+}
+
+/** Row of removable chips for every active filter plus a Clear all button. Renders nothing when no filter is active. */
+export function ActiveFilters({ chips, onClear }: { chips: Array<{ key: string; label: ReactNode; onRemove: () => void }>; onClear: () => void }) {
+  if (!chips.length) return null;
+  return (
+    <div className="filter-chips" aria-label="Active filters">
+      {chips.map((chip) => <FilterChip key={chip.key} label={chip.label} onRemove={chip.onRemove} />)}
+      <button type="button" className="link-button clear-all" onClick={onClear}>Clear all</button>
+    </div>
+  );
+}
+
+export function KeyValueList({
+  items,
+  wide = false,
+}: {
+  items: Array<[ReactNode, ReactNode | null | undefined | false] | null | false | undefined>;
+  wide?: boolean;
+}) {
+  const rows = items.filter((item): item is [ReactNode, ReactNode] => Boolean(item) && (item as any)[1] !== null && (item as any)[1] !== undefined && (item as any)[1] !== false);
+  if (!rows.length) return null;
+  return (
+    <dl className={`key-values${wide ? " wide" : ""}`}>
+      {rows.map(([label, value], index) => (
+        <Fragment key={index}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+export function CodeBlock({ children, label }: { children: ReactNode; label?: string }) {
+  return <pre className="code-block" aria-label={label} tabIndex={0}>{children}</pre>;
+}
+
+/** Drawer section. `collapsed` renders it as a closed details element (used for Technical details). */
+export function DetailSection({
+  id,
+  title,
+  actions,
+  collapsed = false,
+  children,
+}: {
+  id: string;
+  title: ReactNode;
+  actions?: ReactNode;
+  collapsed?: boolean;
+  children: ReactNode;
+}) {
+  if (collapsed) {
+    return (
+      <details className="advanced detail-collapsed" id={id}>
+        <summary>{title}</summary>
+        {children}
+      </details>
+    );
+  }
+  return (
+    <section className="section detail-section" id={id}>
+      <div className="section-header">
+        <h2>{title}</h2>
+        {actions}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Column header with a sort button and a tooltip. Sortable headers always carry aria-sort. */
+export function SortableTh({
+  label,
+  column,
+  sort,
+  dir,
+  onSort,
+  numeric = false,
+  help,
+  className = "",
+}: {
+  label: string;
+  column?: string;
+  sort?: string;
+  dir?: "asc" | "desc";
+  onSort?: (column: string) => void;
+  numeric?: boolean;
+  help?: string;
+  className?: string;
+}) {
+  const sortable = Boolean(column && onSort);
+  const active = sortable && sort === column;
+  return (
+    <th
+      scope="col"
+      className={`${numeric ? "numeric" : ""} ${className}`.trim() || undefined}
+      aria-sort={sortable ? (active ? (dir === "asc" ? "ascending" : "descending") : "none") : undefined}
+    >
+      {sortable ? <SortButton label={label} active={active} direction={dir} onClick={() => onSort!(column!)} /> : label}
+      {help && <DefinitionTooltip label={`${label} definition`}>{help}</DefinitionTooltip>}
+    </th>
+  );
+}
+
+/** Real link that is the accessible name of a table row and opens its detail drawer. */
+export function RowLink({ href, onOpen, children }: { href: string; onOpen: () => void; children: ReactNode }) {
+  return (
+    <a
+      className="row-link"
+      href={href}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+        event.preventDefault();
+        onOpen();
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+export function useColumns(key: string, defaults: readonly string[]) {
+  const storageKey = `slowave-columns-v2-${key}`;
+  const [visible, setVisible] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(String);
+    } catch {
+      /* storage unavailable: fall back to defaults */
+    }
+    return [...defaults];
+  });
+  const set = (next: string[]) => {
+    setVisible(next);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  const reset = () => {
+    setVisible([...defaults]);
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {
+      /* ignore */
+    }
+  };
+  return [visible, set, reset] as const;
 }
 
 export function DefinitionTooltip({
@@ -452,17 +658,24 @@ export function DefinitionTooltip({
     timer.current = window.setTimeout(() => setOpen(false), 120);
   };
   useEffect(() => {
-    const close = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    if (!open) return;
+    // Escape closes the tooltip first and must not also close the drawer behind it.
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setOpen(false);
+    };
     const dismiss = (event: globalThis.MouseEvent) => {
       if (!triggerRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    document.addEventListener("keydown", close);
+    window.addEventListener("keydown", close, true);
     document.addEventListener("mousedown", dismiss);
     return () => {
-      document.removeEventListener("keydown", close);
+      window.removeEventListener("keydown", close, true);
       document.removeEventListener("mousedown", dismiss);
     };
-  }, []);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const reposition = () => {
@@ -573,8 +786,8 @@ export function ScopeSelect({
     </label>
   );
 }
-export function ClampedText({ text }: { text: string }) {
-  return <span className="clamp-text">{text}</span>;
+export function ClampedText({ text, lines = 2 }: { text: string; lines?: number }) {
+  return <span className="clamp-text" style={lines === 2 ? undefined : { WebkitLineClamp: lines }} title={text && text.length > 90 ? text : undefined}>{text}</span>;
 }
 
 
@@ -582,25 +795,30 @@ export function ClampedText({ text }: { text: string }) {
 
 export function CopyValue({
   value,
-  label = "Copy ID",
+  label = "Copy",
 }: {
   value: string;
   label?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <button
-      className="copy-value"
+      type="button"
+      className={`copy-value${state === "copied" ? " is-copied" : ""}`}
       onClick={async () => {
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
+        try {
+          await navigator.clipboard.writeText(value);
+          setState("copied");
+        } catch {
+          setState("failed");
+        }
+        window.setTimeout(() => setState("idle"), 1500);
       }}
     >
       <code>{value}</code>
       <Icon name="copy" size={14} />
-      <span className="sr-only" aria-live="polite">
-        {copied ? "Copied" : label}
+      <span className="copy-state" aria-live="polite">
+        {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : <span className="sr-only">{label}</span>}
       </span>
     </button>
   );
@@ -654,10 +872,12 @@ export function EmptyState({
   title,
   children,
   firstRun = false,
+  action,
 }: {
   title: string;
   children: ReactNode;
   firstRun?: boolean;
+  action?: ReactNode;
 }) {
   return (
     <div className={`empty-state ${firstRun ? "first-run" : ""}`}>
@@ -668,6 +888,7 @@ export function EmptyState({
       )}
       <strong>{title}</strong>
       <p>{children}</p>
+      {action && <div className="empty-state-action">{action}</div>}
     </div>
   );
 }
@@ -719,8 +940,33 @@ export function TableFrame({
   children: ReactNode;
   label: string;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [wide, setWide] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    // Only wide tables become a horizontal scroll container; otherwise the header sticks to the viewport.
+    const measure = () => {
+      const table = element.querySelector("table");
+      setWide(Boolean(table) && table!.scrollWidth > element.clientWidth + 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    const table = element.querySelector("table");
+    if (table) observer.observe(table);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className="table-frame" role="region" aria-label={label} tabIndex={0}>
+    <div
+      ref={ref}
+      className={`table-frame${wide ? " is-wide" : ""}${wide && scrolled ? " is-scrolled" : ""}`}
+      role="region"
+      aria-label={label}
+      tabIndex={wide ? 0 : undefined}
+      onScroll={(event) => setScrolled(event.currentTarget.scrollLeft > 0)}
+    >
       {children}
     </div>
   );
@@ -750,10 +996,12 @@ export function ColumnsControl({
   columns,
   visible,
   onChange,
+  onReset,
 }: {
-  columns: readonly { id: string; label: string; description?: string }[];
+  columns: readonly { id: string; label: string; description?: string; locked?: boolean }[];
   visible: readonly string[];
   onChange: (next: string[]) => void;
+  onReset?: () => void;
 }) {
   return (
     <details className="columns-control">
@@ -766,12 +1014,14 @@ export function ColumnsControl({
               <input
                 type="checkbox"
                 checked={checked}
-                onChange={() => onChange(checked ? visible.filter((id) => id !== column.id) : [...visible, column.id])}
+                disabled={column.locked}
+                onChange={() => onChange(checked ? visible.filter((id) => id !== column.id) : columns.map((c) => c.id).filter((id) => id === column.id || visible.includes(id)))}
               />
               {column.label}
             </label>
           );
         })}
+        {onReset && <button type="button" className="link-button" onClick={onReset}>Reset to default</button>}
       </div>
     </details>
   );
@@ -792,7 +1042,7 @@ export function Pagination({
   return (
     <div className="pagination">
       <span>
-        {total.toLocaleString()} results · page {page} of {pages}
+        {formatCount(total)} {total === 1 ? "result" : "results"} · page {formatCount(page)} of {formatCount(pages)}
       </span>
       <div>
         <button
@@ -818,6 +1068,7 @@ export function Inspector({
   title,
   id,
   label,
+  hideLabel = false,
   state,
   sections = [],
   onClose,
@@ -826,6 +1077,7 @@ export function Inspector({
   title: string;
   id: string;
   label?: string;
+  hideLabel?: boolean;
   state?: ReactNode;
   sections?: Array<{ id: string; label: string }>;
   onClose: () => void;
@@ -833,6 +1085,7 @@ export function Inspector({
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const titleId = useId();
+  const labelId = useId();
   const [activeSection, setActiveSection] = useState(sections[0]?.id || "");
   const sectionIds = sections.map((section) => section.id).join("|");
   const onCloseRef = useRef(onClose);
@@ -842,6 +1095,8 @@ export function Inspector({
     const wasInert = appRoot?.inert ?? false;
     const wasHidden = appRoot?.getAttribute("aria-hidden");
     const priorFocus = document.activeElement as HTMLElement | null;
+    const priorOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     if (appRoot) {
       appRoot.inert = true;
       appRoot.setAttribute("aria-hidden", "true");
@@ -849,11 +1104,12 @@ export function Inspector({
     dialogRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (event.defaultPrevented) return;
         event.preventDefault();
         onCloseRef.current();
       } else if (event.key === "Tab" && dialogRef.current) {
         const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
         ));
         if (!focusable.length) {
           event.preventDefault();
@@ -870,6 +1126,7 @@ export function Inspector({
     document.addEventListener("keydown", handleKey);
     return () => {
       document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = priorOverflow;
       if (appRoot) {
         appRoot.inert = wasInert;
         if (wasHidden == null) appRoot.removeAttribute("aria-hidden");
@@ -886,24 +1143,40 @@ export function Inspector({
         .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
       if (visible?.target.id) setActiveSection(visible.target.id);
     }, { root: content, rootMargin: "-8% 0px -72% 0px", threshold: 0 });
-    sectionIds.split("|").forEach((id) => {
-      const target = content.querySelector(`#${CSS.escape(id)}`);
+    sectionIds.split("|").forEach((sectionId) => {
+      const target = content.querySelector(`#${CSS.escape(sectionId)}`);
       if (target) observer.observe(target);
     });
     return () => observer.disconnect();
-  }, [sectionIds]);
+  }, [sectionIds, children]);
+  const jump = (sectionId: string) => {
+    // Scroll inside the drawer only: tabs never add a browser history entry.
+    const content = dialogRef.current?.querySelector<HTMLElement>(".inspector-content");
+    const target = content?.querySelector<HTMLElement>(`#${CSS.escape(sectionId)}`);
+    if (target instanceof HTMLDetailsElement) target.open = true;
+    target?.scrollIntoView({ block: "start", behavior: "smooth" });
+    setActiveSection(sectionId);
+  };
+  const moveTab = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
+    const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (!delta && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? sections.length - 1 : (index + delta + sections.length) % sections.length;
+    jump(sections[next].id);
+    (event.currentTarget.parentElement?.children[next] as HTMLElement | undefined)?.focus();
+  };
   return createPortal((
     <div
       className="inspector-backdrop"
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
-      <aside ref={dialogRef} className="inspector" data-entity={title.toLowerCase()} aria-labelledby={titleId} role="dialog" aria-modal="true" tabIndex={-1}>
+      <aside ref={dialogRef} className="inspector" data-entity={title.toLowerCase()} aria-labelledby={label ? `${titleId} ${labelId}` : titleId} role="dialog" aria-modal="true" tabIndex={-1}>
         <header>
           <div>
             <span className="entity-type" id={titleId}>{title}</span>
-            {label && <strong className="inspector-label" title={label}>{label}</strong>}
+            {label && <strong className={`inspector-label${hideLabel ? " sr-only" : ""}`} id={labelId} title={label}>{label}</strong>}
             <div className="inspector-id">
-              <CopyValue value={id} />
+              <IdChip value={id} />
               {state}
             </div>
           </div>
@@ -916,9 +1189,23 @@ export function Inspector({
           </button>
         </header>
         {sections.length > 0 && (
-          <nav className="inspector-sections" aria-label="On this record">
-            {sections.map((section) => <a key={section.id} href={`#${section.id}`} aria-current={activeSection === section.id ? "location" : undefined}>{section.label}</a>)}
-          </nav>
+          <div className="inspector-sections" role="tablist" aria-label="Sections of this record">
+            {sections.map((section, index) => (
+              <button
+                key={section.id}
+                type="button"
+                role="tab"
+                id={`tab-${section.id}`}
+                aria-selected={activeSection === section.id}
+                aria-controls={section.id}
+                tabIndex={activeSection === section.id ? 0 : -1}
+                onClick={() => jump(section.id)}
+                onKeyDown={(event) => moveTab(event, index)}
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
         )}
         <div className="inspector-content">{children}</div>
       </aside>
@@ -927,17 +1214,10 @@ export function Inspector({
 }
 
 const dashboardDateLocale = "en-GB";
-export const formatDate = (value: any) =>
-  value ? new Date(Number(value) * 1000).toLocaleString(dashboardDateLocale) : "Unknown";
-export const relativeDate = (value: any) => {
-  if (!value) return "Unknown";
-  const delta = Date.now() / 1000 - Number(value);
-  if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  if (delta < 604800) return `${Math.floor(delta / 86400)}d ago`;
-  return new Date(Number(value) * 1000).toLocaleDateString(dashboardDateLocale);
-};
+void dashboardDateLocale;
+/** Full unambiguous local timestamp, e.g. "6 Nov 2026 14:03". */
+export const formatDate = (value: any) => formatDateTime(value);
+export const relativeDate = (value: any) => formatRelative(value);
 export const truncate = (value: any, max = 120) => {
   const text = String(value || "");
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -945,15 +1225,7 @@ export const truncate = (value: any, max = 120) => {
 
 export const formatRate = (numerator: unknown, denominator: unknown) => {
   const parts = formatRateParts(numerator, denominator);
-  return parts ? `${parts.ratio} ${parts.percent}` : "—";
-};
-
-const ratePercentLabel = (numerator: number, denominator: number) => {
-  if (numerator === denominator) return "100%";
-  if (numerator === 0) return "0%";
-  const percent = (numerator / denominator) * 100;
-  const rounded = Math.round(percent);
-  return rounded === 0 || rounded === 100 ? `${percent.toFixed(1)}%` : `${rounded}%`;
+  return parts ? `${parts.ratio} ${parts.percent}` : EMPTY;
 };
 
 export const formatRateParts = (numerator: unknown, denominator: unknown) => {
@@ -965,8 +1237,8 @@ export const formatRateParts = (numerator: unknown, denominator: unknown) => {
   const retrieved = Number(denominator);
   if (!Number.isFinite(used) || !Number.isFinite(retrieved)) return null;
   return {
-    ratio: `${used.toLocaleString()} / ${retrieved.toLocaleString()}`,
-    percent: retrieved > 0 ? ratePercentLabel(used, retrieved) : "—",
+    ratio: `${formatCount(used)} / ${formatCount(retrieved)}`,
+    percent: retrieved > 0 ? formatPercent((used / retrieved) * 100) : EMPTY,
   };
 };
 
@@ -980,15 +1252,7 @@ export const getRatePercent = (numerator: unknown, denominator: unknown) => {
 
 export const formatRatePercent = (numerator: unknown, denominator: unknown) => {
   const parts = formatRateParts(numerator, denominator);
-  return parts?.percent || "—";
-};
-
-export const formatDuration = (seconds: unknown) => {
-  const value = Number(seconds);
-  if (!Number.isFinite(value)) return "—";
-  if (value < 60) return `${Math.round(value)}s`;
-  const minutes = Math.floor(value / 60);
-  return value < 3600 ? `${minutes}m ${Math.round(value % 60)}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return parts?.percent || EMPTY;
 };
 
 export function MetricCard({
@@ -1055,7 +1319,7 @@ export function RateMetricCard({
       title={title}
       value={
         empty ? (
-          "No data"
+          EMPTY
         ) : (
           <span className="metric-rate-value">
             <span className="metric-rate-percent">{parts.percent}</span>
@@ -1084,7 +1348,7 @@ function clientLogo(key: string) {
 
 /** Logo (and optionally name) of a supported coding-agent client. */
 export function ClientBadge({ client, showName = true }: { client?: ClientInfo | null; showName?: boolean }) {
-  if (!client) return <span className="client-badge client-unknown" title="Client not identified">—</span>;
+  if (!client) return <span className="client-badge client-unknown" title="Client not identified">{EMPTY}</span>;
   const base = `/img/clients/${clientLogo(client.key)}`;
   return (
     <span className="client-badge" title={client.name}>
@@ -1098,7 +1362,7 @@ export function ClientBadge({ client, showName = true }: { client?: ClientInfo |
 }
 
 export function ClientStack({ clients }: { clients?: ClientInfo[] | null }) {
-  if (!clients || clients.length === 0) return <span className="client-badge client-unknown" title="Client not identified">—</span>;
+  if (!clients || clients.length === 0) return <span className="client-badge client-unknown" title="Client not identified">{EMPTY}</span>;
   return (
     <span className="client-stack">
       {clients.map((client) => <ClientBadge key={client.key} client={client} showName={clients.length === 1} />)}

@@ -78,9 +78,8 @@ export function ActivityChartPanel({ data, series, title }: {
     const scope = new URLSearchParams(window.location.search).get("scope") || undefined;
     return {
       retrieval: structuralUrl("/retrieval", { scope, hours: "all", from, to, contains: kind }),
-      created: structuralUrl(kind === "memory" ? "/memory" : "/procedures", kind === "memory"
-        ? { scope, hours: "all", saved_from: from, saved_to: to }
-        : { scope, hours: "all", from, to }),
+      created: structuralUrl(kind === "memory" ? "/memory" : "/procedures",
+        { scope, hours: "all", saved_from: from, saved_to: to }),
     };
   };
   if (!series.some(s => total(s.key) > 0)) return <EmptyState title={`No ${title.toLowerCase()} activity yet`}>Activity will appear here once Slowave records it in the selected period.</EmptyState>;
