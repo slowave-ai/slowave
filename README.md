@@ -18,16 +18,30 @@
   <img src="https://img.shields.io/pypi/status/slowave?color=orange" />
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
+
 <p align="center">
-  Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Antigravity, Claude Desktop
+  <strong>Supported clients:</strong>
+</p>
+
+<p align="center">
+  <img src="img/clients/claude.svg" alt="Claude Code" title="Claude Code" height="24" />&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/copilot-dark.svg" /><img src="img/clients/copilot.svg" alt="Copilot CLI" title="Copilot CLI" height="24" /></picture>&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/openai-dark.svg" /><img src="img/clients/openai.svg" alt="Codex" title="Codex" height="24" /></picture>&nbsp;&nbsp;
+  <img src="img/clients/cursor.svg" alt="Cursor" title="Cursor" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/opencode-mark.svg" alt="OpenCode" title="OpenCode" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/windsurf.svg" alt="Windsurf / Devin Desktop" title="Windsurf / Devin Desktop" height="24" />&nbsp;&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/cline-dark.svg" /><img src="img/clients/cline.svg" alt="Cline" title="Cline" height="24" /></picture>&nbsp;&nbsp;
+  <img src="img/clients/antigravity.svg" alt="Antigravity" title="Antigravity" height="24" />&nbsp;&nbsp;
+  <img src="img/clients/claude.svg" alt="Claude Desktop" title="Claude Desktop" height="24" />
 </p>
 
 Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
 
 Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
 
-It runs on your machine and requires no LLM API key for memory maintenance. The local dashboard lets you inspect what your agent remembers and which memories it finds valuable.
+It runs on your machine and requires no LLM API key for memory maintenance. 
 
+The local dashboard lets you inspect your memories and how they support your agent in your day to day work.
 ---
 
 
