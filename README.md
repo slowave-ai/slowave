@@ -10,7 +10,7 @@
   <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="450"/>
 </p>
 <p align="center">
-  <b>Living memory layer across your coding agents and AI tools.</b>
+  <b>Living memory layer across your AI coding agents and sessions.</b>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/slowave/"><img src="https://img.shields.io/pypi/v/slowave?color=2f6f4e" alt="PyPI version" /></a>
@@ -35,13 +35,11 @@
   <img src="img/clients/claude.svg" alt="Claude Desktop" title="Claude Desktop" height="24" />
 </p>
 
-Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
 
-Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
-
-It runs on your machine and requires no LLM API key for memory maintenance. 
-
-The local dashboard lets you inspect your memories and how they support your agent in your day to day work.
+<p align="center">Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and sessions.</p>
+<p align="center">Slowave adapts as you use it, building reusable context over time so your agent can learn from its past experience.</p>
+<p align="center">It runs on your machine and requires no LLM API key for memory maintenance. </p>
+<p align="center">The local dashboard lets you inspect your memories and how they support your agent achieving your coding tasks and goals.</p>
 
 ---
 
