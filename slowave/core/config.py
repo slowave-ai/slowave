@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from slowave.core.applicability_ranking import ApplicabilityConfig
 from slowave.core.feedback import FeedbackConfig
 from slowave.core.paths import default_db_path
 from slowave.latent.graph_manager import GraphConfig
@@ -39,7 +38,6 @@ class SlowaveConfig:
 
     # encoder
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
-    applicability: ApplicabilityConfig = field(default_factory=ApplicabilityConfig)
 
     # slowwave core configs
     salience: SalienceConfig = field(default_factory=SalienceConfig)

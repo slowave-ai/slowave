@@ -145,6 +145,8 @@ class TestOldToolsDeleted:
             "type",
             "memories",
             "occurred_at",
+            "visibility",
+            "always",  # standing-tier opt-in flag (optional)
         }
         assert set(remember["required"]) == {"scope", "session_id"}
         assert "items" not in remember["properties"]

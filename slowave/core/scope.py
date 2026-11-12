@@ -76,8 +76,49 @@ def resolve_coding_scope(
     )
 
 
+# Canonical id of user-wide memory. It is the only form the MCP surface accepts
+# (scopes need kind:id); the bare legacy literals are still honoured on read.
+GLOBAL_SCOPE = "global:user"
+GLOBAL_SCOPE_IDS = ("global", "user", GLOBAL_SCOPE)
+# Literal for SQL ``IN`` clauses; contains only the constants above.
+GLOBAL_SCOPE_SQL = "(" + ", ".join(f"'{value}'" for value in GLOBAL_SCOPE_IDS) + ")"
+
+
+def is_global_scope(scope: str | None) -> bool:
+    """True for user-wide memory (legacy ``global``/``user`` or ``global:user``)."""
+    return scope in GLOBAL_SCOPE_IDS
+
+
+def canonical_scope(scope: str | None) -> str | None:
+    """Return the canonical spelling of a client-supplied scope, or None if blank.
+
+    Strips surrounding whitespace and trailing slashes and case-folds the kind.
+    The id keeps its case (repository names are case-sensitive on some
+    filesystems); case-insensitive matching against existing scopes happens in
+    the MCP layer, which prefers the first registered spelling. Lookalike
+    Unicode and traversal strings are left untouched, so they stay isolated.
+    """
+    if scope is None:
+        return None
+    text = str(scope).strip()
+    while text.endswith("/"):
+        text = text[:-1].rstrip()
+    if not text:
+        return None
+    if ":" in text:
+        kind, _, ident = text.partition(":")
+        text = f"{kind.strip().casefold()}:{ident.strip()}"
+        if text.casefold() == GLOBAL_SCOPE:
+            return GLOBAL_SCOPE
+    return text
+
+
 def normalize_scope(*, scope: str | None = None) -> str | None:
-    """Return a canonical scope id, or None if no scope is given."""
+    """Return a stored scope id without changing its identity.
+
+    Client spelling normalization happens before scope resolution. Stripping
+    a slash here would make a resolved legacy database scope inaccessible.
+    """
     if scope is not None and str(scope).strip():
         return str(scope).strip()
     return None

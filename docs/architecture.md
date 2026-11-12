@@ -96,7 +96,7 @@ SQLite is the source of durable state. The dashboard and CLI expose this state f
 
 Session activity is first recorded as raw events. Eligible events are encoded as episodes. Offline consolidation groups related episodes into prototypes and maintains associations, salience, and searchable schema records.
 
-The system uses local embeddings and deterministic operations in this path. It does not ask an LLM to summarize or rewrite memory. A readable memory record is kept at the boundary so agents and people can inspect what the system returned.
+The system uses one local embedding model, shared by memory formation and search, and deterministic operations in this path. It does not ask an LLM to summarize or rewrite memory. A readable memory record is kept at the boundary so agents and people can inspect what the system returned.
 
 Geometry can establish topical association, but it is not authoritative for semantic truth. Contradiction and supersession are recorded through explicit client feedback with evidence, not inferred solely from embedding similarity.
 

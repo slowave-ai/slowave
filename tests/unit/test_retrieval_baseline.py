@@ -4,7 +4,6 @@ from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
 from slowave.core.retrieval_baseline import BaselineConfig, rank_candidates
 from slowave.core.shared_retrieval import SharedRequest
-from slowave.symbolic import retrieval_encoder
 
 
 def test_lexical_bonus_cannot_admit_semantically_unrelated_memory():
@@ -28,38 +27,12 @@ def test_goal_changes_rank_and_recall_can_have_wider_admission():
     assert len(rank_candidates(task, [], BaselineConfig(semantic_floor=0.80, max_memories=3))) == 2
 
 
-def test_passage_cache_roles_and_content_invalidation(monkeypatch):
-    monkeypatch.setattr(retrieval_encoder, "model_root", lambda: None)
-
-    class Backend:
-        calls = []
-
-        def __init__(self, root):
-            pass
-
-        def encode_many(self, texts):
-            self.calls.append(texts)
-            return np.ones((len(texts), 384), dtype=np.float32)
-
-        def encode(self, text):
-            self.calls.append(text)
-            return np.ones(384, dtype=np.float32)
-
-    monkeypatch.setattr(retrieval_encoder, "_RetrievalONNX", Backend)
-    encoder = retrieval_encoder.RetrievalEncoder()
-    encoder.passages(["original"])
-    encoder.passages(["original"])
-    encoder.passages(["changed"])
-    encoder.query("question")
-    assert encoder.backend.calls == [["passage: original"], ["passage: changed"], "query: question"]
-
-
 def test_catalog_goal_scope_and_procedure_abstention(tmp_path, monkeypatch):
     class Encoder:
-        def passages(self, texts):
+        def encode_many(self, texts):
             return np.array([[1, 0] if "chart" in t else [0, 1] for t in texts], dtype=np.float32)
 
-        def query(self, text):
+        def encode(self, text):
             if text == "chart goal":
                 return np.array([1, 0.4])
             if text == "check goal":
@@ -68,8 +41,8 @@ def test_catalog_goal_scope_and_procedure_abstention(tmp_path, monkeypatch):
                 return np.array([0.1, 0.1])
             return np.array([0.9, 0.9])
 
-    monkeypatch.setattr(retrieval_encoder, "get_retrieval_encoder", lambda: Encoder())
     engine = SlowaveEngine(SlowaveConfig(db_path=str(tmp_path / "db"), disable_encoder=True))
+    engine._retrieval.encoder = Encoder()
     try:
         chart = engine.schemas.create(
             content_text="chart contract", embedding=None, scope_id="project:a"

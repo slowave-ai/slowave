@@ -1265,6 +1265,10 @@ class TestE2E:
             f"session {sid[:8]}: step events coexist with remember events ({len(all_events)} total)"
         )
 
+    @pytest.mark.skipif(
+        not os.path.isfile("scripts/analyze_procedural_signal.py"),
+        reason="scripts/analyze_procedural_signal.py is not part of the published tree",
+    )
     def test_procedures_emerge_from_repeated_sessions(self, cli, qdb, db):
         """2 deploy sessions + 3 anti-pattern sessions → distinct clusters with competing detection."""
         time.time()

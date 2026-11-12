@@ -10,9 +10,13 @@ import numpy as np
 import pytest
 
 from slowave import ops
+from slowave.core.cheap_pair_scorer import CheapPairScorer
 from slowave.core.config import SlowaveConfig
 from slowave.core.engine import SlowaveEngine
-from slowave.symbolic.procedural_memory import ProcedureScorerUnavailable
+from slowave.symbolic.procedural_memory import (
+    ProcedureScorerUnavailable,
+    retrieve_relevant_procedures,
+)
 
 
 class _KeywordScorer:
@@ -159,12 +163,11 @@ def test_missing_model_assets_back_off_instead_of_retrying_every_call(monkeypatc
     eng = SlowaveEngine(SlowaveConfig(db_path=tmp.name, dim=8, disable_encoder=True))
     attempts = {"n": 0}
 
-    class _Failing:
-        def __init__(self) -> None:
-            attempts["n"] += 1
-            raise OSError("assets not found")
+    def _failing_scorer():
+        attempts["n"] += 1
+        raise OSError("assets not found")
 
-    monkeypatch.setattr("slowave.symbolic.applicability_encoder.ApplicabilityEncoder", _Failing)
+    monkeypatch.setattr(eng._retrieval, "_pair_scorer", _failing_scorer)
     try:
         for _ in range(3):
             with pytest.raises(ProcedureScorerUnavailable):
@@ -175,3 +178,71 @@ def test_missing_model_assets_back_off_instead_of_retrying_every_call(monkeypatc
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(tmp.name + suffix):
                 os.remove(tmp.name + suffix)
+
+
+class _BagEncoder:
+    """Deterministic shared encoder: the same text always yields the same vector."""
+
+    dim = 16
+
+    def encode(self, text: str) -> np.ndarray:
+        vector = np.zeros(self.dim, dtype=np.float32)
+        for token in text.casefold().split():
+            vector[sum(token.encode("utf-8")) % self.dim] += 1.0
+        norm = float(np.linalg.norm(vector))
+        return vector / norm if norm else vector
+
+    def encode_many(self, texts: list[str]) -> np.ndarray:
+        return np.stack([self.encode(text) for text in texts])
+
+
+def _procedure(identifier: str, *, helped: int = 0, harmed: int = 0) -> dict[str, Any]:
+    summary = "Repair a Kubernetes checkout service crash loop."
+    return {
+        "id": identifier,
+        "goal": summary,
+        "summary": summary,
+        "context": {"platform": "kubernetes", "failure": "crashloop"},
+        "steps": [{"summary": "Inspect deployment events."}],
+        "caveats": [],
+        "outcome": "success",
+        "verification_status": "verified",
+        "evidence": {"used": helped + harmed, "helped": helped, "harmed": harmed},
+    }
+
+
+def _ranked(scorer: CheapPairScorer, encoder: _BagEncoder, procedures: list[dict[str, Any]]):
+    summary = "Repair a Kubernetes checkout service crash loop."
+    hits = retrieve_relevant_procedures(
+        procedures,
+        query=summary,
+        goal=summary,
+        retrieval_context={"platform": "kubernetes", "failure": "crashloop"},
+        scorer=scorer,
+        encoder=encoder,
+    )
+    return [hit["id"] for hit in hits]
+
+
+def test_identical_procedure_text_scores_identically() -> None:
+    """List position must not decide relevance: identical text ties exactly."""
+    encoder = _BagEncoder()
+    scorer = CheapPairScorer(encoder, shared_search=True)
+    text = "Repair a Kubernetes checkout service crash loop."
+
+    scores = scorer.score([text], [text, text])
+
+    assert scores[0, 0] == scores[1, 0]
+
+
+def test_feedback_decides_a_tie_between_identical_procedures() -> None:
+    """Reuse evidence orders equal candidates, and one harm report reverses it."""
+    encoder = _BagEncoder()
+    scorer = CheapPairScorer(encoder, shared_search=True)
+    procedures = [_procedure("proc_helped", helped=1), _procedure("proc_plain")]
+
+    assert _ranked(scorer, encoder, procedures) == ["proc_helped", "proc_plain"]
+
+    procedures[0] = _procedure("proc_helped", harmed=1)
+
+    assert _ranked(scorer, encoder, procedures) == ["proc_plain", "proc_helped"]

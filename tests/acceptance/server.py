@@ -90,6 +90,25 @@ class DeterministicEncoder:
             return vector
         return vector / norm
 
+    def encode_many(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, DIM), dtype=np.float32)
+        return np.stack([self.encode(text) for text in texts])
+
+    def embedding_spec(self) -> dict:
+        """Transport-only identity so passage vectors stay versioned per space."""
+        return {
+            "model": "acceptance-deterministic",
+            "revision": "1",
+            "backend": "deterministic",
+            "pooling": "none",
+            "normalization": True,
+            "max_length": 512,
+            "format": "float32-le",
+            "shared_search": True,
+            "version": 1,
+        }
+
 
 def _tokens(text: str) -> Iterable[str]:
     token = ""

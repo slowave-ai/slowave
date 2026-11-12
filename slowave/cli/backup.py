@@ -51,10 +51,13 @@ def _resolve_keep(keep: int | None) -> int:
     return DEFAULT_KEEP
 
 
-def _backup_name(ts: float) -> str:
-    """Generate a backup filename for a given timestamp."""
+def _backup_name(ts: float, label: str | None = None) -> str:
+    """Generate a backup filename for a given timestamp.
+
+    A labelled name is not matched by the rotation patterns, so it is never rotated away."""
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    return f"slowave-{dt.strftime('%Y%m%d_%H%M%S')}.db.gz"
+    stamp = dt.strftime("%Y%m%d_%H%M%S")
+    return f"slowave-{label}-{stamp}.db.gz" if label else f"slowave-{stamp}.db.gz"
 
 
 def _list_existing_backups(backup_dir: Path) -> list[Path]:
@@ -99,10 +102,12 @@ def run_backup(
     db_path: str,
     backup_dir: Path,
     keep: int,
+    label: str | None = None,
 ) -> dict[str, Any]:
     """Execute one backup pass.
 
-    Returns a dict suitable for JSON or human-readable output.
+    Returns a dict suitable for JSON or human-readable output. A *label* names a one-off
+    backup that is kept until the user removes it.
     """
     src = os.path.abspath(os.path.expanduser(db_path))
     if not os.path.isfile(src):
@@ -111,7 +116,7 @@ def run_backup(
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     now = time.time()
-    name = _backup_name(now)
+    name = _backup_name(now, label)
     dst = str(backup_dir / name)
 
     src_size_before = os.path.getsize(src)
@@ -151,7 +156,7 @@ def run_backup(
     compression_ratio = uncompressed_size / dst_size if dst_size > 0 else 0.0
 
     # Rotate old backups (only after a successful write).
-    removed = _rotate_backups(backup_dir, keep)
+    removed = [] if label else _rotate_backups(backup_dir, keep)
 
     return {
         "source": src,

@@ -377,7 +377,6 @@ class SlowaveEngine:
             graph=self.graph,
             schemas=self.schemas,
             encoder=self.encoder,
-            applicability_config=self.cfg.applicability,
             episode_text=self.episode_text,
             raw_log=self.raw_log,
             retrieval=self.retrieval,
@@ -660,6 +659,7 @@ class SlowaveEngine:
         scope: str | None = None,
         provenance: dict[str, Any] | None = None,
         occurred_at: int | None = None,
+        always: bool = False,
     ) -> RememberResult:
         """Explicit user-driven memory. Logged as a high-salience event.
 
@@ -737,6 +737,11 @@ class SlowaveEngine:
         )
         matched_existing = self.schemas.last_create_reinforced_existing_id is not None
 
+        # Standing-rule tier: tag the rule (classifier, situations) once, at write time.
+        from slowave.core.standing_tier import tag_on_write
+
+        tag_on_write(self, new_schema_id, content, type, emb=emb, always=always)
+
         # Familiarity check at encoding time. Same-scope semantic truth is
         # untouched; independently observed cross-scope evidence may reinforce
         # an existing schema for the promotion ladder.
@@ -757,12 +762,12 @@ class SlowaveEngine:
         if self.retrieval_ready and created_schema is not None:
             try:
                 from slowave.storage.embedding_store import EmbeddingStore
-                from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
 
+                encoder = self.encoder
                 EmbeddingStore(self.db).vectors(
                     "schema",
                     [(new_schema_id, "passage", created_schema.content_text or "")],
-                    get_retrieval_encoder(),
+                    encoder,
                 )
             except Exception:
                 log.warning("Passage embedding pending; will retry on retrieval", exc_info=True)

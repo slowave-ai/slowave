@@ -102,18 +102,33 @@ def _retrieval_policy_version(
     facet_mode: bool,
     continuity_state: str | None = None,
     recall: bool = False,
+    admission_status: str | None = None,
 ) -> str:
-    """Single source of truth for the policy label recorded on retrievals."""
+    """Single source of truth for the policy label recorded on retrievals.
+
+    ``admission_status`` is the catalog's ``applicability_status``: ``"applied"``
+    means the calibrated admission ranked the items, so the response must not be
+    labelled with a rule it did not use.
+    """
     if relevant_set:
         if baseline_enabled():
             return BASELINE_POLICY_VERSION
         from slowave.core.hybrid_selection import POLICY_VERSION as HYBRID_POLICY_VERSION
         from slowave.core.hybrid_selection import dogfood_enabled
 
+        # Flag-gated pipelines keep their own identity: calibrated admission runs
+        # inside them, it does not replace them.
         if not recall and dogfood_enabled():
             return HYBRID_POLICY_VERSION
         if shared_retrieval_enabled():
             return SHARED_POLICY_VERSION
+        if admission_status == "applied":
+            from slowave.mcp.activation_catalog import (
+                CALIBRATED_POLICY_VERSION,
+                CALIBRATED_RECALL_POLICY_VERSION,
+            )
+
+            return CALIBRATED_RECALL_POLICY_VERSION if recall else CALIBRATED_POLICY_VERSION
         # The pool-relative identities keep responses and cursors
         # distinguishable from historical shipped-policy records.
         if recall:
@@ -124,6 +139,18 @@ def _retrieval_policy_version(
     if recall:
         return "facet-v1" if facet_mode else "continuity-v1"
     return "facet-v1" if facet_mode else ("continuity-v1" if continuity_state else "strict-v9")
+
+
+POLICY_FALLBACK_STATUSES = frozenset({"no_model_encoder", "disabled", "unavailable"})
+
+
+def _policy_fallback(applicability_status: str | None) -> str | None:
+    """Reason to record when calibrated admission did not rank the response.
+
+    ``applied`` is the healthy case; ``empty``/``not_requested`` mean there was
+    nothing to rank, which is not a degradation.
+    """
+    return applicability_status if applicability_status in POLICY_FALLBACK_STATUSES else None
 
 
 def _procedure_decision_candidates(
@@ -526,6 +553,22 @@ def activate(
     topics = topics or []
     entities = entities or []
 
+    shadow_cue_text = canonical_cue_text(
+        query=query,
+        goal=resolved_goal,
+        task_type=task_type,
+        situation=cue_situation,
+        requirements=requirements,
+        topics=topics,
+        entities=entities,
+    )
+    shadow_cue_embedding = None
+    if eng.encoder is not None and shadow_cue_text:
+        try:
+            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
+        except Exception:
+            pass
+
     continuity_state: str | None = None
     if manage_continuity:
         if scope is None:
@@ -592,6 +635,8 @@ def activate(
             shared_request=shared_request,
             hybrid_task=query,
             baseline_request=baseline_request,
+            access_cue_embedding=shadow_cue_embedding,
+            access_task_type=task_type,
         )
         catalog_items = [
             WorkingMemoryItem(
@@ -781,21 +826,19 @@ def activate(
         for trace in brief.activation_trace
         if not trace.admitted and not _is_scope_rejection(trace.reason)
     ]
-    shadow_cue_text = canonical_cue_text(
-        query=query,
+    # Standing-rule tier: separate always-considered channel (reuses the cue embedding above).
+    standing = _standing_tier(
+        eng,
+        scope_id=scope_id,
+        task=query,
         goal=resolved_goal,
-        task_type=task_type,
-        situation=cue_situation,
-        requirements=requirements,
-        topics=topics,
-        entities=entities,
+        cue_embedding=shadow_cue_embedding,
+        retrieval_id=context_id,
+        continuity_id=continuity_id,
+        continuity_state=continuity_state,
+        exclude_ids={item.schema.id for item in brief.items},  # topical channel wins; never repeat
+        force_full=(resolved_context or {}).get("standing") == "full",
     )
-    shadow_cue_embedding = None
-    if eng.encoder is not None and shadow_cue_text:
-        try:
-            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
-        except Exception:
-            pass
     _shadow = _shadow_access_traces(
         eng,
         candidates=_shadow_candidates,
@@ -812,6 +855,10 @@ def activate(
     _internal["shadow_access_traces"] = _shadow
     if catalog is not None:
         _internal["catalog_truncated"] = catalog.truncated
+        _internal["applicability_status"] = catalog.applicability_status
+        _fallback_reason = _policy_fallback(catalog.applicability_status)
+        if _fallback_reason:
+            _internal["policy_fallback"] = _fallback_reason
     eng.record_context_recall(
         context_id=context_id,
         session_id=session_id,
@@ -860,6 +907,7 @@ def activate(
             complementary_activation=complementary_activation,
             facet_mode=facet_mode,
             continuity_state=continuity_state,
+            admission_status=catalog.applicability_status if catalog is not None else None,
         ),
         continuity_state=continuity_state,
         cue_embedding=shadow_cue_embedding,
@@ -879,6 +927,7 @@ def activate(
                 relevant_set=True,
                 complementary_activation=complementary_activation,
                 facet_mode=False,
+                admission_status=catalog.applicability_status if catalog is not None else None,
             )
             if relevant_set
             else ("facet-v1" if facet_mode else "continuity-v1")
@@ -889,6 +938,11 @@ def activate(
             result["retrieval_policy_version"] = SHARED_POLICY_VERSION
         result["catalog_truncated"] = catalog.truncated
         result["applicability_status"] = catalog.applicability_status
+        fallback = _policy_fallback(catalog.applicability_status)
+        if relevant_set and fallback:
+            # Say which label the caller is getting and why it is not the
+            # calibrated one, so a degraded run is visible instead of silent.
+            result["policy_fallback"] = fallback
     if include_diagnostics or mode == "debug":
         result["cue_terms"] = brief.cue_terms
         result["suppressed"] = brief.suppressed
@@ -924,7 +978,22 @@ def activate(
         result["activation_trace"] = [asdict(t) for t in brief.activation_trace]
         result["shadow_access_traces"] = _shadow
     result["procedures"] = procedure_hits
+    if standing:
+        result["standing"] = {k: v for k, v in standing.items() if not k.startswith("_")}
     return result
+
+
+def _standing_tier(eng: SlowaveEngine, **kwargs: Any) -> dict[str, Any] | None:
+    """Best-effort standing tier; never fails an activation."""
+    if not kwargs.get("scope_id"):
+        return None
+    try:
+        from slowave.core import standing_tier
+
+        return standing_tier.build(eng, **kwargs)
+    except Exception:
+        logging.getLogger(__name__).warning("standing tier unavailable", exc_info=True)
+        return None
 
 
 def remember(
@@ -936,6 +1005,7 @@ def remember(
     session_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     occurred_at: int | None = None,
+    always: bool = False,
 ) -> dict[str, Any]:
     """Encode a durable typed claim.
 
@@ -962,6 +1032,7 @@ def remember(
         session_id=session_id,
         provenance=provenance,
         occurred_at=occurred_at,
+        always=always,
     )
     schema_id = rid.schema_id if hasattr(rid, "schema_id") and rid.schema_id else None
     return {
@@ -1046,6 +1117,22 @@ def recall(
     )
     session_context.update(context_delta)
     retrieval_context = session_context
+    shadow_cue_text = canonical_cue_text(
+        query=query,
+        goal=None,
+        task_type=None,
+        situation=retrieval_context,
+        requirements=None,
+        topics=None,
+        entities=None,
+    )
+    shadow_cue_embedding = None
+    if eng.encoder is not None and shadow_cue_text:
+        try:
+            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
+        except Exception:
+            pass
+
     effective_query = " ".join(
         part.strip() for part in (query, semantic_context or "") if part.strip()
     )
@@ -1087,6 +1174,7 @@ def recall(
             selection_mode="deliberate_recall",
             shared_request=shared_request,
             baseline_request=baseline_request,
+            access_cue_embedding=shadow_cue_embedding,
         )
         if relevant_set
         else None
@@ -1159,21 +1247,12 @@ def recall(
         ],
         procedures=procedure_hits,
     )
-    shadow_cue_text = canonical_cue_text(
-        query=query,
-        goal=None,
-        task_type=None,
-        situation=retrieval_context,
-        requirements=None,
-        topics=None,
-        entities=None,
-    )
-    shadow_cue_embedding = None
-    if eng.encoder is not None and shadow_cue_text:
-        try:
-            shadow_cue_embedding = eng.encoder.encode(shadow_cue_text)
-        except Exception:
-            pass
+    if catalog is not None:
+        _internal["catalog_truncated"] = catalog.truncated
+        _internal["applicability_status"] = catalog.applicability_status
+        _fallback_reason = _policy_fallback(catalog.applicability_status)
+        if _fallback_reason:
+            _internal["policy_fallback"] = _fallback_reason
     _internal["shadow_access_traces"] = _shadow_access_traces(
         eng,
         candidates=[(s.id, float(direct_scores.get(s.id, 0.0)), "direct") for s in direct_schemas]
@@ -1282,11 +1361,16 @@ def recall(
         out["relevant_total"] = len(catalog.items)
         out["catalog_truncated"] = catalog.truncated
         out["applicability_status"] = catalog.applicability_status
+        fallback = _policy_fallback(catalog.applicability_status)
+        if fallback:
+            # Mirror the activation path: a fallback must be visible, not silent.
+            out["policy_fallback"] = fallback
         out["retrieval_policy_version"] = _retrieval_policy_version(
             relevant_set=True,
             complementary_activation=False,
             facet_mode=False,
             recall=True,
+            admission_status=catalog.applicability_status,
         )
     return out
 
@@ -1506,7 +1590,6 @@ def commit(
         normalized_procedure is not None
         and eng.encoder is not None
         and hasattr(eng.encoder, "embedding_spec")
-        and getattr(getattr(eng.encoder, "cfg", None), "use_onnx", True)
     ):
         try:
             backfill_procedure_search(eng.db.connect(), session_id=session_id)

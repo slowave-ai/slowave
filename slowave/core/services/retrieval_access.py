@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
@@ -16,13 +17,39 @@ from slowave.utils.vec import pack_f32, unpack_f32
 
 @dataclass(frozen=True)
 class RetrievalAccessPolicyConfig:
-    """Declared Phase-2 shadow-policy parameters; none affects live admission."""
+    """Live cue- and scope-conditioned inhibition parameters.
 
-    cue_match_threshold: float = 0.90
+    ``cue_match_threshold`` is the similarity at which one cue's evidence counts
+    for another cue. Stored cue prototypes have a median pairwise similarity
+    around 0.36 on real data, so the historical 0.90 never fired; this default is
+    calibrated to the observed distribution instead of to an outcome.
+
+    ``scope_*`` adds a bounded prior for memories repeatedly marked irrelevant in
+    one scope and never used there. It disappears as soon as the memory is used
+    in that scope, and constraint/warning memories are exempt downstream.
+    """
+
+    cue_match_threshold: float = 0.75
     negative_evidence_threshold: int = 2
     inhibition_per_net_negative: float = 0.35
     inhibition_cap: float = 0.70
     direct_override_threshold: float = 0.95
+    scope_negative_threshold: int = 3
+    scope_inhibition_per_net: float = 0.15
+    scope_inhibition_cap: float = 0.20
+
+
+INHIBITION_ENV = "SLOWAVE_FEEDBACK_INHIBITION"
+
+
+def inhibition_enabled() -> bool:
+    """Feedback inhibition is live unless explicitly switched off."""
+    return (os.environ.get(INHIBITION_ENV) or "on").strip().lower() not in {
+        "0",
+        "off",
+        "false",
+        "no",
+    }
 
 
 class RetrievalAccessPolicy:
@@ -31,6 +58,127 @@ class RetrievalAccessPolicy:
     def __init__(self, db: SQLiteDB, config: RetrievalAccessPolicyConfig | None = None):
         self.db = db
         self.config = config or RetrievalAccessPolicyConfig()
+
+    def inhibition_by_schema(
+        self,
+        *,
+        schema_ids: list[int],
+        cue_embedding: np.ndarray | None,
+        scope_id: str | None,
+        task_type: str | None,
+        pathway: str = "direct",
+        before_ts: int | None = None,
+    ) -> dict[int, float]:
+        """Fetch matching evidence in one query for an entire candidate pool.
+
+        ``before_ts`` restricts evidence to rows that already existed at that
+        instant, so a historical replay cannot be helped by feedback recorded
+        after the activation it is replaying.
+        """
+        if (
+            not schema_ids
+            or cue_embedding is None
+            or pathway not in RetrievalAccessEvidenceStore._PATHWAYS
+            or not inhibition_enabled()
+        ):
+            return {}
+        cue = np.asarray(cue_embedding, dtype=np.float32)
+        if cue.ndim != 1 or not cue.size or not np.isfinite(cue).all():
+            return {}
+        norm = float(np.linalg.norm(cue))
+        if norm < 1e-12:
+            return {}
+        marks = ",".join("?" for _ in schema_ids)
+        sql = (
+            "SELECT e.schema_id, e.useful_count, e.irrelevant_count, c.embedding, c.dim "
+            "FROM schema_retrieval_evidence e JOIN retrieval_cue_prototypes c "
+            "ON c.id = e.cue_prototype_id WHERE e.schema_id IN (" + marks + ") "
+            "AND e.pathway = ? AND c.dim = ? AND c.scope_id IS ? AND c.task_type IS ? "
+        )
+        params: tuple = (*schema_ids, pathway, int(cue.size), scope_id, task_type)
+        if before_ts is not None:
+            sql += "AND e.updated_at <= ? AND c.first_seen_ts <= ? "
+            params = (*params, int(before_ts), int(before_ts))
+        rows = self.db.connect().execute(sql + "ORDER BY e.cue_prototype_id", params).fetchall()
+        best: dict[int, tuple[float, float]] = {}
+        for row in rows:
+            try:
+                prototype = unpack_f32(row["embedding"], int(row["dim"]))
+                similarity = float(
+                    cue.dot(prototype) / (norm * float(np.linalg.norm(prototype)) + 1e-12)
+                )
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(similarity) or similarity < self.config.cue_match_threshold:
+                continue
+            sid = int(row["schema_id"])
+            net = max(0, int(row["irrelevant_count"]) - int(row["useful_count"]))
+            strength = min(
+                self.config.inhibition_cap,
+                max(0, net - self.config.negative_evidence_threshold + 1)
+                * self.config.inhibition_per_net_negative,
+            )
+            if sid not in best or similarity > best[sid][0]:
+                best[sid] = similarity, strength
+        cue_strength = {sid: score[1] for sid, score in best.items() if score[1] > 0}
+        prior = self.scope_negative_prior(
+            schema_ids=schema_ids, scope_id=scope_id, pathway=pathway, before_ts=before_ts
+        )
+        if not prior:
+            return cue_strength
+        combined: dict[int, float] = {}
+        for sid in set(cue_strength) | set(prior):
+            total = cue_strength.get(sid, 0.0) + prior.get(sid, 0.0)
+            total = min(max(self.config.inhibition_cap, self.config.scope_inhibition_cap), total)
+            if total > 0:
+                combined[sid] = total
+        return combined
+
+    def scope_negative_prior(
+        self,
+        *,
+        schema_ids: list[int],
+        scope_id: str | None,
+        pathway: str = "direct",
+        before_ts: int | None = None,
+    ) -> dict[int, float]:
+        """Bounded demotion for memories repeatedly rejected and never used here.
+
+        Cue-specific evidence is sparse: most memories gather one cue's worth of
+        feedback, and cross-cue similarity stays low, so a cue match alone almost
+        never fires on real data. This prior aggregates a memory's negative
+        evidence inside one scope, requires a run of rejections, and switches off
+        entirely once the memory has ever been used in that scope, so a single
+        ``used`` restores it.
+        """
+        if not schema_ids or scope_id is None:
+            return {}
+        marks = ",".join("?" for _ in schema_ids)
+        sql = (
+            "SELECT e.schema_id, SUM(e.irrelevant_count) AS negative, "
+            "SUM(e.useful_count) AS positive FROM schema_retrieval_evidence e "
+            "JOIN retrieval_cue_prototypes c ON c.id = e.cue_prototype_id "
+            "WHERE e.schema_id IN (" + marks + ") AND e.pathway = ? AND c.scope_id IS ? "
+        )
+        params: tuple = (*schema_ids, pathway, scope_id)
+        if before_ts is not None:
+            sql += "AND e.updated_at <= ? "
+            params = (*params, int(before_ts))
+        rows = self.db.connect().execute(sql + "GROUP BY e.schema_id", params).fetchall()
+        prior: dict[int, float] = {}
+        for row in rows:
+            positive = int(row["positive"] or 0)
+            if positive:
+                continue
+            net = int(row["negative"] or 0)
+            strength = min(
+                self.config.scope_inhibition_cap,
+                max(0, net - self.config.scope_negative_threshold + 1)
+                * self.config.scope_inhibition_per_net,
+            )
+            if strength > 0:
+                prior[int(row["schema_id"])] = strength
+        return prior
 
     def evaluate(
         self,
@@ -282,6 +430,14 @@ class RetrievalAccessEvidenceStore:
                         "SELECT COUNT(*) FROM feedback_events f WHERE f.retrieval_id = ? "
                         "AND f.target_kind = 'memory' AND f.target_id = ? "
                         "AND f.assessment = 'irrelevant' AND " + effective_feedback_sql(),
+                        (context_id, target),
+                    ).fetchone()[0]
+                )
+                useful += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM feedback_events f WHERE f.retrieval_id = ? "
+                        "AND f.target_kind = 'memory' AND f.target_id = ? "
+                        "AND f.assessment = 'used' AND " + effective_feedback_sql(),
                         (context_id, target),
                     ).fetchone()[0]
                 )

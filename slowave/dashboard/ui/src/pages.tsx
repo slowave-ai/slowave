@@ -69,6 +69,7 @@ import {
 } from "./components";
 import { statusLabel as statusLabelOf } from "./tones";
 import {
+  fallbackLabel,
   formatBytes,
   formatClock,
   formatDay,
@@ -76,6 +77,7 @@ import {
   formatPercentOf,
   formatTokens,
   fromDateInput,
+  policyLabel,
   shortScope,
   toDateInput,
 } from "./format";
@@ -2081,7 +2083,10 @@ function RetrievalDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 ["Scope", retrieval.scope_id || "No scope"],
                 sessionId ? ["Session ID", <IdChip value={String(sessionId)} head={12} tail={6} />] : null,
                 retrieval.retrieval_type === "context" ? [<>Memory page limit <DefinitionTooltip label="Memory page limit definition">Maximum number of memories requested for each activation page. The actual returned count can be lower when fewer memories qualify or the response payload limit is reached.</DefinitionTooltip></>, retrieval.requested_page_size == null ? "Not recorded" : `${retrieval.requested_page_size} memories`] : null,
-                ["Policy version", retrieval.retrieval_policy_version || "Not recorded"],
+                ["Policy version", policyLabel(retrieval.retrieval_policy_version)],
+                retrieval.policy_fallback
+                  ? [<>Ranking fallback <DefinitionTooltip label="Ranking fallback definition">This retrieval was not ranked by the calibrated admission, so results come from the fallback rule. The reason is recorded with the retrieval.</DefinitionTooltip></>, fallbackLabel(retrieval.policy_fallback)]
+                  : null,
                 ["Lifecycle version", retrieval.lifecycle_version || "Not recorded"],
                 ["Situation", retrieval.situation && Object.keys(retrieval.situation).length ? <StructuredValue value={retrieval.situation} /> : "Not recorded"],
                 ["Requirements", <StructuredValue value={retrieval.requirements} />],

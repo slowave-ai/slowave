@@ -125,73 +125,13 @@ strict end-to-end and strict-haystack comparisons remain to be run.** A fair
 head-to-head evaluation must use the same split, context budget, answerer,
 judge, prompt, temperature, and denominator for every system.
 
-## Reproduce the completed runs
+## What is published
 
-### 1. Download the datasets
+The numbers above come from runs on LoCoMo and LongMemEval with the judge
+settings described here. The evaluation harness, the dataset downloaders and the
+benchmark code are not part of the published tree, so this page documents the
+results, the workload and how the judge behaves rather than a one-command
+reproduction.
 
-Run these commands from the repository root. They download the exact files
-used by the completed runs, plus the strict LongMemEval-S file for the pending
-evaluation:
-
-```bash
-# LoCoMo
-bash scripts/download_datasets.sh locomo
-
-# LongMemEval oracle and strict-S
-bash scripts/download_datasets.sh lme
-```
-
-The script downloads LoCoMo from the [official LoCoMo repository](https://github.com/snap-research/locomo)
-and the cleaned LongMemEval files from the [upstream LongMemEval dataset](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned).
-Check the upstream dataset licenses before redistributing them.
-
-Verify that the required files exist:
-
-```bash
-test -f data/locomo/locomo10.json
-test -f data/longmemeval/longmemeval_oracle.json
-```
-
-### 2. Configure the external judge
-
-Use Python 3.11+ with the project dependencies installed. The judge needs an
-OpenRouter key; Slowave itself does not.
-
-```bash
-export OPENROUTER_API_KEY='...'
-```
-
-### 3. Run LoCoMo
-
-```bash
-.venv/bin/python tests/benchmarks/locomo_eval.py \
-  --dataset data/locomo/locomo10.json \
-  --assignment-threshold 0.85 \
-  --top-k 20 \
-  --judge-model deepseek/deepseek-v4-flash \
-  --save-full-hypotheses \
-  --out data/suite_runs/locomo_judge_deepseek_rerun.json
-```
-
-### 4. Run LongMemEval oracle
-
-```bash
-.venv/bin/python tests/benchmarks/longmemeval_eval.py \
-  --dataset data/longmemeval/longmemeval_oracle.json \
-  --assignment-threshold 0.65 \
-  --recall-mode hybrid \
-  --top-k 20 \
-  --judge-model deepseek/deepseek-v4-flash \
-  --save-full-hypotheses \
-  --out data/longmemeval/runs/longmemeval_oracle_judge_deepseek_rerun.json
-```
-
-Confirm the paid prompt, or use `--yes` in non-interactive automation.
-`--save-full-hypotheses` makes the new artifact auditable without changing
-retrieval or the judge input.
-
-The historical artifacts do not record a Git revision, dataset checksum,
-dependency lock state, or complete retrieved evidence. Their results can be
-reproduced approximately, not forensically byte-for-byte. Preserve those items
-with future runs, and report LongMemEval-S separately with its exact command,
-artifact, judge count, and parse-failure count.
+A fair comparison with another system holds the split, context budget, answerer,
+judge, prompt, temperature and denominator equal for every system.

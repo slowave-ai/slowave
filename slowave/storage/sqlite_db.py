@@ -352,6 +352,12 @@ class SQLiteDB:
         """
         conn = self.connect()
 
+        # Standing-rule tier (forward-only: it stores client-owned always flags
+        # and suppressions, so downgrades restore a backup instead).
+        from slowave.core.standing_tier import migrate_up as _standing_up
+
+        _standing_up(conn)
+
         # ---- Phase 1 P1: drop procedural_memories tables (2026-06-25) ---------
         # Procedural behavior is now implicit via schemas + prototypes +
         # TransitionModel + spreading activation.
@@ -443,7 +449,7 @@ class SQLiteDB:
         except Exception:
             pass
 
-        # Procedure relevance is scored by the cross-encoder over the search
+        # Procedure relevance is scored by the pair scorer over the search
         # documents; the FTS accelerator that served the old lexical bypass is
         # derived, unused state, so remove it from older databases.
         try:

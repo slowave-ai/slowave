@@ -12,8 +12,16 @@ from dataclasses import dataclass
 from typing import Any
 
 POLICY_VERSION = "activation-pool-relative-v1"
+# The calibrated admission (slowave.core.admission_v2) is a different ranking
+# rule, so it carries its own identity. Without it a response ranked by the
+# calibrated scorer is indistinguishable from the pool-relative one in traces,
+# dashboards and A/B comparisons.
+CALIBRATED_POLICY_VERSION = "activation-calibrated-v2"
+CALIBRATED_RECALL_POLICY_VERSION = "recall-calibrated-v2"
 SUPPORTED_POLICIES = {
     POLICY_VERSION,
+    CALIBRATED_POLICY_VERSION,
+    CALIBRATED_RECALL_POLICY_VERSION,
     "recall-pool-relative-v1",
     # Historical identities: stored cursors and snapshots must keep loading.
     "activation-complementary-v1",
@@ -140,6 +148,109 @@ def source_preview(
     }
 
 
+def degraded_source_preview(
+    source: str, spans: tuple[tuple[int, int], ...]
+) -> tuple[str, dict[str, Any] | None, bool]:
+    """Never-raising counterpart of ``source_preview`` for activation.
+
+    Returns ``(preview, indication, truncated)``. Valid spans are kept whole,
+    in source order, while they fit the preview bound; spans that do not fit
+    are omitted. If not even one whole span fits (or none is usable), the
+    first span (or the source head) is cut at a word boundary. Any loss is
+    flagged in the indication so callers can warn; nothing is silently cut.
+    """
+    if len(source) <= MAX_PREVIEW_CHARS:
+        return source, None, False
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(
+        {
+            (a, b)
+            for a, b in spans
+            if isinstance(a, int) and isinstance(b, int) and 0 <= a < b <= len(source)
+        }
+    ):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    chosen: list[tuple[int, int]] = []
+    used = 0
+    for start, end in merged:
+        cost = end - start + (1 if chosen else 0)
+        if used + cost <= MAX_PREVIEW_CHARS:
+            chosen.append((start, end))
+            used += cost
+    truncated = len(chosen) < len(merged) or not merged
+    if not chosen:
+        start, end = merged[0] if merged else (0, len(source))
+        cut = min(end, start + MAX_PREVIEW_CHARS)
+        if cut < end:
+            space = source.rfind(" ", start + MAX_PREVIEW_CHARS // 2, cut)
+            cut = space if space > start else cut
+        chosen = [(start, cut)]
+        truncated = True
+    preview = "\n".join(source[start:end] for start, end in chosen)
+    indication: dict[str, Any] = {
+        "version": 1,
+        "source_chars": len(source),
+        "source_spans": [list(span) for span in chosen],
+    }
+    if truncated:
+        indication["truncated"] = True
+    return preview, indication, truncated
+
+
+def _fit_memory_record(
+    value: dict[str, Any], source: str, spans: tuple[tuple[int, int], ...]
+) -> tuple[dict[str, Any], bool] | None:
+    """Fit one memory record into its bound, shrinking content if required."""
+    preview, indication, truncated = degraded_source_preview(source, spans)
+    while True:
+        candidate = dict(value)
+        candidate["content"] = preview
+        if indication:
+            provenance = dict(candidate.get("provenance") or {})
+            provenance["source_excerpt"] = indication
+            candidate["provenance"] = provenance
+        try:
+            _bounded(candidate, MAX_MEMORY_RECORD_CHARS, "memory record")
+            return candidate, truncated
+        except CatalogPreparationError:
+            if len(preview) <= 16:
+                return None
+            # Escaping (e.g. non-BMP text) can make a bounded preview oversize.
+            preview = preview[: len(preview) // 2]
+            indication = {
+                "version": 1,
+                "source_chars": len(source),
+                "source_spans": [],
+                "truncated": True,
+            }
+            truncated = True
+
+
+def _with_degradation_warnings(
+    metadata: dict[str, Any],
+    truncated: list[str],
+    omitted: list[str],
+    omitted_procedures: list[str],
+) -> dict[str, Any]:
+    notes = [
+        ("memory_excerpt_truncated", truncated, "Memory previews were shortened to fit the bound"),
+        ("memory_omitted", omitted, "Memories that could not be rendered were skipped"),
+        ("procedure_omitted", omitted_procedures, "Oversized procedures were skipped"),
+    ]
+    warnings = list(metadata.get("warnings") or [])
+    for code, ids, text in notes:
+        if ids:
+            warnings.append({"code": code, "message": f"{text}: {', '.join(ids[:5])}"})
+    if warnings:
+        metadata = {**metadata, "warnings": warnings}
+        while len(_encode(metadata)) > MAX_METADATA_CHARS and metadata["warnings"]:
+            metadata["warnings"] = metadata["warnings"][:-1]
+    return metadata
+
+
 @dataclass(frozen=True)
 class FrozenActivationCatalog:
     """One immutable JSON snapshot with separate memory/procedure offsets."""
@@ -162,6 +273,7 @@ class FrozenActivationCatalog:
         page_size: int = DEFAULT_MEMORY_PAGE_SIZE,
         policy_version: str = POLICY_VERSION,
         recall_evidence: dict[str, Any] | None = None,
+        degrade: bool = False,
     ) -> FrozenActivationCatalog:
         if type(page_size) is not int or not 1 <= page_size <= 10:
             raise CatalogPreparationError("page_size must be an integer from 1 to 10")
@@ -190,7 +302,10 @@ class FrozenActivationCatalog:
             or len(max((retrieval_id, session_id, scope), key=len)) > 256
         ):
             raise CatalogPreparationError("invalid catalog binding")
-        frozen_memories = []
+        frozen_memories: list[dict[str, Any]] = []
+        omitted_memories: list[str] = []
+        truncated_memories: list[str] = []
+        omitted_procedures: list[str] = []
         seen: set[str] = set()
         for memory in memories:
             memory_id = memory.get("memory_id")
@@ -206,6 +321,16 @@ class FrozenActivationCatalog:
             source = value.get("content")
             if not isinstance(source, str):
                 raise CatalogPreparationError("selected memory content must be a string")
+            if degrade:
+                fitted = _fit_memory_record(value, source, contribution_spans.get(memory_id, ()))
+                if fitted is None:
+                    omitted_memories.append(memory_id)
+                    continue
+                value, was_truncated = fitted
+                if was_truncated:
+                    truncated_memories.append(memory_id)
+                frozen_memories.append(value)
+                continue
             preview, indication = source_preview(source, contribution_spans.get(memory_id, ()))
             value["content"] = preview
             if indication:
@@ -222,8 +347,18 @@ class FrozenActivationCatalog:
             seen.add(pid)
             # Preserve already-selected bounded previews and complete safety
             # caveats. Unsupported content fails the entire preparation.
-            _bounded(procedure, MAX_PROCEDURE_RECORD_CHARS, "procedure record")
+            try:
+                _bounded(procedure, MAX_PROCEDURE_RECORD_CHARS, "procedure record")
+            except CatalogPreparationError:
+                if not degrade:
+                    raise
+                omitted_procedures.append(pid)
+                continue
             frozen_procedures.append(dict(procedure))
+        if degrade:
+            metadata = _with_degradation_warnings(
+                metadata, truncated_memories, omitted_memories, omitted_procedures
+            )
         snapshot = {
             "originating_policy_version": policy_version,
             "paging_contract_version": (

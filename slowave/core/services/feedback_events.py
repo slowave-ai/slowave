@@ -176,6 +176,10 @@ class FeedbackEventService:
         own_transaction = conn is None
         conn = conn or self.db.connect()
         parent, exposed_memories, exposed_procedures = self._exposure(conn, str(retrieval_id))
+        # Standing-tier rules may be assessed (stale/superseded/irrelevant) but are never required.
+        from slowave.core.standing_tier import optional_targets
+
+        optional_memories = optional_targets(conn, str(retrieval_id)) - exposed_memories
         now = int(time.time())
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []
@@ -272,7 +276,7 @@ class FeedbackEventService:
             effect = self._clean_text(item.get("effect"))
             reason = self._clean_text(item.get("reason"))
             error = None
-            if target_id not in exposed_memories:
+            if target_id not in exposed_memories and target_id not in optional_memories:
                 error = "target_not_exposed"
             elif assessment not in MEMORY_ASSESSMENTS:
                 error = "invalid_memory_assessment"

@@ -250,3 +250,25 @@ def test_partial_acceptance_never_advertises_complete_target_events(engine):
         .fetchone()[0]
         == 0
     )
+
+
+def test_canonical_used_feedback_reverses_cue_access_inhibition(engine):
+    sid = expose(engine)[0]
+    assess(engine, sid, "irrelevant")
+    engine.record_retrieval(
+        retrieval_id="r2",
+        scope_id="project:test",
+        response={"schemas": [{"id": f"sch_{sid}", "pathway": "direct"}]},
+    )
+    conn = engine.db.connect()
+    conn.execute(
+        "UPDATE context_recall_events SET cue_embedding = ?, cue_dim = 8 WHERE context_id = 'r2'",
+        (pack_f32(np.ones(8, dtype=np.float32)),),
+    )
+    conn.commit()
+    result = assess(engine, sid, "irrelevant", rid="r2")
+    assert result["applied"]["weakened"] == [f"sch_{sid}"]
+    assess(engine, sid, "used", rid="r2")
+    evidence = engine._feedback.access_evidence.inspect_schema(sid)[0]
+    assert evidence["irrelevant_count"] == 1
+    assert evidence["useful_count"] == 1

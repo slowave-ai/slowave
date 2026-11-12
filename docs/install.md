@@ -202,6 +202,57 @@ and Windows file locks. `setup` rebinds service registrations to the current
 installation and refreshes client instructions. Use the same `SLOWAVE_HOME` or
 legacy `SLOWAVE_DB` override used for the original setup, if any.
 
+### Rebuilding embeddings
+
+Every stored vector must come from the current embedding model, because vectors
+of different models cannot be compared. `slowave setup` builds the vectors search
+reads — memory passages and procedures — so an install whose vectors were all
+written by the current model needs nothing else.
+
+If any stored vector came from a different model (a restored backup, an older
+database, a database copied from another machine), run the migration below.
+Until it runs, cue matching, neighbour expansion, consolidation and the graph
+views compare vectors from two different models, and the file keeps the space
+held by the other model's vectors.
+
+To rebuild **all** vectors as well (the schema, episode, prototype and cue
+vectors used by consolidation, cue matching and the graph views), and to delete
+vectors of any other model and compact the file, run the migration on a copy:
+
+```text
+slowave backup                      # keep the printed path: it is the rollback
+slowave stop
+cp "$DB" "$DB.pre-migration"
+python -m slowave.storage.embedding_migration --db "$DB.pre-migration" --verify-only
+python -m slowave.storage.embedding_migration --db "$DB.pre-migration" --prune --vacuum
+mv "$DB.pre-migration" "$DB"
+slowave start
+slowave doctor
+```
+
+`$DB` is the database path `slowave doctor` prints (see
+[Runtime data location](#runtime-data-location)). Run `python` from the
+installation that runs Slowave: for pipx
+`~/.local/pipx/venvs/slowave/bin/python`, for a venv its own interpreter, on
+Windows the matching `Scripts\python.exe`.
+
+- `--verify-only` writes nothing; it reports whether the file already holds one
+  embedding space and exits non-zero when it does not.
+- Without it the migration re-embeds from the stored text, and refuses to finish
+  when a source link is missing or a cue prototype's origin is ambiguous. An
+  interrupted run resumes where it stopped, because the migration records each
+  finished step in the database; the width of a vector is never taken as proof
+  that its step ran, since the legacy model and the new one are both 384 wide.
+- `--prune` deletes the other models' vectors and `--vacuum` compacts the file.
+  On a 470 MB database with about 1,900 memories this took 45.9 s and left
+  195 MB. Pruning runs only after the migration is verified and recorded, so a
+  `prune_error` in the output means the migration itself succeeded and
+  `--prune-only` can retry the deletion.
+
+The first run needs the model (about 157 MB) in the Hugging Face cache; see
+[Local retrieval models](#local-retrieval-models) for offline use. If anything
+looks wrong afterwards, `slowave stop` and restore the copy you made.
+
 ### Upgrading from a release without `slowave stop`
 
 Stop the old jobs through their OS supervisor first. On macOS, run
@@ -255,18 +306,23 @@ upgrading to replace older task actions. Custom Python installations without
 
 ### Local retrieval models
 
-`slowave setup` downloads the models Slowave needs and prepares existing
-memories and procedures for faster search. Keep an internet connection available
-and wait for setup to finish before restarting your MCP clients. The first setup,
-or setup after an upgrade, may take longer while this work completes.
+Slowave uses one local embedding model,
+`hotchpotch/bekko-embedding-v1-a8m` (about 157 MB), for both memory formation and
+search. `slowave setup` downloads it and prepares existing memories and
+procedures for faster search. Keep an internet connection available and wait for
+setup to finish before restarting your MCP clients. Setup can take longer while
+this work completes.
 
 If setup is interrupted, run `slowave setup` again to resume. Only model files
 are downloaded; your task and memory text stays on your computer.
 
 Before using Slowave offline, complete `slowave setup` on that computer while
-connected to the internet. Slowave then reuses the downloaded models offline.
+connected to the internet. Slowave then reuses the downloaded model offline.
 Set `HF_HUB_OFFLINE=1` to prevent model downloads. If setup reports missing
 models, remove that setting, reconnect to the internet and rerun `slowave setup`.
+To use a copy of the model you already have, point `SLOWAVE_BEKKO_MODEL_DIR` at
+its directory; the encoder verifies the pinned hashes and refuses to load
+modified files.
 
 ### Per-client setup
 

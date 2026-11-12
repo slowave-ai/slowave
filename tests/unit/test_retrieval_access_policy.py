@@ -7,6 +7,7 @@ import os
 import tempfile
 
 import numpy as np
+import pytest
 
 from slowave import ops
 from slowave.core.config import SlowaveConfig
@@ -188,6 +189,164 @@ def test_activate_persists_shadow_trace_without_changing_visible_admission() -> 
         trace = json.loads(stored)["shadow_access_traces"][0]
         assert trace["hypothetical_admitted"] is False
         assert trace["reason"] == "cue_inhibited"
+    finally:
+        engine.close()
+        _cleanup(path)
+
+
+def test_batch_policy_is_cue_scope_and_pathway_specific_and_reversible() -> None:
+    engine, path = _engine()
+    try:
+        sid = engine.schemas.create(content_text="claim", facets={}, tags=[], embedding=None)
+        _evidence(engine, schema_id=sid, useful=0, irrelevant=2)
+        policy = RetrievalAccessPolicy(engine.db)
+        kwargs = dict(
+            schema_ids=[sid],
+            cue_embedding=np.array([1.0, 0.0]),
+            scope_id="project:access",
+            task_type="coding",
+        )
+        assert policy.inhibition_by_schema(**kwargs) == {sid: 0.35}
+        assert (
+            policy.inhibition_by_schema(**{**kwargs, "cue_embedding": np.array([0.0, 1.0])}) == {}
+        )
+        assert policy.inhibition_by_schema(**{**kwargs, "scope_id": "project:other"}) == {}
+        assert policy.inhibition_by_schema(**kwargs, pathway="graph") == {}
+        engine.db.connect().execute("UPDATE schema_retrieval_evidence SET useful_count=1")
+        assert policy.inhibition_by_schema(**kwargs) == {}
+    finally:
+        engine.close()
+        _cleanup(path)
+
+
+def test_live_v2_admission_uses_cue_inhibition_and_preserves_constraints(monkeypatch):
+    from slowave.core import admission_v2
+    from slowave.core.activation_selection import ContributionCandidate
+
+    engine, path = _engine()
+    try:
+        ids = [
+            engine.schemas.create(content_text=f"claim {i}", facets={}, tags=[], embedding=None)
+            for i in range(2)
+        ]
+        for sid in ids:
+            _evidence(engine, schema_id=sid, useful=0, irrelevant=2)
+        candidates = [
+            ContributionCandidate(
+                memory_id=sid,
+                text=f"claim {i}",
+                score=0.9,
+                eligible=True,
+                eligibility_reason="eligible",
+                need_indexes=(0,),
+                facets={"schema_class": "constraint" if i else "fact"},
+            )
+            for i, sid in enumerate(ids)
+        ]
+        monkeypatch.setattr(admission_v2, "pool_features", lambda *args, **kwargs: np.zeros((2, 1)))
+        monkeypatch.setattr(
+            admission_v2, "cheap_probability", lambda features: np.array([0.9, 0.8])
+        )
+        kwargs = dict(
+            candidates=candidates,
+            schemas={sid: engine.schemas.get(sid) for sid in ids},
+            need_texts=["cue"],
+            e5_evidence={},
+            probability_out={},
+            access_scope="project:access",
+            access_task_type="coding",
+        )
+        original, _ = engine._retrieval._admit_v2(**kwargs)
+        changed, _ = engine._retrieval._admit_v2(
+            **{**kwargs, "probability_out": {}, "access_cue_embedding": np.array([1.0, 0.0])}
+        )
+        assert [x.schema.id for x in original] == ids
+        assert [x.schema.id for x in changed] == ids[::-1]
+        assert changed[0].score == 0.8
+        assert changed[1].score == 0.9 * 0.65
+        other, _ = engine._retrieval._admit_v2(
+            **{**kwargs, "probability_out": {}, "access_cue_embedding": np.array([0.0, 1.0])}
+        )
+        assert [x.schema.id for x in other] == ids
+    finally:
+        engine.close()
+        _cleanup(path)
+
+
+def test_live_inhibition_uses_a_scope_prior_for_repeatedly_rejected_memories() -> None:
+    """Cue-only evidence is sparse; repeated rejection in one scope still counts."""
+    engine, path = _engine()
+    try:
+        schema_id = engine.schemas.create(
+            content_text="weak claim",
+            facets={},
+            tags=[],
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+        )
+        _evidence(engine, schema_id=schema_id, useful=0, irrelevant=3)
+        # A different cue: far from the stored prototype, so only the prior applies.
+        strengths = RetrievalAccessPolicy(engine.db).inhibition_by_schema(
+            schema_ids=[schema_id],
+            cue_embedding=np.array([0.0, 1.0], dtype=np.float32),
+            scope_id="project:access",
+            task_type="coding",
+        )
+        assert strengths[schema_id] == pytest.approx(0.15)
+    finally:
+        engine.close()
+        _cleanup(path)
+
+
+def test_live_inhibition_restores_a_memory_as_soon_as_it_is_used() -> None:
+    engine, path = _engine()
+    try:
+        schema_id = engine.schemas.create(
+            content_text="sometimes right",
+            facets={},
+            tags=[],
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+        )
+        _evidence(engine, schema_id=schema_id, useful=0, irrelevant=5)
+        policy = RetrievalAccessPolicy(engine.db)
+        crowded = policy.inhibition_by_schema(
+            schema_ids=[schema_id],
+            cue_embedding=np.array([0.0, 1.0], dtype=np.float32),
+            scope_id="project:access",
+            task_type="coding",
+        )
+        assert crowded[schema_id] > 0
+
+        _evidence(engine, schema_id=schema_id, useful=1, irrelevant=0)
+        restored = RetrievalAccessPolicy(engine.db).inhibition_by_schema(
+            schema_ids=[schema_id],
+            cue_embedding=np.array([0.0, 1.0], dtype=np.float32),
+            scope_id="project:access",
+            task_type="coding",
+        )
+        assert schema_id not in restored
+    finally:
+        engine.close()
+        _cleanup(path)
+
+
+def test_live_inhibition_can_be_switched_off(monkeypatch) -> None:
+    engine, path = _engine()
+    try:
+        schema_id = engine.schemas.create(
+            content_text="weak claim",
+            facets={},
+            tags=[],
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+        )
+        _evidence(engine, schema_id=schema_id, useful=0, irrelevant=5)
+        monkeypatch.setenv("SLOWAVE_FEEDBACK_INHIBITION", "off")
+        strengths = RetrievalAccessPolicy(engine.db).inhibition_by_schema(
+            schema_ids=[schema_id],
+            cue_embedding=np.array([1.0, 0.0], dtype=np.float32),
+            scope_id="project:access",
+            task_type="coding",
+        )
+        assert strengths == {}
     finally:
         engine.close()
         _cleanup(path)

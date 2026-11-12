@@ -1699,6 +1699,91 @@ def _verify_daemon_health(port: int, timeout: float = _DAEMON_HEALTH_TIMEOUT) ->
     return wait_for_daemon_health(port, timeout, require_retrieval_ready=True) is None
 
 
+def _migrate_legacy_embeddings(
+    view: Any,
+    database: str,
+    *,
+    dry_run: bool,
+    restart_after: bool,
+    encoder: Any = None,
+) -> None:
+    """Move a database whose vectors came from another model into the current space.
+
+    Search only reads the passage and procedure vectors that ``_prepare_search_vectors`` builds,
+    but memory vectors, cue matching and neighbour expansion read the rest, and the stored
+    vectors of an older model are the same width as the current ones, so they compare without
+    error and match nothing useful. A database already in the current space is left untouched.
+    """
+    import sqlite3
+
+    from slowave.storage import embedding_migration as migration
+    from slowave.symbolic.bekko_encoder import model_available_offline
+    from slowave.symbolic.encoder import TextEncoder
+
+    if not Path(database).is_file():
+        return
+    conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        has_vectors = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schemas'"
+            ).fetchone()
+            and conn.execute("SELECT 1 FROM schemas WHERE embedding IS NOT NULL").fetchone()
+        )
+        if not has_vectors:
+            return
+        if dry_run and encoder is None and not model_available_offline():
+            view.row("Embeddings", "ok", "checked for an older model when applied")
+            return
+        encoder = encoder or TextEncoder()
+        if not migration.needs_migration(conn, encoder):
+            return
+    finally:
+        conn.close()
+    if dry_run:
+        view.row("Embeddings", "warn", "stored by an older model; would be migrated")
+        return
+
+    from slowave.cli.backup import _default_backup_dir, run_backup
+    from slowave.cli.services import control, require_stopped_runtime, stop_registered_services
+    from slowave.storage.sqlite_db import SQLiteConfig, SQLiteDB
+
+    stopped = stop_registered_services()
+    require_stopped_runtime("Embedding migration")
+    try:
+        backup = run_backup(
+            db_path=database,
+            backup_dir=_default_backup_dir(),
+            keep=0,
+            label="pre-embedding-migration",
+        )["backup_path"]
+    except Exception as exc:
+        raise click.ClickException(
+            f"Embedding migration not started: the database could not be backed up ({exc}). "
+            "Nothing was changed."
+        ) from exc
+    view.row("Embeddings", "warn", f"stored by an older model; backed up to {backup}")
+    try:
+        result = migration.migrate_embeddings(
+            SQLiteDB(SQLiteConfig(path=database)),
+            formation_encoder=encoder,
+            search_encoder=encoder,
+            prune_retired=True,
+        )
+    except Exception as exc:
+        raise click.ClickException(
+            f"Embedding migration failed: {exc}\n  Setup stopped before changing anything else "
+            f"and Slowave stays stopped. The database as it was is saved at {backup}.\n"
+            f"  To put it back, run: slowave restore {backup}"
+        ) from exc
+    view.row("Embeddings", "ok", f"{result['counts']['schemas']:,} memories migrated")
+    if result["prune_error"]:
+        view.row("Old vectors", "warn", f"not removed ({result['prune_error']})")
+    if stopped and restart_after:
+        control("start", tuple(stopped))
+
+
 def _prepare_search_vectors(database: str, progress: Any = None) -> None:
     """Provision derived search state without holding a migration transaction."""
     from slowave.core.config import SlowaveConfig
@@ -2084,9 +2169,13 @@ def setup_cmd(
 
     view.group("Preparing retrieval")
     if dry_run:
+        _migrate_legacy_embeddings(view, str(paths.database), dry_run=True, restart_after=False)
         view.row("Search index", "ok", "would be prepared")
     else:
         paths.root.mkdir(parents=True, exist_ok=True)
+        _migrate_legacy_embeddings(
+            view, str(paths.database), dry_run=False, restart_after=not worker
+        )
         counts: dict[str, int] = {}
 
         def _on_progress(message: str) -> None:
