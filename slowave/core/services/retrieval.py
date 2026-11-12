@@ -16,7 +16,8 @@ from typing import Any
 
 import numpy as np
 
-from slowave.core import pool_relative
+from slowave.core import admission_v2
+from slowave.core.activation_selection import _GENERIC as _GENERIC_TERMS
 from slowave.core.activation_selection import (
     ActivationTask,
     ContributionCandidate,
@@ -26,9 +27,7 @@ from slowave.core.activation_selection import (
     specific_terms,
 )
 from slowave.core.applicability_ranking import (
-    ApplicabilityConfig,
     PairScorer,
-    applicability_order,
     query_needs,
 )
 from slowave.core.config import DEFAULT_RECALL_TOP_K, MAX_PREVIEW_CHARS
@@ -48,7 +47,12 @@ from slowave.core.retrieval_matching import (
     MatchingConfig,
     match_candidates,
 )
-from slowave.core.scope import normalize_scope
+from slowave.core.scope import (
+    GLOBAL_SCOPE_IDS,
+    GLOBAL_SCOPE_SQL,
+    is_global_scope,
+    normalize_scope,
+)
 from slowave.core.shared_retrieval import SharedRequest, assess
 from slowave.latent.episodic_store import EpisodicStore
 from slowave.latent.graph_manager import GraphManager
@@ -315,7 +319,6 @@ class RetrievalService:
         working_memory_gate: WorkingMemoryGate,
         db: SQLiteDB,
         retrieval_cfg: RetrievalConfig,
-        applicability_config: ApplicabilityConfig | None = None,
     ):
         self.episodic = episodic
         self.semantic = semantic
@@ -330,12 +333,9 @@ class RetrievalService:
         self.working_memory_gate = working_memory_gate
         self.db = db
         self._retrieval_cfg = retrieval_cfg
-        self._applicability_config = applicability_config or ApplicabilityConfig()
         self._applicability_scorer: PairScorer | None = None
-        # Procedures get their own scorer: memory retrieval treats
-        # ``_applicability_scorer is None`` as "no scorer available", so creating
-        # that one as a side effect of a procedure lookup would change memory
-        # behaviour. The ONNX backend underneath is shared and cached.
+        # Procedures keep their own scorer instance so a procedure lookup never
+        # changes memory ranking state; both use the same pinned encoder.
         self._procedure_scorer: PairScorer | None = None
         self._procedure_scorer_failed_at: float | None = None
         self._passage_indexes: dict[tuple, tuple[int, dict]] = {}
@@ -353,75 +353,6 @@ class RetrievalService:
             if episodes:
                 facets["episode_derived"] = True
         return facets
-
-    def _rank_applicability(
-        self,
-        items: list[RelevantCatalogItem],
-        query: str,
-        *,
-        protected_ids: set[int] | None = None,
-        minimum_logit: float | None = None,
-        maximum_logit_gap: float | None = None,
-        retain_weak_support: bool = True,
-        score_trace: dict[int, float] | None = None,
-    ) -> tuple[list[RelevantCatalogItem], str]:
-        """Rank by applicability; ``score_trace`` receives every item's best logit."""
-        if not self._applicability_config.enabled or not items:
-            return items, "disabled" if not self._applicability_config.enabled else "empty"
-        # Synthetic/no-encoder callers retain their explicit lexical contracts.
-        # Tests of this stage inject a scorer rather than loading model weights.
-        if self._applicability_scorer is None:
-            if not isinstance(self.encoder, TextEncoder):
-                return items, "no_model_encoder"
-            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
-
-            self._applicability_scorer = ApplicabilityEncoder()
-        try:
-            needs = query_needs(query)
-            scores = self._applicability_scorer.score(
-                needs, [item.schema.content_text or "" for item in items]
-            )
-            if scores.shape != (len(items), len(needs)):
-                raise ValueError("incorrect applicability score shape")
-            if score_trace is not None:
-                for index, item in enumerate(items):
-                    score_trace[item.schema.id] = float(scores[index].max())
-            order = applicability_order(
-                scores,
-                minimum_logit=(
-                    self._applicability_config.minimum_logit
-                    if minimum_logit is None
-                    else minimum_logit
-                ),
-                maximum_logit_gap=(
-                    self._applicability_config.maximum_logit_gap
-                    if maximum_logit_gap is None
-                    else maximum_logit_gap
-                ),
-                retain_weak_support=retain_weak_support,
-            )
-            if protected_ids:
-                order.extend(
-                    sorted(
-                        (
-                            i
-                            for i, item in enumerate(items)
-                            if item.schema.id in protected_ids and i not in order
-                        ),
-                        key=lambda i: (-float(scores[i].max()), i),
-                    )
-                )
-        except (OSError, RuntimeError, ValueError, ImportError) as exc:
-            logging.getLogger(__name__).warning("Applicability ranking unavailable: %s", exc)
-            return items, "unavailable"
-        return [
-            replace(
-                items[index],
-                score=float(1 / (1 + np.exp(-np.clip(float(scores[index].max()), -60, 60)))),
-                reason="query-applicability-v1",
-            )
-            for index in order
-        ], "applied"
 
     def recall_source_spans(self, text: str, query: str) -> tuple[tuple[int, int], ...]:
         """Choose an intact answer passage after admission, without changing rank.
@@ -457,11 +388,24 @@ class RetrievalService:
 
     # ---- public API --------------------------------------------------------
 
-    def procedure_scorer(self) -> PairScorer:
-        """Cross-encoder for procedure relevance, or ProcedureScorerUnavailable.
+    def _calibrated_admission(self) -> bool:
+        """True when a real encoder can supply the calibrated feature set."""
+        return isinstance(self.encoder, TextEncoder)
 
-        A failure is remembered for a short backoff so missing model assets are
-        not re-downloaded or re-logged on every activation.
+    def _pair_scorer(self) -> PairScorer:
+        """Pair scores from the cheap classifier over the pinned encoder."""
+        from slowave.core.cheap_pair_scorer import CheapPairScorer, LexicalPairScorer
+
+        if self.encoder is None:
+            # No weights configured: score pairs lexically instead of failing.
+            return LexicalPairScorer()
+        return CheapPairScorer(self.encoder, shared_search=True)
+
+    def procedure_scorer(self) -> PairScorer:
+        """Procedure relevance scorer, or ProcedureScorerUnavailable.
+
+        A failure is remembered for a short backoff so a broken encoder is not
+        retried on every activation.
         """
         from slowave.symbolic.procedural_memory import ProcedureScorerUnavailable
 
@@ -471,10 +415,7 @@ class RetrievalService:
         if failed_at is not None and time.monotonic() - failed_at < _PROCEDURE_SCORER_BACKOFF_S:
             raise ProcedureScorerUnavailable("procedure scorer unavailable (backing off)")
         try:
-            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
-
-            scorer = ApplicabilityEncoder()
-            # Load the backend now so a missing model surfaces here, once.
+            scorer = self._pair_scorer()
             scorer.score(["probe"], ["probe"])
         except (OSError, RuntimeError, ImportError, ValueError) as exc:
             self._procedure_scorer_failed_at = time.monotonic()
@@ -485,9 +426,7 @@ class RetrievalService:
 
     def _shared_scorer(self) -> PairScorer:
         if self._applicability_scorer is None:
-            from slowave.symbolic.applicability_encoder import ApplicabilityEncoder
-
-            self._applicability_scorer = ApplicabilityEncoder()
+            self._applicability_scorer = self._pair_scorer()
         return self._applicability_scorer
 
     def _multilingual_index(self, *, scope: str | None, mode: str) -> dict[str, Any] | None:
@@ -497,10 +436,12 @@ class RetrievalService:
         encoder or its assets are unavailable; discovery then falls back to
         the stored dense and lexical channels alone.
         """
+        encoder = self.encoder
+        if encoder is None:
+            return None
         try:
-            from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
-
-            encoder = get_retrieval_encoder()
+            if hasattr(encoder, "embedding_spec"):
+                encoder.embedding_spec()
         except (OSError, RuntimeError, ImportError, ValueError) as exc:
             logging.getLogger(__name__).warning(
                 "Multilingual retrieval channel unavailable: %s", exc
@@ -520,7 +461,7 @@ class RetrievalService:
         sql = "SELECT * FROM schemas"
         params: tuple = ()
         if scope_id is not None:
-            sql += " WHERE scope_id=? OR scope_id IS NULL OR scope_id IN ('global','user') OR generalization_stage>=2"
+            sql += f" WHERE scope_id=? OR scope_id IS NULL OR scope_id IN {GLOBAL_SCOPE_SQL} OR generalization_stage>=2"
             params = (scope_id,)
         sql += " ORDER BY salience DESC,last_updated_ts DESC"
         universe: list = []
@@ -528,7 +469,7 @@ class RetrievalService:
             schema = self.schemas._row_to_schema(row)
             if not (
                 scope_id is None
-                or schema.scope_id in (scope_id, None, "global", "user")
+                or schema.scope_id in (scope_id, None, *GLOBAL_SCOPE_IDS)
                 or schema.generalization_stage >= 2
             ):
                 continue
@@ -550,7 +491,7 @@ class RetrievalService:
                 encoder,
             )
             if hasattr(encoder, "embedding_spec")
-            else encoder.passages([schema.content_text or "" for schema in universe])
+            else encoder.encode_many([schema.content_text or "" for schema in universe])
         )
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         vectors = vectors / np.clip(norms, 1e-12, None)
@@ -579,10 +520,9 @@ class RetrievalService:
         )
         from slowave.core.shared_retrieval import source_windows
         from slowave.symbolic.procedural_memory import _contexts_compatible
-        from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
 
         if not hasattr(self, "_baseline_encoder"):
-            self._baseline_encoder = get_retrieval_encoder()
+            self._baseline_encoder = self.encoder
         encoder = self._baseline_encoder
         config = (
             BaselineConfig()
@@ -598,7 +538,7 @@ class RetrievalService:
             for schema in schemas
             if (
                 scope_id is None
-                or schema.scope_id in (scope_id, None, "global", "user")
+                or schema.scope_id in (scope_id, None, *GLOBAL_SCOPE_IDS)
                 or schema.generalization_stage >= 2
             )
             and self.working_memory_gate.eligible(schema, cue=cue, policy=policy)[0]
@@ -608,13 +548,13 @@ class RetrievalService:
         ]
         if not schemas:
             return RelevantCatalog([], False, 0)
-        vectors = encoder.passages([schema.content_text or "" for schema in schemas])
+        vectors = encoder.encode_many([schema.content_text or "" for schema in schemas])
         adjustments = feedback_adjustments(
             self.schemas.db.connect(), request.task, request.goal, request.context, scope_id
         )
         channels = []
         for query in [request.task] + ([request.goal] if request.goal else []):
-            scores = vectors @ encoder.query(query)
+            scores = vectors @ encoder.encode(query)
             lexical = {
                 sid: rank
                 for sid, _, rank, _ in self.schemas.search_fts_candidates(
@@ -675,11 +615,11 @@ class RetrievalService:
         if not hits:
             return hits
         encoder = self._baseline_encoder
-        vectors = encoder.passages(
+        vectors = encoder.encode_many(
             [str(hit.get("goal", "")) + " " + str(hit.get("summary", "")) for hit in hits]
         )
-        task = vectors @ encoder.query(request.task)
-        goal = vectors @ encoder.query(request.goal) if request.goal else task
+        task = vectors @ encoder.encode(request.task)
+        goal = vectors @ encoder.encode(request.goal) if request.goal else task
         return [
             hit for index, hit in enumerate(hits) if 0.75 * task[index] + 0.25 * goal[index] >= 0.86
         ]
@@ -911,6 +851,94 @@ class RetrievalService:
         self.episodic.reset_faiss_from_db()
         self.semantic.reset_faiss_from_db()
 
+    def _scorer_or_none(self) -> PairScorer | None:
+        """The pair scorer, built lazily; None for synthetic/no-model encoders."""
+        if self._applicability_scorer is None and isinstance(self.encoder, TextEncoder):
+            try:
+                self._applicability_scorer = self._pair_scorer()
+            except (OSError, RuntimeError, ImportError, ValueError):
+                return None
+        return self._applicability_scorer
+
+    def _admit_v2(
+        self,
+        candidates: list[ContributionCandidate],
+        schemas: dict[int, Any],
+        need_texts: list[str],
+        e5_evidence: dict[int, tuple[float, int]],
+        probability_out: dict[int, float],
+        *,
+        recall: bool = False,
+        access_cue_embedding: np.ndarray | None = None,
+        access_scope: str | None = None,
+        access_task_type: str | None = None,
+    ) -> tuple[list[RelevantCatalogItem], str]:
+        """Calibrated topical admission (see ``slowave.core.admission_v2``).
+
+        Cheap channel features over the shared encoder score the whole pool;
+        the calibrated probability is the final score. Returns the admitted
+        items best-first and records each probability in ``probability_out``.
+        """
+        if not candidates:
+            return [], "applied"
+        pool = [
+            admission_v2.Candidate(
+                memory_id=c.memory_id,
+                text=c.text,
+                need_indexes=c.need_indexes,
+                evidence=c.channel_evidence,
+                schema_class=c.facets.get("schema_class"),
+            )
+            for c in candidates
+        ]
+        features = admission_v2.pool_features(
+            pool,
+            need_texts=need_texts,
+            user_need_count=len(need_texts),
+            e5=e5_evidence,
+            generic=_GENERIC_TERMS,
+        )
+        probability = admission_v2.cheap_probability(features)
+        status = "applied"
+        # Evidence affects ranking only for a matching cue, scope and pathway.
+        # Constraint/warning memories are exempt: repeated negative feedback
+        # must not make a preventive safety rule disappear from the catalog.
+        if access_cue_embedding is not None:
+            from slowave.core.services.retrieval_access import RetrievalAccessPolicy
+
+            strengths = RetrievalAccessPolicy(self.db).inhibition_by_schema(
+                schema_ids=[candidate.memory_id for candidate in pool],
+                cue_embedding=access_cue_embedding,
+                scope_id=access_scope,
+                task_type=access_task_type,
+            )
+            for index, candidate in enumerate(pool):
+                if candidate.schema_class not in {"constraint", "warning"}:
+                    probability[index] *= 1.0 - strengths.get(candidate.memory_id, 0.0)
+        chosen = (
+            admission_v2.admit(
+                probability,
+                [len(c.text) for c in pool],
+                tau=admission_v2.RECALL_TAU,
+                tau_best=admission_v2.RECALL_TAU,
+            )
+            if recall
+            else admission_v2.admit(probability, [len(c.text) for c in pool])
+        )
+        items = []
+        for index in chosen:
+            memory_id = pool[index].memory_id
+            probability_out[memory_id] = float(probability[index])
+            items.append(
+                RelevantCatalogItem(
+                    schema=schemas[memory_id],
+                    score=float(probability[index]),
+                    reason=f"{admission_v2.MODEL_VERSION}",
+                    need_indexes=pool[index].need_indexes,
+                )
+            )
+        return items, status
+
     def relevant_catalog(
         self,
         cues: list[str],
@@ -925,6 +953,8 @@ class RetrievalService:
         shared_request: SharedRequest | None = None,
         hybrid_task: str | None = None,
         baseline_request: SharedRequest | None = None,
+        access_cue_embedding: np.ndarray | None = None,
+        access_task_type: str | None = None,
     ) -> RelevantCatalog:
         """Build one declarative catalog before item and response budgets.
 
@@ -1048,7 +1078,7 @@ class RetrievalService:
                 config=MatchingConfig(dense_relevance_floor=min_relevance),
             )
             if e5_channel is not None:
-                query_vector = np.asarray(e5_channel["encoder"].query(cue_text), dtype=np.float32)
+                query_vector = np.asarray(e5_channel["encoder"].encode(cue_text), dtype=np.float32)
                 scores = e5_channel["vectors"] @ query_vector
                 if len(scores) > candidate_limit:
                     # Truthful exhaustion: the slice cut a deeper candidate
@@ -1244,25 +1274,55 @@ class RetrievalService:
                 and c.memory_id not in context_excluded
                 and any(e.get("relevance_passed") for e in c.channel_evidence)
             ]
-            # Pool-relative assessment: the per-column floor becomes
-            # max(signal_floor, column_best - margin); abstention is
-            # preserved by the signal floor.
-            assessment_floor = pool_relative.signal_floor()
-            assessment_gap: float | None = pool_relative.margin()
-            ranked_pool, applicability_status = (
-                self._rank_applicability(
-                    pool,
-                    "\n".join(activation_task.needs[i].text for i in user_indexes),
-                    minimum_logit=assessment_floor,
-                    maximum_logit_gap=assessment_gap,
-                    retain_weak_support=False,
+            if admission_v2.TRACE is not None and user_indexes:
+                pool_ids_trace = {item.schema.id for item in pool}
+                trace_candidates = [
+                    admission_v2.Candidate(
+                        memory_id=c.memory_id,
+                        text=c.text,
+                        need_indexes=c.need_indexes,
+                        evidence=c.channel_evidence,
+                        schema_class=c.facets.get("schema_class"),
+                    )
+                    for c in contribution_candidates
+                    if c.memory_id in pool_ids_trace
+                ]
+                trace_needs = [activation_task.needs[i].text for i in user_indexes]
+                admission_v2.TRACE(
+                    {
+                        "candidates": trace_candidates,
+                        "need_texts": trace_needs,
+                        "e5": e5_evidence,
+                        "scorer": self._applicability_scorer,
+                        "service": self,
+                        "scope": scope_id,
+                    }
                 )
-                if user_indexes
-                else ([], "empty")
-            )
+            # Calibrated admission decides the pool; delivery only orders it.
+            # A model-free runtime keeps its lexical contract unfiltered.
+            v2_probability: dict[int, float] = {}
+            if user_indexes and self._calibrated_admission():
+                ranked_pool, applicability_status = self._admit_v2(
+                    [
+                        c
+                        for c in contribution_candidates
+                        if c.memory_id in {p.schema.id for p in pool}
+                    ],
+                    schemas,
+                    [activation_task.needs[i].text for i in user_indexes],
+                    e5_evidence,
+                    v2_probability,
+                    access_cue_embedding=access_cue_embedding,
+                    access_scope=scope_id,
+                    access_task_type=access_task_type,
+                )
+            elif user_indexes:
+                ranked_pool, applicability_status = pool, "no_model_encoder"
+            else:
+                ranked_pool, applicability_status = [], "empty"
             applicable_ids = {item.schema.id for item in ranked_pool}
             assessed = applicability_status == "applied"
-            contribution_floor = pool_relative.signal_floor()
+            contribution_floor = 0.0
             if assessed:
                 updated = []
                 for candidate in contribution_candidates:
@@ -1303,7 +1363,7 @@ class RetrievalService:
                         )
                     else:
                         try:
-                            if self._applicability_scorer is None:
+                            if self._scorer_or_none() is None:
                                 raise RuntimeError("applicability scorer unavailable")
                             scores = self._applicability_scorer.score(
                                 [activation_task.needs[i].text for i in user_indexes],
@@ -1395,37 +1455,50 @@ class RetrievalService:
                 for candidate in contribution_candidates
             )
             delivery_query = "\n".join(activation_task.needs[i].text for i in user_indexes)
-            delivery_floor: float | None = pool_relative.signal_floor()
-            delivery_gap: float | None = pool_relative.margin()
-            ranked_items, final_applicability_status = self._rank_applicability(
-                [
-                    RelevantCatalogItem(
-                        schema=schemas[sid],
-                        score=by_id[sid].score,
-                        reason=decisions[sid].reason,
-                        need_indexes=by_id[sid].need_indexes,
-                        strong=decisions[sid].strong,
+            # Admission was decided once from calibrated probabilities; the
+            # delivery stage only orders the survivors of redundancy removal.
+            # Explicit task list items with direct term support keep their
+            # established protection: they are the user's own enumeration.
+            v2_protected = {
+                decision.memory_id
+                for decision in catalog_decisions
+                if decision.selected
+                and (
+                    re.match(r"\s*For\s+[^,;:.]+[,;:]", decision.contribution or "", re.I)
+                    or (
+                        decision.supporting_need is not None
+                        and "explicit_list_item"
+                        in activation_task.needs[decision.supporting_need].provenance
+                        and decision.shared_terms >= 2
                     )
-                    for sid in ordered_ids
-                ],
-                delivery_query,
-                minimum_logit=delivery_floor,
-                maximum_logit_gap=delivery_gap,
-                retain_weak_support=False,
-                protected_ids={
-                    decision.memory_id
-                    for decision in catalog_decisions
-                    if decision.selected
-                    and (
-                        re.match(r"\s*For\s+[^,;:.]+[,;:]", decision.contribution or "", re.I)
-                        or (
-                            decision.supporting_need is not None
-                            and "explicit_list_item"
-                            in activation_task.needs[decision.supporting_need].provenance
-                            and decision.shared_terms >= 2
-                        )
-                    )
-                },
+                )
+            }
+            calibrated = self._calibrated_admission()
+            ranked_items = [
+                RelevantCatalogItem(
+                    schema=schemas[sid],
+                    score=v2_probability.get(sid, by_id[sid].score),
+                    reason=decisions[sid].reason,
+                    need_indexes=by_id[sid].need_indexes,
+                    strong=decisions[sid].strong,
+                )
+                for sid in sorted(
+                    (
+                        sid
+                        for sid in ordered_ids
+                        if not calibrated or sid in v2_probability or sid in v2_protected
+                    ),
+                    key=lambda sid: (
+                        sid not in v2_probability,
+                        -v2_probability.get(sid, 0.0),
+                        sid,
+                    ),
+                )
+            ]
+            final_applicability_status = (
+                ("applied" if ranked_items else "empty")
+                if calibrated
+                else ("no_model_encoder" if ranked_items else "empty")
             )
             if applicability_status != "unavailable" and final_applicability_status != "empty":
                 applicability_status = final_applicability_status
@@ -1480,15 +1553,29 @@ class RetrievalService:
         if resolved_mode == "deliberate_recall":
             before = items
             applicability_logits: dict[int, float] = {}
-            # Absolute signal floor; the per-column cutoff can be higher (see
-            # applicability_order), so the traced threshold is a lower bound.
-            applicability_floor = pool_relative.signal_floor()
-            items, applicability_status = self._rank_applicability(
-                items,
-                clean_cues[0],
-                minimum_logit=applicability_floor,
-                maximum_logit_gap=pool_relative.margin(),
-                score_trace=applicability_logits,
+            recall_candidates = [
+                ContributionCandidate(
+                    memory_id=item.schema.id,
+                    text=item.schema.content_text or "",
+                    score=item.score,
+                    eligible=True,
+                    eligibility_reason="eligible",
+                    need_indexes=item.need_indexes,
+                    channel_evidence=item.channel_evidence,
+                    facets=item.schema.facets or {},
+                )
+                for item in items
+            ]
+            items, applicability_status = self._admit_v2(
+                recall_candidates,
+                {item.schema.id: item.schema for item in items},
+                [clean_cues[0]],
+                e5_evidence,
+                applicability_logits,
+                recall=True,
+                access_cue_embedding=access_cue_embedding,
+                access_scope=scope_id,
+                access_task_type=access_task_type,
             )
             positions = {item.schema.id: position for position, item in enumerate(items)}
             decisions = tuple(
@@ -1510,7 +1597,7 @@ class RetrievalService:
                         (
                             {
                                 "applicability_score": applicability_logits[item.schema.id],
-                                "threshold": applicability_floor,
+                                "threshold": admission_v2.RECALL_TAU,
                             },
                         )
                         if item.schema.id in applicability_logits
@@ -1899,7 +1986,7 @@ class RetrievalService:
         """
         if not scope_id or not schema.scope_id or schema.scope_id == scope_id:
             return True
-        if schema.scope_id in ("global", "user"):
+        if is_global_scope(schema.scope_id):
             return True
         if mode != "strict_scope":
             return False

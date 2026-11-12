@@ -408,3 +408,29 @@ def test_dashboard_feedback_uses_latest_accepted_per_target(tmp_path: Path) -> N
     assert by_id["sch_1"]["assessment"] == "irrelevant"
     assert by_id["proc_1"]["assessment"] == "not_used"
     assert by_id["proc_1"]["effect"] == "no_effect"
+
+
+def test_retrieval_detail_reports_the_trace_ranking_fields(tmp_path: Path) -> None:
+    path = tmp_path / "detail.sqlite3"
+    connection = _seed(path)
+    connection.execute(
+        "CREATE TABLE retrieval_trace_runs "
+        "(retrieval_id TEXT PRIMARY KEY, applicability_status TEXT, policy_fallback TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO retrieval_trace_runs VALUES "
+        "('ctx_visible', 'no_model_encoder', 'no_model_encoder')"
+    )
+    connection.commit()
+    connection.close()
+
+    detail = _retrieval_detail(str(path), "ctx_visible")
+    assert detail["retrieval"]["applicability_status"] == "no_model_encoder"
+    assert detail["retrieval"]["policy_fallback"] == "no_model_encoder"
+
+
+def test_retrieval_detail_tolerates_a_database_without_trace_tables(tmp_path: Path) -> None:
+    path = tmp_path / "detail.sqlite3"
+    _seed(path).close()
+    detail = _retrieval_detail(str(path), "ctx_visible")
+    assert "policy_fallback" not in detail["retrieval"]

@@ -152,6 +152,12 @@ def test_shared_admission_does_not_require_lexical_or_cosine_floor(tmp_path):
         def encode(self, text):
             return np.zeros(8, dtype=np.float32)
 
+        def encode_many(self, texts):
+            return np.stack([self.encode(text) for text in texts])
+
+        def embedding_spec(self):
+            raise RuntimeError("retrieval encoder assets unavailable")
+
     class Scorer:
         def score(self, queries, memories):
             return np.full((len(memories), 1), 2.0)
@@ -182,21 +188,22 @@ def test_shared_admission_does_not_require_lexical_or_cosine_floor(tmp_path):
 
 def test_multilingual_discovery_channel_recovers_cross_language_candidates(tmp_path, monkeypatch):
     class StubRetrievalEncoder:
-        def query(self, text):
+        dim = 4
+
+        def encode(self, text):
             return np.array([1.0, 0, 0, 0], dtype=np.float32)
 
-        def passages(self, texts):
+        def encode_many(self, texts):
             return np.tile(np.array([1.0, 0, 0, 0], dtype=np.float32), (len(texts), 1))
+
+        def embedding_spec(self):
+            return {"model": "stub", "revision": "1", "version": 1}
 
     class Scorer:
         def score(self, queries, memories):
             return np.full((len(memories), 1), 2.0)
 
     monkeypatch.setenv("SLOWAVE_RETRIEVAL_PIPELINE", "shared-v1")
-    monkeypatch.setattr(
-        "slowave.symbolic.retrieval_encoder.get_retrieval_encoder",
-        lambda: StubRetrievalEncoder(),
-    )
     engine = SlowaveEngine(
         SlowaveConfig(db_path=str(tmp_path / "e5-channel.db"), dim=8, disable_encoder=True)
     )
@@ -207,7 +214,7 @@ def test_multilingual_discovery_channel_recovers_cross_language_candidates(tmp_p
             embedding=None,
             scope_id="project:test",
         )
-        engine._retrieval.encoder = None
+        engine._retrieval.encoder = StubRetrievalEncoder()
         engine._retrieval._applicability_scorer = Scorer()
         engine.schemas.search_fts_candidates = lambda *args, **kwargs: []
         engine.schemas.search_embedding = lambda *args, **kwargs: []
@@ -230,15 +237,17 @@ def test_multilingual_channel_failure_degrades_to_stored_channels(tmp_path, monk
         def encode(self, text):
             return np.zeros(8, dtype=np.float32)
 
+        def encode_many(self, texts):
+            return np.stack([self.encode(text) for text in texts])
+
+        def embedding_spec(self):
+            raise RuntimeError("retrieval encoder assets unavailable")
+
     class Scorer:
         def score(self, queries, memories):
             return np.full((len(memories), 1), 2.0)
 
-    def unavailable():
-        raise RuntimeError("retrieval encoder assets unavailable")
-
     monkeypatch.setenv("SLOWAVE_RETRIEVAL_PIPELINE", "shared-v1")
-    monkeypatch.setattr("slowave.symbolic.retrieval_encoder.get_retrieval_encoder", unavailable)
     engine = SlowaveEngine(
         SlowaveConfig(db_path=str(tmp_path / "e5-fallback.db"), dim=8, disable_encoder=True)
     )

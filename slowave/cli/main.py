@@ -32,7 +32,6 @@ import logging as _logging
 
 _logging.getLogger("huggingface_hub").setLevel(_logging.ERROR)
 _logging.getLogger("onnxruntime").setLevel(_logging.ERROR)
-_logging.getLogger("transformers").setLevel(_logging.ERROR)
 
 import click
 

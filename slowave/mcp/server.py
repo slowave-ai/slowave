@@ -112,6 +112,30 @@ def _build_engine(disable_encoder: bool = False) -> SlowaveEngine:
         return eng
 
 
+def start_warmup(build_engine: Any) -> threading.Thread | None:
+    """Load the engine and all three ONNX models off the request path.
+
+    ``initialize`` stays instant; the first tool call no longer pays 5-13 s of
+    model loading plus lazy passage embedding. Calls that arrive before warmup
+    completes simply wait on the same load locks (engine cache, encoder
+    ``_load_lock``, applicability backend lock), so this is safe at any time.
+    Disable with ``SLOWAVE_MCP_WARMUP=0``.
+    """
+    if os.environ.get("SLOWAVE_MCP_WARMUP", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+
+    def _warm() -> None:
+        try:
+            result = build_engine().prepare_retrieval(wait=True)
+            log.info("Warmup finished: %s", result)
+        except Exception:
+            log.warning("Warmup failed; models will load lazily on first use", exc_info=True)
+
+    thread = threading.Thread(target=_warm, daemon=True, name="slowave-mcp-warmup")
+    thread.start()
+    return thread
+
+
 # ---------------------------------------------------------------------------
 # FastMCP instance (stdio)
 # ---------------------------------------------------------------------------
@@ -231,6 +255,8 @@ def main() -> None:
         session_events.start_backfill_thread(str(_server_paths().database))
     except Exception:
         log.warning("Could not start session-log backfill", exc_info=True)
+
+    start_warmup(_build_engine_with_touch)
 
     # -- run -----------------------------------------------------------------
     try:

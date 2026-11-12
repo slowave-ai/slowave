@@ -10,7 +10,7 @@
   <img src="img/slowave-logo-text.jpeg" alt="Slowave" width="450"/>
 </p>
 <p align="center">
-  <b>Living memory layer across your AI coding agents and sessions.</b>
+  <b>Living memory layer across your coding agents and AI tools.</b>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/slowave/"><img src="https://img.shields.io/pypi/v/slowave?color=2f6f4e" alt="PyPI version" /></a>
@@ -18,36 +18,22 @@
   <img src="https://img.shields.io/pypi/status/slowave?color=orange" />
   <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" />
 </p>
-
 <p align="center">
-  <strong>Supported clients:</strong>
+  Supports: Claude Code, Copilot CLI, Codex, Cursor, OpenCode, Windsurf/Devin Desktop, Cline, Antigravity, Claude Desktop
 </p>
-
-<p align="center">
-  <img src="img/clients/claude.svg" alt="Claude Code" title="Claude Code" height="24" />&nbsp;&nbsp;
-  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/copilot-dark.svg" /><img src="img/clients/copilot.svg" alt="Copilot CLI" title="Copilot CLI" height="24" /></picture>&nbsp;&nbsp;
-  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/openai-dark.svg" /><img src="img/clients/openai.svg" alt="Codex" title="Codex" height="24" /></picture>&nbsp;&nbsp;
-  <img src="img/clients/cursor.svg" alt="Cursor" title="Cursor" height="24" />&nbsp;&nbsp;
-  <img src="img/clients/opencode-mark.svg" alt="OpenCode" title="OpenCode" height="24" />&nbsp;&nbsp;
-  <img src="img/clients/windsurf.svg" alt="Windsurf / Devin Desktop" title="Windsurf / Devin Desktop" height="24" />&nbsp;&nbsp;
-  <picture><source media="(prefers-color-scheme: dark)" srcset="img/clients/cline-dark.svg" /><img src="img/clients/cline.svg" alt="Cline" title="Cline" height="24" /></picture>&nbsp;&nbsp;
-  <img src="img/clients/antigravity.svg" alt="Antigravity" title="Antigravity" height="24" />&nbsp;&nbsp;
-  <img src="img/clients/claude.svg" alt="Claude Desktop" title="Claude Desktop" height="24" />
-</p>
-
-
-<p align="center">Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and sessions.</p>
-<p align="center">Adapts as you use it, building reusable context over time so your agent can learn from its past experience.</p>
-<p align="center">Slowave runs on your machine and requires no LLM API key for memory maintenance. </p>
-<p align="center">The local dashboard lets you inspect your memories and how they support your agent achieving your coding tasks and goals.</p>
 
 ---
 
 
-https://github.com/user-attachments/assets/2d4eeb4e-419f-46fa-b23e-cf501a715d1e
+https://github.com/user-attachments/assets/55d057f2-72ad-41bf-aa63-022d10e7ac6f
 
 
 ---
+Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
+
+Slowave adapts as you use it, building reusable context over time so your agent can learn from past experience.
+
+It runs on your machine and requires no LLM API key for memory maintenance. The local dashboard lets you inspect what your agent remembers and which memories it finds valuable.
 
 At the core Slowave is built around a simple concept:
 
@@ -68,14 +54,14 @@ Slowave retains what helps agents achieve their goals, weakens what does not, an
 > **activate → remember → recall → feedback → commit**
 
 
-Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved:
+Memory is continuously reshaped by use rather than a static collection of facts waiting to be retrieved.
 
-- Keep context across tasks
-- Evolves through feedback
-- Learns from experience
-- Runs locally
-- No LLM API key
-- Inspectable and measurable
+- **Keep context across tasks:** Your agents can reuse recorded decisions, preferences, constraints, and lessons.
+- **Evolves through feedback:** Useful memories grow stronger, irrelevant ones lose priority, stale knowledge can be superseded.
+- **Learns from experience:** Decisions, outcomes, and multi-step solutions can become reusable context your agents can act on.
+- **Runs locally:** Slowave stores memory in SQLite and does not send it to a hosted memory service.
+- **No LLM API key:** The memory core performs maintenance and retrieval without LLM calls or an LLM API key.
+- **Inspectable and measurable:** Review memories, retrievals, feedback, procedures, and system performance in the local dashboard.
 
 The first useful payoff is simply not having to repeat the same constraint in the next task. 
 
@@ -108,8 +94,16 @@ When upgrading to a new version:
 slowave stop
 pipx upgrade slowave
 slowave setup
-slowave dashboard
 ```
+
+If you are in the middle of a coding client session while upgrading you might have to close the session and re-open it (via `/resume` command or similar, depending on client). 
+
+> [!IMPORTANT]
+> **Upgrading with existing memories?** `slowave setup` rebuilds the vectors that
+> search reads. To rebuild every vector (consolidation, cue matching and graph
+> views) and reclaim unused space, run the migration in
+> [Rebuilding embeddings](docs/install.md#rebuilding-embeddings).
+
 
 ## Workflow
 
@@ -121,7 +115,6 @@ Slowave enriches your agents context with relevant memories and procedures. Your
 
 
 
-
 ```mermaid
 sequenceDiagram
     actor User as You
@@ -130,18 +123,21 @@ sequenceDiagram
     participant Worker as Slowave Worker
 
     User->>Agent: Prompt
-    Agent->>Slowave: activate: Start task (set goal)
+    Agent->>Slowave: Activate: Start task (set goal)
     Slowave-->>Agent: Relevant memories and procedures
 
-    opt Remember / Recall
-        Agent->>Slowave: remember: Save new knowledge
-        Agent->>Slowave: recall: Look up more context
+    opt 
+        Agent->>Slowave: Remember: Save new knowledge
+    end
+
+    opt 
+        Agent->>Slowave: Recall: Look up more context
         Slowave-->>Agent: Matching memories and procedures
     end
 
     Agent->>Agent: Reason upon enriched context, work on the task
-    Agent->>Slowave: reinforce: Assess retrieved context
-    Agent->>Slowave: session_end: Record outcome
+    Agent->>Slowave: Feedback: Assess retrieved context
+    Agent->>Slowave: Commit: Record outcome
     Slowave-->>Agent: Task outcome saved, session closed
     Agent-->>User: Deliver the result
 
@@ -149,36 +145,42 @@ sequenceDiagram
 ```
 
 
-
 ## Dashboard
 
-Start the local dashboard with:
+The local dashboard shows what Slowave is actually doing with your agent's memory over time: what it remembers, what it retrieves, and what your agent reports using.
+
+As your history grows, you can follow a memory from where it came from to the tasks where it was later retrieved and used. You can inspect learned procedures, see when retrieved context was useful or irrelevant, and understand whether Slowave is helping your agent reuse past work rather than simply accumulating memories.
+
+Start the dashboard with:
 
 ```bash
 slowave dashboard
 ```
 
-<p align="center">
-    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave local dashboard" width="95%"></a>
-</p>
-
-<p align="center">
-    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="Memory detail" width="18%"></a>
-    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="18%"></a>
-    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="18%"></a>
-    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="18%"></a>
-    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Sessions" width="18%"></a>
-</p>
-
-
 From the dashboard you can:
 
-- Inspect memories and their lifecycle
-- Review learned procedures and their reuse
-- Trace retrievals and agent feedback
-- Explore session history and activity
-- Visualize memory connections and associations
-- Monitor system health, maintenance, backups, token consumption
+- **Inspect memories:** see what was saved, where it came from, its current state, and when it was later retrieved or used.
+- **Inspect procedures:** review reusable methods captured from previous work and see when they are retrieved and reused.
+- **Trace retrievals:** see the request, the context Slowave actually returned, and the feedback reported by the agent.
+- **Follow sessions:** open the session behind any memory, procedure, or retrieval and step through its ordered Slowave calls, feedback, and linked memories.
+- **Explore memory connections:** browse relationships and associations between memories.
+- **Check system health:** inspect the database, background maintenance, backups, and local services.
+
+The overview also helps answer whether the memory loop is working: how many memories and procedures exist, how often retrieved context is reported as used, how much is marked irrelevant, whether feedback is being recorded, and how creation, retrieval, and use change over time.
+
+Slowave also shows a rough estimate of the context returned through all MCP endpoints, so you can keep an eye on memory overhead.
+
+<p align="center">
+    <a href="img/overview.jpg"><img src="img/overview.jpg" alt="Slowave local dashboard" width="90%"></a>
+</p>
+
+<p align="center">
+    <a href="img/memories.jpg"><img src="img/memories.jpg" alt="Memory detail" width="17%"></a>
+    <a href="img/procedures.jpg"><img src="img/procedures.jpg" alt="Procedures" width="17%"></a>
+    <a href="img/retrieval.jpg"><img src="img/retrieval.jpg" alt="Retrieval" width="17%"></a>
+    <a href="img/graph.jpg"><img src="img/graph.jpg" alt="Memory graph" width="17%"></a>
+    <a href="img/activity.jpg"><img src="img/activity.jpg" alt="Sessions" width="17"></a>
+</p>
 
 
 ## Supported clients
@@ -201,6 +203,12 @@ Client coverage is actively expanding. Suggest more integrations or report broke
 | All the above |  |  |  | `slowave setup` |
 
 ¹ requires one manual paste after setup
+
+Copilot support targets local CLI execution. Automated integration tests pass, and
+native configuration discovery is verified on macOS. A user also confirmed memory
+reads and writes through Copilot CLI on macOS. Full model-driven lifecycle and native
+Windows/Linux qualification remain pending. IDE, desktop, and hosted/cloud
+Copilot support is deferred.
 
 > [!IMPORTANT]
 > The default embedding model downloads from Hugging Face on first use (~45 MB, cached locally). Subsequent runs work offline.
@@ -256,10 +264,9 @@ See [architecture.md](docs/architecture.md) and [design.md](docs/design.md) for 
 ## Evaluation
 
 The current evaluation notes report preliminary retrieval-evidence results,
-methodology, limitations, and commands for running new evaluations. They do not
-claim end-to-end agent accuracy or a comparison against other memory systems.
-See [benchmarks.md](docs/benchmarks.md) before treating any result as a
-production-quality claim.
+methodology and limitations. They do not claim end-to-end agent accuracy or a
+comparison against other memory systems. See [benchmarks.md](docs/benchmarks.md)
+before treating any result as a production-quality claim.
 
 
 ## Documentation
@@ -268,7 +275,7 @@ production-quality claim.
 - [design.md](docs/design.md): design rationale, boundaries, and positioning
 - [architecture.md](docs/architecture.md): brain-inspired memory model and lifecycle
 - [install.md](docs/install.md): installation, setup, lifecycle instructions, modified files, and removal
-- [benchmarks.md](docs/benchmarks.md): benchmark results, methodology, and reproduction
+- [benchmarks.md](docs/benchmarks.md): benchmark results and methodology
 - [troubleshooting.md](docs/troubleshooting.md): daemon, worker, dashboard, client integration, database, backup/restore
 
 

@@ -1491,8 +1491,12 @@ def test_doctor_report_is_verdict_first_and_plain_when_piped(fake_home, monkeypa
     monkeypatch.delenv("SLOWAVE_DB", raising=False)
     monkeypatch.setenv("SLOWAVE_HOME", str(fake_home / "runtime"))
     result = CliRunner().invoke(cli, ["doctor"])
-    lines = [ln for ln in result.output.splitlines() if ln.strip()]
-    assert "\x1b" not in result.output
+    # Assert on stdout only: CliRunner feeds stdout *and* stderr into result.output,
+    # so a library warning on stderr (e.g. huggingface_hub's unauthenticated-request
+    # notice on a cold model cache) would otherwise shift these indexes. "Plain when
+    # piped" is a promise about the report stream itself.
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    assert "\x1b" not in result.stdout
     assert lines[1].strip() == "Doctor"
     assert any(word in lines[2] for word in ("healthy", "Healthy", "failed"))
 

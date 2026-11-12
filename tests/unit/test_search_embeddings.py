@@ -282,15 +282,11 @@ def test_unchanged_procedure_backfill_does_not_rewrite_search_projection(engine)
 
 
 def test_preparation_lease_recovers_and_reuses_completed_vectors(engine, monkeypatch):
-    import slowave.symbolic.applicability_encoder as scorer
-    import slowave.symbolic.retrieval_encoder as retrieval
     from slowave.core.services.search_preparation import prepare_search
 
     schema(engine)
     encoder = Encoder()
     engine.encoder = encoder
-    monkeypatch.setattr(retrieval, "get_retrieval_encoder", lambda: encoder)
-    monkeypatch.setattr(scorer, "_backend", lambda: None)
     conn = engine.db.connect()
     with conn:
         conn.execute(
@@ -311,15 +307,11 @@ def test_preparation_lease_recovers_and_reuses_completed_vectors(engine, monkeyp
 
 
 def test_preparation_failure_releases_lease_and_retries(engine, monkeypatch):
-    import slowave.symbolic.applicability_encoder as scorer
-    import slowave.symbolic.retrieval_encoder as retrieval
     from slowave.core.services.search_preparation import prepare_search
 
     schema(engine)
     encoder = Encoder()
     engine.encoder = encoder
-    monkeypatch.setattr(retrieval, "get_retrieval_encoder", lambda: encoder)
-    monkeypatch.setattr(scorer, "_backend", lambda: None)
     encoder.hook = lambda: (_ for _ in ()).throw(RuntimeError("model failed"))
     with pytest.raises(RuntimeError, match="model failed"):
         prepare_search(engine)
@@ -346,30 +338,6 @@ def test_exact_text_cache_is_bounded_and_returned_arrays_are_independent():
     output[-1] = 0
     assert encoder.encode(texts[-1])[1] == 1
     assert len(encoder._backend.calls) == 4097
-
-
-def test_passage_cache_keeps_recent_entries_above_capacity():
-    from collections import OrderedDict
-    from threading import RLock
-
-    from slowave.symbolic.retrieval_encoder import RetrievalEncoder
-
-    encoder = RetrievalEncoder.__new__(RetrievalEncoder)
-    encoder._passages = OrderedDict()
-    encoder._lock = RLock()
-
-    class Backend:
-        calls = 0
-
-        def encode_many(self, texts):
-            self.calls += len(texts)
-            return np.ones((len(texts), 384), dtype=np.float32)
-
-    encoder.backend = Backend()
-    encoder.passages([str(i) for i in range(4097)])
-    assert len(encoder._passages) == 4096
-    encoder.passages(["4096"])
-    assert encoder.backend.calls == 4097
 
 
 def test_engine_preparation_waits_for_a_recoverable_conflict(engine, monkeypatch):

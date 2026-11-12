@@ -12,10 +12,12 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Iterable, List
 
 import numpy as np
 
+from slowave.core.scope import GLOBAL_SCOPE_SQL
 from slowave.core.services.effective_feedback import effective_feedback_sql
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.utils.vec import (
@@ -389,6 +391,30 @@ def canonical_schema_text(
     add_value("Attributes", facets.get("attributes"))
     add_value("Tags", tags)
     return "\n".join(parts)
+
+
+_LONG_TEXT_CHARS = 2000
+
+
+def _lexical_tokens(query: str) -> List[str]:
+    tokens: List[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[^\W_]+(?:[_./:-][^\W_]+)*", query, flags=re.UNICODE):
+        variants = [raw]
+        variants.extend(part for part in re.split(r"[_./:-]+", raw) if part)
+        for token in variants:
+            token = token.strip()
+            if len(token) >= 2 and token not in seen:
+                seen.add(token)
+                tokens.append(token)
+    return tokens
+
+
+@lru_cache(maxsize=8)
+def _long_text_tokens(query: str) -> tuple[str, ...]:
+    # A long task is tokenized once per candidate by activation selection; memoize
+    # the few most recent long texts (short memory texts are cheap to recompute).
+    return tuple(_lexical_tokens(query))
 
 
 class SchemaStore:
@@ -1541,15 +1567,9 @@ class SchemaStore:
         scripts without useful word boundaries.  Tokens are later bound as
         quoted FTS phrases, so punctuation never becomes MATCH syntax.
         """
-        tokens: List[str] = []
-        for raw in re.findall(r"[^\W_]+(?:[_./:-][^\W_]+)*", query, flags=re.UNICODE):
-            variants = [raw]
-            variants.extend(part for part in re.split(r"[_./:-]+", raw) if part)
-            for token in variants:
-                token = token.strip()
-                if len(token) >= 2 and token not in tokens:
-                    tokens.append(token)
-        return tokens
+        if len(query) >= _LONG_TEXT_CHARS:
+            return list(_long_text_tokens(query))
+        return _lexical_tokens(query)
 
     @classmethod
     def _safe_fts_query(cls, query: str) -> tuple[str | None, List[str]]:
@@ -1597,7 +1617,7 @@ class SchemaStore:
             if scope_id is not None:
                 sql += (
                     "AND (s.scope_id = ? OR s.scope_id IS NULL "
-                    "OR s.scope_id IN ('global', 'user') OR s.generalization_stage >= 2) "
+                    f"OR s.scope_id IN {GLOBAL_SCOPE_SQL} OR s.generalization_stage >= 2) "
                 )
                 args.append(scope_id)
             sql += "ORDER BY bm25_score ASC, f.rowid ASC LIMIT ?"
@@ -1673,7 +1693,7 @@ class SchemaStore:
         if scope_id is not None:
             sql += (
                 " AND (scope_id = ? OR scope_id IS NULL "
-                "OR scope_id IN ('global', 'user') OR generalization_stage >= 2)"
+                f"OR scope_id IN {GLOBAL_SCOPE_SQL} OR generalization_stage >= 2)"
             )
             args.append(scope_id)
         if not include_inactive:

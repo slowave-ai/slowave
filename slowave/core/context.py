@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 
 from slowave.core.retrieval_matching import MatchResult
+from slowave.core.scope import is_global_scope
 from slowave.symbolic.schema_store import Schema
 
 _STOPWORDS = {
@@ -699,7 +700,7 @@ class WorkingMemoryGate:
         if cue.mode == "strict_scope" and cue.scope:
             layer = (schema.facets or {}).get("memory_layer")
             is_profile = layer == "profile"
-            is_global = not schema.scope_id  # None or "" both treated as global
+            is_global = not schema.scope_id or is_global_scope(schema.scope_id)
             is_same_scope = schema.scope_id == cue.scope
             gen_stage = getattr(schema, "generalization_stage", 0)
             if not (is_same_scope or is_global or is_profile):
@@ -862,7 +863,7 @@ class WorkingMemoryGate:
         if cue.scope and schema.scope_id == cue.scope:
             activation += 0.20
             reasons.append(f"scope_match={cue.scope}")
-        elif not schema.scope_id:
+        elif not schema.scope_id or is_global_scope(schema.scope_id):
             activation += 0.15
             reasons.append("global")
 

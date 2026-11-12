@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Any, Callable
 
-from slowave.core import retrieval_trace
+from slowave.core import retrieval_trace, standing_suppress
 from slowave.core.feedback import FeedbackConfig, feedback_signal_for
 from slowave.core.scope import scope_kind as _scope_kind
 from slowave.core.services.feedback_events import FeedbackEventService
@@ -25,7 +25,7 @@ from slowave.core.services.retrieval_access import (
 from slowave.lifecycle import LIFECYCLE_VERSION
 from slowave.storage.sqlite_db import SQLiteDB
 from slowave.symbolic.schema_store import SchemaStore
-from slowave.utils.vec import dumps_json
+from slowave.utils.vec import dumps_json, unpack_f32
 
 log = logging.getLogger(__name__)
 
@@ -355,6 +355,8 @@ class FeedbackService:
             selected=selected,
             filtered_items=filtered_items,
             decision_candidates=decision_candidates,
+            applicability_status=response.get("applicability_status"),
+            policy_fallback=response.get("policy_fallback"),
         )
 
     def record_context_recall(self, *, context_id: str, **kwargs: Any) -> None:
@@ -850,6 +852,7 @@ class FeedbackService:
             "withdrawn": [],
             "replacements": [],
             "access_evidence": [],
+            "suppressed_locally": [],
         }
         for item in accepted_memory:
             memory_id = str(item["memory_id"])
@@ -861,6 +864,12 @@ class FeedbackService:
             stale_reason = item.get("stale_reason")
             schema = self.schemas.get(schema_id)
             if assessment == "used":
+                if schema.scope_id:  # re-endorsing a locally suppressed global rule lifts it
+                    standing_suppress.lift(
+                        conn,
+                        str(standing_suppress.retrieval_scope(conn, str(retrieval_id))),
+                        schema_id,
+                    )
                 # Conflicting feedback is append-only evidence, not authority
                 # to resurrect a memory already retired by stale/wrong input.
                 if schema.status not in ("active", "needs_review"):
@@ -908,6 +917,15 @@ class FeedbackService:
                 # lifecycle state or resurrect an already retired memory.
                 if schema.status not in ("active", "needs_review"):
                     continue
+                # RT-H4: a project cannot retire a user-global rule for every project; it
+                # gets a reversible project-local suppression instead (standing_suppress).
+                origin_scope = standing_suppress.retrieval_scope(conn, str(retrieval_id))
+                if standing_suppress.is_cross_scope_global(schema.scope_id, origin_scope):
+                    standing_suppress.suppress(
+                        conn, str(origin_scope), schema_id, str(stale_reason or "stale")
+                    )
+                    applied["suppressed_locally"].append(memory_id)
+                    continue
                 signal = feedback_signal_for(assessment, "unknown", self.cfg)
                 self.schemas.adjust_feedback_state(
                     schema_id,
@@ -954,6 +972,43 @@ class FeedbackService:
         # Reconcile corrections and transport retries, not just new negatives.
         if accepted_memory:
             conn = self.db.connect()
+            snapshot = conn.execute(
+                "SELECT cue_embedding, cue_dim, scope_id, task_type FROM context_recall_events "
+                "WHERE context_id = ?",
+                (retrieval_id,),
+            ).fetchone()
+            policy = self.access_evidence.shadow_policy()
+            previous: dict[str, float] = {}
+            cue = None
+            if snapshot and snapshot["cue_embedding"] is not None and snapshot["cue_dim"]:
+                try:
+                    cue = unpack_f32(snapshot["cue_embedding"], int(snapshot["cue_dim"]))
+                except (ValueError, TypeError):
+                    pass
+
+            def inhibition(memory_id: str) -> float:
+                if cue is None or not memory_id.startswith("sch_") or not memory_id[4:].isdigit():
+                    return 0.0
+                row = conn.execute(
+                    "SELECT pathway FROM context_recall_items WHERE context_id = ? "
+                    "AND memory_id = ? AND admitted = 1 LIMIT 1",
+                    (retrieval_id, memory_id),
+                ).fetchone()
+                if row is None:
+                    return 0.0
+                trace = policy.evaluate(
+                    schema_id=int(memory_id[4:]),
+                    raw_semantic_relevance=0.0,
+                    pathway=str(row["pathway"]),
+                    cue_embedding=cue,
+                    scope_id=snapshot["scope_id"],
+                    task_type=snapshot["task_type"],
+                )
+                strength = trace["inhibition_strength"]
+                return float(strength) if isinstance(strength, (int, float)) else 0.0
+
+            for memory_id in applied["access_evidence"]:
+                previous[memory_id] = inhibition(memory_id)
             self.access_evidence.reconcile_feedback(
                 conn,
                 retrieval_id=retrieval_id,
@@ -962,5 +1017,12 @@ class FeedbackService:
                 ],
             )
             conn.commit()
+            for memory_id, old_strength in previous.items():
+                schema = self.schemas.get(int(memory_id.removeprefix("sch_")))
+                if (schema.facets or {}).get("schema_class") not in {
+                    "constraint",
+                    "warning",
+                } and inhibition(memory_id) > old_strength:
+                    applied["weakened"].append(memory_id)
         result["applied"] = applied
         return result

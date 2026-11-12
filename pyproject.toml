@@ -28,9 +28,13 @@ dependencies = [
   "faiss-cpu>=1.7",
   "click>=8.1,<9",
   "onnxruntime>=1.19",
-  "transformers>=4.30",
+  "tokenizers>=0.20",
   "huggingface-hub>=0.16",
-  "mcp[cli]>=1.0,<2",
+  # All five ``slowave_*`` lifecycle tools publish canonical input schemas
+  # through FastMCP's tool registry while retaining handler-owned structured
+  # validation errors. Keep this on the tested 1.27 API until FastMCP exposes
+  # a public input-schema override.
+  "mcp[cli]>=1.27.1,<1.28.0",
   "uvicorn>=0.20",
   "starlette>=0.27",
   "tomlkit>=0.13",
@@ -91,6 +95,7 @@ module = [
     "slowave.cli.setup",
     "slowave.core.consolidation",
     "slowave.core.engine",
+    "slowave.core.services.rebuild",
     "slowave.core.services.retrieval",
     "slowave.core.supersession_manifold",
     "slowave.dashboard.app",
@@ -107,9 +112,10 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "requires_faiss: test requires faiss library",
-    "requires_model: test requires downloaded model files (spacy/transformers models)",
+    "requires_model: test requires downloaded model files",
     "slow: slow integration test",
     "benchmark: benchmark test (long-running)",
+    "acceptance: black-box MCP behavioural acceptance test (tests/acceptance/)",
 ]
 
 [tool.ruff.lint.per-file-ignores]

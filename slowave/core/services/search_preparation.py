@@ -10,17 +10,14 @@ from slowave.storage.embedding_store import EmbeddingStore
 
 
 def prepare_search(engine: Any, progress: Callable[[str], None] | None = None) -> dict:
-    from slowave.symbolic.applicability_encoder import _backend
-    from slowave.symbolic.retrieval_encoder import get_retrieval_encoder
-
     if engine.encoder is None:
         return {"ready": False, "reason": "encoder_disabled"}
     report = progress or (lambda message: None)
-    report("Loading search models")
-    retrieval = get_retrieval_encoder()
+    report("Loading the encoder")
+    # One encoder serves formation and search; nothing else may load.
+    retrieval = engine.encoder
     retrieval.embedding_spec()
     engine.encoder.embedding_spec()
-    _backend()
     conn = engine.db.connect()
     owner = secrets.token_hex(16)
     now = int(time.time())

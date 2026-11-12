@@ -77,7 +77,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install black isort
+        # Same versions as uv.lock: unpinned isort 9 formats a multi-name import differently from 8
+        pip install "black==26.5.1" "isort==8.0.1"
 
     - name: Check formatting with black
       run: black --check slowave/ tests/

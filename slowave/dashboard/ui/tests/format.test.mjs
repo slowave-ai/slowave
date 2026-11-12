@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EMPTY, formatCount, formatPercent, formatPercentOf, formatDuration, formatMs, formatBytes, formatTokens,
-  formatRelative, formatDay, shortScope, middleEllipsis, toDateInput, fromDateInput,
+  formatRelative, formatDay, shortScope, middleEllipsis, toDateInput, fromDateInput, policyLabel, fallbackLabel,
 } from '../src/format.ts';
 
 test('one placeholder for missing values', () => {
@@ -76,4 +76,20 @@ test('date inputs round-trip in local time', () => {
   assert.equal(toDateInput(start), '2026-11-06');
   assert.ok(fromDateInput('2026-11-06', true) > start);
   assert.equal(fromDateInput('nope'), undefined);
+});
+
+test('policy ids get a readable label and unknown ids stay visible', () => {
+  assert.equal(policyLabel('activation-calibrated-v2'), 'Calibrated admission (v2)');
+  assert.equal(policyLabel('recall-calibrated-v2'), 'Calibrated admission, recall (v2)');
+  assert.equal(policyLabel('activation-pool-relative-v1'), 'Pool-relative (v1)');
+  assert.equal(policyLabel('some-future-policy-v3'), 'some-future-policy-v3');
+  assert.equal(policyLabel(''), 'Not recorded');
+  assert.equal(policyLabel(null), 'Not recorded');
+});
+
+test('fallback reasons read as sentences and unknown reasons stay visible', () => {
+  assert.equal(fallbackLabel('no_model_encoder'), 'embedding model unavailable');
+  assert.equal(fallbackLabel('disabled'), 'calibrated admission disabled in this runtime');
+  assert.equal(fallbackLabel('brand-new-reason'), 'brand-new-reason');
+  assert.equal(fallbackLabel(undefined), '');
 });

@@ -54,6 +54,9 @@ def _stub_engine(tmp_path, logit: float):
         def encode(self, text):
             return np.zeros(8, dtype=np.float32)
 
+        def encode_many(self, texts):
+            return np.stack([self.encode(text) for text in texts])
+
     class Scorer:
         def score(self, queries, memories):
             return np.full((len(memories), 1), logit)

@@ -154,3 +154,37 @@ export function fromDateInput(value: string, endOfDay = false): number | undefin
   const d = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0);
   return Math.floor(d.getTime() / 1000);
 }
+
+/** Display name for a recorded retrieval policy id. Unknown ids stay readable. */
+const POLICY_LABELS: Record<string, string> = {
+  "activation-calibrated-v2": "Calibrated admission (v2)",
+  "recall-calibrated-v2": "Calibrated admission, recall (v2)",
+  "activation-pool-relative-v1": "Pool-relative (v1)",
+  "recall-pool-relative-v1": "Pool-relative, recall (v1)",
+  "activation-complementary-v1": "Complementary (legacy)",
+  "relevant-set-v2": "Relevant set (v2)",
+  "shared-multilingual-v1": "Shared multilingual pipeline",
+  "activate-hybrid-dogfood-v1": "Hybrid dogfood pipeline",
+  "multilingual-retrieval-baseline-v1": "Multilingual baseline pipeline",
+  "facet-v1": "Facet retrieval",
+  "continuity-v1": "Continuity retrieval",
+  "strict-v9": "Strict (legacy)",
+};
+
+export function policyLabel(id: unknown): string {
+  const key = String(id ?? "").trim();
+  if (!key) return "Not recorded";
+  return POLICY_LABELS[key] ?? key;
+}
+
+/** Why calibrated admission did not rank a response (recorded when it fell back). */
+const FALLBACK_REASONS: Record<string, string> = {
+  no_model_encoder: "embedding model unavailable",
+  disabled: "calibrated admission disabled in this runtime",
+  unavailable: "scoring model unavailable",
+};
+
+export function fallbackLabel(reason: unknown): string {
+  const key = String(reason ?? "").trim();
+  return key ? FALLBACK_REASONS[key] ?? key : "";
+}

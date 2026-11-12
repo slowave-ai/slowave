@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS retrieval_trace_runs (
   selected_total       INTEGER NOT NULL,
   scored_total         INTEGER NOT NULL,
   gate_rejections_json TEXT NOT NULL DEFAULT '{}',
+  applicability_status TEXT,
+  policy_fallback      TEXT,
   created_at           INTEGER NOT NULL,
   FOREIGN KEY (retrieval_id) REFERENCES context_recall_events(context_id) ON DELETE CASCADE
 );
@@ -77,6 +79,20 @@ _INSERT = (
     "dense_cosine, lexical_rank, rrf_score, applicability, threshold, e5_cosine, redundant_with) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+# Columns added after the trace tables first shipped. They are created on demand
+# so an opt-in trace that already lives in a user database gains them in place.
+_LATE_COLUMNS = (
+    ("applicability_status", "TEXT"),
+    ("policy_fallback", "TEXT"),
+)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(retrieval_trace_runs)")}
+    for name, kind in _LATE_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE retrieval_trace_runs ADD COLUMN {name} {kind}")
 
 
 def enabled(db_path: str | None) -> bool:
@@ -118,6 +134,8 @@ def record(
     selected: list[tuple[str, str, dict[str, Any]]],
     filtered_items: list[dict[str, Any]],
     decision_candidates: list[dict[str, Any]],
+    applicability_status: str | None = None,
+    policy_fallback: str | None = None,
 ) -> None:
     """Persist one retrieval's trace. Caller wraps this fail-open."""
     rows: dict[tuple[str, str], tuple[Any, ...]] = {}
@@ -190,11 +208,13 @@ def record(
     scored_total = sum(1 for row in rows.values() if row[6] is not None or row[9] is not None)
     if not _tables_exist(conn):
         conn.executescript(_SCHEMA)
+    _ensure_columns(conn)
     with conn:
         conn.execute(
             "INSERT OR REPLACE INTO retrieval_trace_runs "
             "(retrieval_id, policy_version, mode, limit_n, catalog_truncated, selected_total, "
-            "scored_total, gate_rejections_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "scored_total, gate_rejections_json, applicability_status, policy_fallback, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 retrieval_id,
                 policy_version,
@@ -204,6 +224,8 @@ def record(
                 len(selected),
                 scored_total,
                 json.dumps(gate_rejections, sort_keys=True),
+                applicability_status,
+                policy_fallback,
                 int(time.time()),
             ),
         )

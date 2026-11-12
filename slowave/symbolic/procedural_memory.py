@@ -31,7 +31,7 @@ _FAILED_SOURCE_PENALTY = 0.03
 # mid-plateau; the margin only guards against a flood of near-equal matches.
 PROCEDURE_RESULT_LIMIT = 3
 _GATE_CANDIDATES = 15
-_GATE_LOGIT_FLOOR = -2.5
+_GATE_PROBABILITY_FLOOR = 0.0
 _GATE_LOGIT_MARGIN = 6.0
 _GATE_UTILITY_WEIGHT = 5.0  # utility is <= ~0.1, so it moves a logit by <= ~0.5
 _GATE_TASK_HEAD_CHARS = 200
@@ -465,9 +465,10 @@ def retrieve_relevant_procedures(
        of the goal and the head of the task. Reuse evidence is deliberately
        excluded here: letting it pick candidates made the same procedures
        return for unrelated queries.
-    3. A cross-encoder scores the top candidates against the goal.
-    4. A procedure is admitted when its logit reaches ``max(floor, best -
-       margin)`` and the best logit itself reaches the floor, so a pool with no
+    3. The pair scorer over the shared encoder scores the top candidates
+       against the goal.
+    4. A procedure is admitted when its score reaches ``max(floor, best -
+       margin)`` and the best score itself reaches the floor, so a pool with no
        real match returns nothing instead of its three least-bad members.
     5. Admitted procedures are ordered by relevance, with reuse evidence only a
        small tie-break, and ``limit`` bounds the result. Exact method
@@ -543,11 +544,14 @@ def retrieve_relevant_procedures(
     except (OSError, RuntimeError, ValueError) as exc:
         raise ProcedureScorerUnavailable(str(exc)) from exc
     admitted = [False] * len(candidates)
+    # Scores are calibrated log-odds centred on 0.5, so the gate is the
+    # probability boundary itself.
+    floor = _GATE_PROBABILITY_FLOOR
     for column in range(scores.shape[1]):
         best = float(scores[:, column].max())
-        if best < _GATE_LOGIT_FLOOR:
+        if best < floor:
             continue
-        cutoff = max(_GATE_LOGIT_FLOOR, best - _GATE_LOGIT_MARGIN)
+        cutoff = max(floor, best - _GATE_LOGIT_MARGIN)
         for index in range(len(candidates)):
             admitted[index] = admitted[index] or float(scores[index, column]) >= cutoff
     logits = scores.max(axis=1)
@@ -558,7 +562,7 @@ def retrieve_relevant_procedures(
         result = dict(item)
         result["score"] = round(float(logit), 4)
         result["match"] = {
-            "admission": "cross_encoder_pool_relative",
+            "admission": "calibrated_pool_relative",
             "logit": round(float(logit), 4),
             "context": (
                 "matched"

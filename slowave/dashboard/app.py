@@ -3137,6 +3137,19 @@ def _retrieval_detail(db_path: str, retrieval_id: str) -> dict[str, Any]:
         retrieval["topics"] = _json_list(retrieval.pop("topics_json", "[]"))
         retrieval["entities"] = _json_list(retrieval.pop("entities_json", "[]"))
         retrieval["is_internal"] = _is_lifecycle_hook_query(retrieval.get("query"))
+        # Calibrated-admission telemetry is opt-in and stored in the trace tables;
+        # databases older than those columns must not break the drawer.
+        try:
+            trace = conn.execute(
+                "SELECT applicability_status, policy_fallback FROM retrieval_trace_runs "
+                "WHERE retrieval_id = ?",
+                (retrieval_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            trace = None
+        if trace is not None:
+            retrieval["applicability_status"] = trace["applicability_status"]
+            retrieval["policy_fallback"] = trace["policy_fallback"]
         delivered = occasions(conn, "r.context_id = ?", [retrieval_id])
         retrieval["exposed_count"] = len(delivered)
         retrieval["usage_by_kind"] = {}
