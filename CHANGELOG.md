@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.5...slowave-v0.24.0) (2026-11-12)
+
+
+### Features
+
+* bekko embedding ([#241](https://github.com/slowave-ai/slowave/issues/241)) ([c25bcbe](https://github.com/slowave-ai/slowave/commit/c25bcbe3ab7a0394081af8e386cd5b8ed228492c))
+
 ## [0.23.5](https://github.com/slowave-ai/slowave/compare/slowave-v0.23.4...slowave-v0.23.5) (2026-11-07)
 
 
