@@ -24,9 +24,7 @@
 
 ---
 
-
-https://github.com/user-attachments/assets/2d4eeb4e-419f-46fa-b23e-cf501a715d1e
-
+https://github.com/user-attachments/assets/02293631-56f3-49a7-85c6-adfb5fcab1a6
 
 ---
 Slowave is a local MCP memory server that carries your decisions, constraints, and procedures across your coding sessions and AI tools.
